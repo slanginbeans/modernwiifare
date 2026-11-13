@@ -27,6 +27,7 @@ referenced it.
 **Role** of a material, then of each image (several materials: the larger size cap wins):
 | Material | Role |
 |---|---|
+| named in a map script's `setupMiniMap("...")` call (zone rawfiles) | minimap: 512, no mips, smooth alpha split into CMPR + I4 |
 | camera region "depth hack" | viewmodel |
 | sort key sky / skybox | sky |
 | used by the GfxWorld | world |
@@ -84,7 +85,8 @@ keeps CMPR's 565 colour endpoints and 16 alpha levels. UI stays RGB5A3, since CM
 | Name-based roles (first run) | 11.72 MiB | 185 textures, 5,692 KiB | – | 49, 6,304 KiB |
 | Roles and alpha from materials | 7.03 MiB | 207, 4,602 KiB | – | 26, 2,597 KiB |
 | + cut-outs keep size and coverage | 7.56 MiB | 207, 5,146 KiB | – | 26, 2,597 KiB |
-| **+ smooth alpha split into CMPR + I4** | **6.71 MiB** | 207, 5,146 KiB | 19, 875 KiB | 7 (UI), 848 KiB |
+| + smooth alpha split into CMPR + I4 | 6.71 MiB | 207, 5,146 KiB | 19, 875 KiB | 7 (UI), 848 KiB |
+| **+ minimap role** | **6.46 MiB** | 207, 5,146 KiB | 20, 1,131 KiB | 6 (UI), 336 KiB |
 
 Roles (material-based): world 65, prop 90, character 71, UI 7, effect 1. With name guesses they were world 177,
 character 46, prop 6, viewmodel 3, effect 2, UI 1.
@@ -159,7 +161,10 @@ screen. `mp_rust`: match 6.4 MiB, catalog 0.35 MiB.
 1. ~~Cut-out foliage suffers at the prop size cap.~~ Fixed: cut-outs get at least 256 and keep their coverage (above).
 2. ~~Smooth alpha is over a third of the memory.~~ Fixed: split into CMPR + I4 (above). Needs the two-texture TEV
    recipe in the renderer.
-3. **The minimap is the largest texture** (UI, 512² RGB5A3, 512 KiB). It is real HUD art; consider 256² or I4/IA4.
+3. ~~The minimap is the largest texture (UI, 512² RGB5A3, 512 KiB).~~ Fixed: the material a map script passes to
+   `setupMiniMap(...)` gets the `minimap` role. It keeps 512 (the HUD shows a zoomed part of it at about 1:1 at 480p) and
+   no mips, but is split into CMPR + I4 like other pictures: 256 KiB, and 38.2 dB instead of 29.6 (RGB5A3's 4-bit colour
+   was the loss).
 4. **Sky:** the `mp_rust` sky is a cube map, skipped for now.
 5. ~~`common_mp` needs a residency plan (46.9 MiB).~~ Done: load by need (above), 13.7 MiB worst case in a match. The
    runtime still has to load groups from `index.json` (front end, loadout changes, calling cards on screen).

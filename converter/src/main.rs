@@ -33,7 +33,7 @@ const SHARED_TABLES_ZONE: &str = "code_post_gfx_mp";
 const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <report.json>]\n  \
      mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]\n  \
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
-     mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask] [--out <folder>]";
+     mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask|minimap] [--out <folder>]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

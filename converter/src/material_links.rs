@@ -183,6 +183,8 @@ pub struct Links {
     pub weapons: Vec<String>,
     /// Every string-table cell in the zone (material names found here are looked up by name).
     table_strings: std::collections::HashSet<String>,
+    /// Materials the zone's scripts pass to `setupMiniMap(...)` (lower case).
+    minimap_materials: std::collections::HashSet<String>,
     /// Image index assigned to each loaded image, in load order (filled by the caller through `image_loaded`).
     image_count: usize,
     pub unresolved_texture_links: usize,
@@ -319,6 +321,21 @@ impl Links {
                 self.weapon_world_names.entry(n).or_default().insert(index);
             }
         }
+    }
+
+    /// Hook for `AssetLinkSink::capture_raw_file`: a map's script names its HUD minimap material in
+    /// `maps\mp\_compass::setupMiniMap("<material>")`.
+    pub fn raw_file(&mut self, data: &[u8], zlib_compressed: bool) {
+        let text = if zlib_compressed {
+            match asset_transport::inflate_zlib(data) {
+                Ok(t) => t,
+                Err(_) => return,
+            }
+        } else {
+            data.to_vec()
+        };
+        self.minimap_materials
+            .extend(minimap_calls(&String::from_utf8_lossy(&text)));
     }
 
     /// Add string-table cells from another zone (the shared tables in `code_post_gfx_mp`).
@@ -459,7 +476,7 @@ impl Links {
                 if !COLOUR_SEMANTICS.contains(&semantic) {
                     continue;
                 }
-                let (role, source) = material_role(m, &self.models);
+                let (role, source) = material_role(m, &self.models, &self.minimap_materials);
                 let usage = ImageUsage {
                     role,
                     alpha: m.alpha,
@@ -500,7 +517,17 @@ pub fn alpha_use(rows: &[[u32; 2]]) -> AlphaUse {
 }
 
 /// Role of a material from its users, camera region and sort key.
-fn material_role(m: &MaterialInfo, models: &[ModelInfo]) -> (Role, &'static str) {
+fn material_role(
+    m: &MaterialInfo,
+    models: &[ModelInfo],
+    minimaps: &std::collections::HashSet<String>,
+) -> (Role, &'static str) {
+    if m.name
+        .as_ref()
+        .is_some_and(|n| minimaps.contains(&n.to_ascii_lowercase()))
+    {
+        return (Role::Minimap, "material: minimap (map script)");
+    }
     if m.camera_region == CAMERA_REGION_DEPTH_HACK {
         return (Role::Viewmodel, "material: viewmodel (depth hack)");
     }
@@ -592,6 +619,22 @@ fn merge_group(a: Group, b: Group) -> Group {
     }
 }
 
+/// Material names passed as a string literal to `setupMiniMap(` in GSC source (lower case).
+pub fn minimap_calls(source: &str) -> Vec<String> {
+    let lower = source.to_ascii_lowercase();
+    let mut out = Vec::new();
+    for (i, call) in lower.match_indices("setupminimap(") {
+        let rest = lower[i + call.len()..].trim_start();
+        if let Some(rest) = rest.strip_prefix('"')
+            && let Some(end) = rest.find('"')
+            && end > 0
+        {
+            out.push(rest[..end].to_owned());
+        }
+    }
+    out
+}
+
 /// Preference when one image has several roles: the larger size cap, then this fixed order.
 fn rank(role: Role) -> (u32, u8) {
     let order = match role {
@@ -603,6 +646,7 @@ fn rank(role: Role) -> (u32, u8) {
         Role::Prop => 2,
         Role::Effect => 1,
         Role::Mask => 0,
+        Role::Minimap => 8,
     };
     (role.max_dim(), order)
 }
@@ -742,7 +786,8 @@ mod tests {
             model(false, false),
             model(true, true),
         ];
-        let role = |m: &MaterialInfo| material_role(m, &models).0;
+        let minimaps = std::collections::HashSet::from(["compass_map_test".to_owned()]);
+        let role = |m: &MaterialInfo| material_role(m, &models, &minimaps).0;
         assert_eq!(role(&material("w", 0, &[Owner::World])), Role::World);
         assert_eq!(role(&material("m", 0, &[Owner::Model(1)])), Role::Character);
         assert_eq!(role(&material("m", 0, &[Owner::Model(2)])), Role::Prop);
@@ -840,6 +885,19 @@ mod tests {
         assert_eq!(links.models[0].weapons, BTreeSet::from([3, 5]));
         // Such a model is a weapon model, but not a viewmodel unless a weapon names it as gun or hand model.
         assert!(!links.models[0].viewmodel);
+    }
+
+    #[test]
+    fn minimap_material_from_map_script() {
+        let gsc = r#"main() { maps\mp\_compass::setupMiniMap( "Compass_Map_MP_Test" ); setupminimap(var); }"#;
+        assert_eq!(minimap_calls(gsc), ["compass_map_mp_test"]);
+        assert!(minimap_calls("no call here").is_empty());
+        let minimaps = std::collections::HashSet::from(["compass_map_mp_test".to_owned()]);
+        let mut m = material(",2d", 4, &[Owner::Standalone]);
+        m.name = Some("compass_map_mp_test".into());
+        assert_eq!(material_role(&m, &[], &minimaps).0, Role::Minimap);
+        m.name = Some("hud_other".into());
+        assert_eq!(material_role(&m, &[], &minimaps).0, Role::Ui);
     }
 
     #[test]

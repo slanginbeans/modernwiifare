@@ -18,10 +18,13 @@ pub enum Role {
     Ui,
     /// Grey masks / detail maps.
     Mask,
+    /// The HUD minimap: a top-down picture of the whole map, shown zoomed in about 1:1 at 480p, so it keeps 512
+    /// and no mips like UI, but is a picture (not text or icon edges), so smooth alpha is split into CMPR + I4.
+    Minimap,
 }
 
 impl Role {
-    pub const ALL: [Role; 8] = [
+    pub const ALL: [Role; 9] = [
         Role::World,
         Role::Prop,
         Role::Character,
@@ -30,6 +33,7 @@ impl Role {
         Role::Sky,
         Role::Ui,
         Role::Mask,
+        Role::Minimap,
     ];
 
     /// Longest side after conversion.
@@ -37,7 +41,7 @@ impl Role {
         match self {
             Role::World | Role::Character => 256,
             Role::Prop | Role::Effect | Role::Mask => 128,
-            Role::Viewmodel | Role::Sky | Role::Ui => 512,
+            Role::Viewmodel | Role::Sky | Role::Ui | Role::Minimap => 512,
         }
     }
 
@@ -49,7 +53,7 @@ impl Role {
     }
 
     pub const fn mipmapped(self) -> bool {
-        !matches!(self, Role::Ui)
+        !matches!(self, Role::Ui | Role::Minimap)
     }
 
     pub fn parse(s: &str) -> Option<Role> {
@@ -68,6 +72,7 @@ impl Role {
             Role::Sky => "sky",
             Role::Ui => "ui",
             Role::Mask => "mask",
+            Role::Minimap => "minimap",
         }
     }
 }
@@ -403,6 +408,26 @@ mod tests {
         );
         let cut = convert_with(&src, Role::Prop, Options { cutout: Some(128) });
         assert_eq!(cut.alpha_plane, None);
+    }
+
+    #[test]
+    fn minimap_keeps_512_without_mips_and_splits_smooth_alpha() {
+        // A top-down map picture with a soft-edged alpha border.
+        let src = Image::from_fn(1024, 1024, |x, y| {
+            let edge = (x.min(y).min(1023 - x).min(1023 - y) * 8).min(255) as u8;
+            [(x / 8) as u8, (y / 8) as u8, 60, edge]
+        });
+        let m = convert(&src, Role::Minimap);
+        assert_eq!(
+            (m.format, m.width, m.height, m.levels),
+            (TexFormat::Cmpr, 512, 512, 1)
+        );
+        assert!(m.alpha_plane.is_some());
+        // Half of what the same image costs as UI (RGB5A3).
+        let ui = convert(&src, Role::Ui);
+        assert_eq!(ui.format, TexFormat::Rgb5a3);
+        assert_eq!(2 * m.bytes(), ui.bytes());
+        assert_eq!(Role::parse("minimap"), Some(Role::Minimap));
     }
 
     #[test]

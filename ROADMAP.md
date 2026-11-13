@@ -69,6 +69,8 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
 - [x] Load by need: each texture's group (match / weapon / catalog / menu) from the zones; `index.json` per zone.
       *`common_mp`: match 8.2 MiB, worst case in a match 12.5 MiB (every model a weapon references goes with it).
       The runtime must load groups from the index.*
+- [x] Minimap: the material in the map script's `setupMiniMap(...)` gets the `minimap` role (512, no mips, CMPR + I4).
+      *`mp_rust`: 512 → 256 KiB, 29.6 → 38.2 dB; the map is 6.5 MiB.*
 - [ ] Materials → TEV recipe table; world → cell-chunked display lists + lightmaps;
       clipmap → Wii collision layout; spawns/entities; weapon defs (lossless); GSC IR.
 - [ ] `out/report.json` budget report. The build fails when over budget. Deterministic output.

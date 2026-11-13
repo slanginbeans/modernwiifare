@@ -41,6 +41,8 @@ The repository holds code, tools and docs only. License: Apache-2.0.
     `convert_with(.., Options { cutout })`: alpha-tested textures get a ≥256 cap and keep their coverage per mip.
     Smooth-alpha colour textures (not UI) are split: CMPR colour + `alpha_plane` (I4); `.gxt` flag bit 0. The
     renderer must sample both (colour from one unit, alpha from the I4 unit). See `docs/textures.md`.
+    `Role::Minimap`: the HUD minimap (512, no mips, split when its alpha is smooth). The converter finds it through
+    the map script's `setupMiniMap("...")` call in the zone's rawfiles.
   - Later: the pack format.
 - `tools/`: asset guard, budget report, Dolphin launch.
 - `docs/`: ADRs, budgets, deviations, references, upstream patches.

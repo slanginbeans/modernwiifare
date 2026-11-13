@@ -176,6 +176,16 @@ impl AssetLinkSink for Collector {
         self.links.string_table(s, header);
         Ok(())
     }
+
+    fn capture_raw_file(
+        &mut self,
+        _name: &str,
+        data: &[u8],
+        zlib_compressed: bool,
+    ) -> fastfile_iw4::Result<()> {
+        self.links.raw_file(data, zlib_compressed);
+        Ok(())
+    }
 }
 
 struct Driver(Collector);
