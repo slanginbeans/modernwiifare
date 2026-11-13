@@ -1,0 +1,5 @@
+[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy", "llvm-tools"]
+targets = ["powerpc-unknown-linux-gnu"]
+profile = "minimal"

@@ -34,11 +34,11 @@ native-endian I/O, so they are good candidates to compile for the Wii unchanged.
 ---
 
 ## Phase 0: Foundations and risk spikes (≈3–5 weeks)
-- [x] ADRs 0001–0005
+- [x] ADRs 0001–0006
 - [ ] Workspace: `converter/`, `shared/`, `wii/` with pinned IW4L git deps. CI: host tests, `cargo check` on
       `powerpc-unknown-linux-gnu`, and a Wii `.dol` build in the `devkitpro/devkitppc` image. Asset guard as a CI step.
-- [ ] **Spike A, toolchain:** Rust `no_std` hello-world `.dol` through ogc-rs. Draw a GX triangle on Dolphin **and** a real Wii.
-- [ ] **Spike B, system link:** UDP broadcast discovery between 2+ Wiis over **USB LAN adapters** (Wi-Fi as a side check) and between 2 Dolphin instances.
+- [ ] **Spike A, toolchain:** Rust `no_std` `.dol` (self-tests + GX scene on the GameCube pad), on a real Wii. *Code in `wii/spikes`, awaiting a hardware run.*
+- [ ] **Spike B, system link:** UDP broadcast discovery between 2+ Wiis over **USB LAN adapters** (Wi-Fi as a side check) and between 2 Dolphin instances. *Code in `wii/spikes`, awaiting a hardware run.*
 - [ ] **Spike C, memory:** measure usable MEM1/MEM2 after IOS + libogc + Rust runtime. Write `docs/budgets.md`.
 - [ ] **Spike D, data:** converter reads the user's IW4x install via IW4L and lists one small map's assets with sizes. Check that the IW4x zone layout is handled.
 - [ ] **Spike E, portability:** build `movement_iw4` + `weapon_iw4` + `clipmap_iw4` for the Wii target. Run a movement trace

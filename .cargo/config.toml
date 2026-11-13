@@ -1,0 +1,5 @@
+# Wii code is built for the stock big-endian PPC32 target and linked by devkitPPC (see ADR 0006).
+# - target-cpu=750: Broadway is a PowerPC 750CL.
+# - relocation-model=static: no PIC/GOT; the .dol is linked at a fixed address.
+[target.powerpc-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=750", "-C", "relocation-model=static"]

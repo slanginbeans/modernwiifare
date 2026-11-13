@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Blocks commits that contain retail game data or converted output.
 # Usage: tools/check_no_assets.sh            (checks staged files)
+#        tools/check_no_assets.sh --all      (checks every tracked file; used by CI)
 #        ln -s ../../tools/check_no_assets.sh .git/hooks/pre-commit
 set -euo pipefail
 
@@ -24,7 +25,7 @@ while IFS= read -r f; do
       echo "BLOCKED (contains fastfile magic): $f"; fail=1
     fi
   fi
-done < <(git diff --cached --name-only --diff-filter=ACM)
+done < <(if [ "${1:-}" = "--all" ]; then git ls-files; else git diff --cached --name-only --diff-filter=ACM; fi)
 
 if [ "$fail" -ne 0 ]; then
   echo "Commit refused: retail or derived game data must stay out of the repo." >&2

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+  <name>MWF Spike A (GX)</name>
+  <coder>Modern Wiifare</coder>
+  <version>@BUILD_ID@</version>
+  <short_description>Rust toolchain self-test + GX scene</short_description>
+  <long_description>Phase 0 spike. Runs Rust self-tests, then draws a GX scene controlled by the GameCube controller in port 1. START or RESET exits.</long_description>
+</app>

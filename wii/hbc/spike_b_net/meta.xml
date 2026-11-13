@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+  <name>MWF Spike B (System Link)</name>
+  <coder>Modern Wiifare</coder>
+  <version>@BUILD_ID@</version>
+  <short_description>LAN discovery test between Wiis</short_description>
+  <long_description>Phase 0 spike. Broadcasts discovery beacons on the LAN and lists other Wiis with delivery rates and round-trip times. Run it on 2 or more Wiis on the same network. B resets stats, START or RESET exits.</long_description>
+</app>

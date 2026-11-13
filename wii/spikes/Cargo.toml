@@ -1,0 +1,16 @@
+[package]
+name = "mwf_spikes"
+version = "0.1.0"
+description = "Phase 0 hardware spikes (A: toolchain + GX, B: system-link discovery). Wii-only staticlib."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+test = false
+doctest = false
+
+[dependencies]
+syslink = { path = "../syslink" }
+libm = "0.2"

@@ -35,6 +35,5 @@ plain arenas instead of bevy_ecs. Rules:
 3. The GSC runtime (`sim::script`) moves in the same way. Its IR is produced on the host by the converter (ADR 0002).
 
 ## Wii target build
-- Toolchain: nightly + `rust-src`, `-Z build-std=core,alloc`, a custom PowerPC EABI target JSON for the 750CL, and linking
-  through devkitPPC with `ogc-sys`/`ogc-rs` (rust-wii) for libogc.
-- Keep the nightly pin in `wii/rust-toolchain.toml` only. Host crates stay on stable.
+- Per ADR 0006, IW4L crates compile for `powerpc-unknown-linux-gnu` on stable as part of our Wii staticlib. No nightly is needed
+  unless the ADR 0006 fallback is taken.
