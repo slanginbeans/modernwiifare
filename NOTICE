@@ -1,0 +1,12 @@
+modernwiifare
+
+Licensed under the Apache License, Version 2.0; see LICENSE.
+
+This project builds on IW4L (https://github.com/vladtrc/iw4L),
+Copyright 2026 vladtrc, licensed under the Apache License, Version 2.0.
+Upstream IW4L crates are used as pinned dependencies. Files copied or adapted from
+IW4L keep their original notices and are listed in docs/references.md.
+
+This repository contains no code or data from Call of Duty: Modern Warfare 2.
+"Call of Duty" and "Modern Warfare" are trademarks of Activision Publishing, Inc.
+This project is not affiliated with or endorsed by Activision or Infinity Ward.

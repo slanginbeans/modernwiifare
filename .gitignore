@@ -1,0 +1,33 @@
+# --- Retail game data: NEVER commit (see CLAUDE.md) ---
+game_root/
+mw2/
+*.ff
+*.iwd
+*.xex
+*.iso
+*.xiso
+*.god
+*.gsc
+*.csc
+*.menu
+*.str
+*.bik
+# Converted / derived output
+out/
+packs/
+*.pak
+*.tpl
+*.wpk
+
+# --- Build output ---
+build/
+*.dol
+*.elf
+*.o
+*.d
+*.map
+__pycache__/
+.venv/
+
+# Rust
+target/
