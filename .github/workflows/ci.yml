@@ -58,3 +58,19 @@ jobs:
             dist/debug/
             wii/build/*.elf.map
           if-no-files-found: error
+
+  windows:
+    # The converter and the .bat files run on the user's Windows PC: build and exercise them there.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo test -p mwf_convert
+      - name: inventory.bat end to end (dummy folder, no game data)
+        shell: cmd
+        run: |
+          mkdir "%RUNNER_TEMP%\fakegame\zone\english"
+          echo not a fastfile> "%RUNNER_TEMP%\fakegame\zone\english\mp_fake.ff"
+          call inventory.bat "%RUNNER_TEMP%\fakegame" < NUL
+          if errorlevel 1 exit /b 1
+          findstr /c:"mp_fake" out\inventory.json || exit /b 1

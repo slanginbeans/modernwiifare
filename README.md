@@ -19,7 +19,10 @@ It needs devkitPro with "Wii Development" ticked (it offers to install Rust for 
 On Linux/macOS with Docker: `./build.sh`. No installs at all: download `modernwiifare-sd-card` from the newest
 **ci** run under the repo's Actions tab.
 
-No game files are needed for the current builds. Later, the converter will read your own MW2/IW4x install on your PC,
+**Reading your game data:** double-click **`inventory.bat`**, or drag your MW2/IW4x folder onto it. It lists every zone's
+sizes and asset counts and saves `out\inventory.json`. That file contains only names, sizes and counts, never game content.
+
+No game files are needed for the Wii builds. Later, the converter will read your own MW2/IW4x install on your PC,
 and its output stays on your PC and SD card.
 
 Status: Phase 0 (foundations). See the roadmap.
