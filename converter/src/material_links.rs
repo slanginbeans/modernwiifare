@@ -291,6 +291,7 @@ impl Links {
             materials,
         });
         self.xmodels.loaded(slot, insert_slot, index);
+        self.credit_model_to_weapon(index);
     }
 
     /// A weapon's gun and hand models are what the player sees in first person. IW4L reports them as model names
@@ -351,6 +352,14 @@ impl Links {
         }
     }
 
+    /// A model referenced while a weapon loads belongs to that weapon: gun, hand and world models, and also the
+    /// world clip, knife, rocket and projectile models, which IW4L loads without recording a name.
+    fn credit_model_to_weapon(&mut self, model: usize) {
+        if let (Some(Owner::Weapon(w)), Some(m)) = (self.owner, self.models.get_mut(model)) {
+            m.weapons.insert(w);
+        }
+    }
+
     /// Hook for `AssetLinkSink::remember_xmodel_name`.
     pub fn remember_xmodel_name(&mut self, slot: Ptr, insert_slot: Option<Ptr>, name: Ptr) {
         for s in std::iter::once(slot).chain(insert_slot) {
@@ -394,7 +403,12 @@ impl Links {
         match ty {
             AssetType::Image => self.images.alias(slot, target),
             AssetType::TechniqueSet => self.techsets.alias(slot, target),
-            AssetType::XModel => self.xmodels.alias(slot, target),
+            AssetType::XModel => {
+                self.xmodels.alias(slot, target);
+                if let Some(m) = self.xmodels.resolve(slot) {
+                    self.credit_model_to_weapon(m);
+                }
+            }
             AssetType::Material => {
                 self.materials.alias(slot, target);
                 if let Some(i) = self.materials.resolve(slot) {
@@ -809,6 +823,23 @@ mod tests {
             ),
             Group::Weapons(BTreeSet::from([1, 3]))
         );
+    }
+
+    #[test]
+    fn models_referenced_during_a_weapon_load_belong_to_it() {
+        let mut links = Links::default();
+        links.models.push(ModelInfo::default());
+        links.owner = Some(Owner::Weapon(3));
+        links.credit_model_to_weapon(0);
+        links.owner = Some(Owner::Weapon(5));
+        links.credit_model_to_weapon(0);
+        // Outside a weapon load nothing is credited.
+        links.owner = Some(Owner::World);
+        links.credit_model_to_weapon(0);
+        links.credit_model_to_weapon(9);
+        assert_eq!(links.models[0].weapons, BTreeSet::from([3, 5]));
+        // Such a model is a weapon model, but not a viewmodel unless a weapon names it as gun or hand model.
+        assert!(!links.models[0].viewmodel);
     }
 
     #[test]

@@ -67,7 +67,8 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
 - [x] `common_mp` textures: 1,624 images, 0 failures (wavelet IWIs decoded; weapon gun/hand models → viewmodel).
       *46.9 MiB: UI 30.1, viewmodels 14.0.*
 - [x] Load by need: each texture's group (match / weapon / catalog / menu) from the zones; `index.json` per zone.
-      *`common_mp`: match 9.8 MiB, worst case in a match 13.7 MiB. The runtime must load groups from the index.*
+      *`common_mp`: match 8.2 MiB, worst case in a match 12.5 MiB (every model a weapon references goes with it).
+      The runtime must load groups from the index.*
 - [ ] Materials → TEV recipe table; world → cell-chunked display lists + lightmaps;
       clipmap → Wii collision layout; spawns/entities; weapon defs (lossless); GSC IR.
 - [ ] `out/report.json` budget report. The build fails when over budget. Deterministic output.

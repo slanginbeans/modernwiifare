@@ -135,7 +135,7 @@ Every encoded texture gets a group saying when it has to be in memory, decided f
 | Group | Textures | Loaded |
 |---|---|---|
 | `match` | used by the world, by a model no weapon lists, by an effect, or by nothing in the zone (HUD drawn by script/code) | throughout a match |
-| `weapon` | used only by a weapon's gun, hand or world models, or as the weapon's HUD icons (kill, d-pad) | while the weapon is in someone's loadout |
+| `weapon` | used only by models a weapon references (gun, hand, world, world clip, knife, rocket, projectile) or as the weapon's HUD icons (kill, d-pad) | while the weapon is in someone's loadout |
 | `catalog` | material named in a string table: the zone's own and the shared ones in `code_post_gfx_mp` (calling cards, emblems, icon tables) | by name, when shown |
 | `menu` | used only by menus | in the front end |
 
@@ -147,12 +147,12 @@ content-free `report.json` holds the bytes per group, per weapon, and "match + t
 
 | `common_mp` group | Textures | MiB |
 |---|---|---|
-| **match** | 420 | **9.8** |
-| weapon | 212 | 17.5 (1,193 weapons: median 0.02, largest 3.4 each) |
+| **match** | 407 | **8.2** |
+| weapon | 225 | 19.1 (1,193 weapons: median 0.02, largest 3.75 each) |
 | catalog | 540 | 13.2 (calling cards and emblems 7.3, weapon and perk icons 5.8) |
 | menu | 77 | 6.4 |
 
-Worst case in a match: **match + 8 heaviest weapons = 13.7 MiB** (from 46.9 resident), plus the few calling cards on
+Worst case in a match: **match + 8 heaviest weapons = 12.5 MiB** (from 46.9 resident), plus the few calling cards on
 screen. `mp_rust`: match 6.4 MiB, catalog 0.35 MiB.
 
 ## Findings to act on
@@ -163,5 +163,7 @@ screen. `mp_rust`: match 6.4 MiB, catalog 0.35 MiB.
 4. **Sky:** the `mp_rust` sky is a cube map, skipped for now.
 5. ~~`common_mp` needs a residency plan (46.9 MiB).~~ Done: load by need (above), 13.7 MiB worst case in a match. The
    runtime still has to load groups from `index.json` (front end, loadout changes, calling cards on screen).
-6. **About 3 MiB of `weapon_*` textures still land in `match`.** Their models are not listed as any weapon's gun, hand
-   or world model (likely attachment models, which weapons reference another way). Follow the attachment links next.
+6. ~~About 3 MiB of `weapon_*` textures land in `match`.~~ Fixed: every model referenced while a weapon loads (world
+   clip, knife, rocket and projectile models too, which IW4L loads without a name) belongs to that weapon; 1.6 MiB moved.
+   The 2.1 MiB left is correct or not linkable from zone data: 22 HUD/menu weapon icons drawn by script (1.2 MiB), weapon
+   skins shared with back-slung "stow" models and the S&D bomb, which scripts attach (0.8 MiB), and small props.
