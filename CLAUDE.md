@@ -28,7 +28,8 @@ The repository holds code, tools and docs only. License: Apache-2.0.
   (Spike D). Prefers the retail x86 zone in `zone/iw4x/x86/english/` over IW4x's x64 rewrite in `zone/english/`.
   `texture <png> --role <role>`: one PNG to a Wii `.gxt` + `_preview.png` (output under `out/`).
   `textures <game folder> [--map <zone>]`: every GfxImage of a map zone (in-zone or IWI) to `.gxt` under
-  `out/textures/<zone>/` with a content-free `report.json`. Roles are name-based for now (`docs/textures.md`).
+  `out/textures/<zone>/` with a content-free `report.json`. Role and alpha come from the materials that use each image
+  (`material_links.rs`); the name is only a fallback. See `docs/textures.md`.
 - `wii/`: Wii runtime (stable Rust, no_std + alloc, ADR 0006), builds `.dol`s with `make -C wii`.
   - `platform/`: the C shim over libogc (`shim.h` is the whole API Rust sees; keep `spikes/src/ffi.rs` in sync).
   - `syslink/`: system-link protocol (no_std, host-tested). `spikes/`: Phase 0 spike programs.

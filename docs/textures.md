@@ -8,38 +8,69 @@ quality only. `--verbose` prints one line per texture, with its name, to the con
 ## What is converted
 | GfxImage | Decision |
 |---|---|
-| semantic normal map (5) | skipped: baked into lighting |
-| semantic specular map (8) | skipped |
+| image semantic normal map (5) or specular map (8) | skipped (normal maps are baked into lighting) |
 | name `*...` (lightmaps, reflection probes) | skipped here: converted with the world |
 | name `$...` (`$white`, ...) | skipped: made on the Wii |
 | map type not 2D, or depth > 1 (cubes, 3D) | skipped: not supported yet |
-| everything else | encoded with a role from the image name (**provisional**, see below) |
+| used by materials, but never as colour | skipped |
+| used by a material as colour (semantic 2D, function or colour map) | encoded; role and alpha from the materials |
+| used by no material in the zone | encoded; role guessed from the name (fallback) |
 
 Sources: in-zone D3D formats DXT1/3/5, BGRA8, BGRX8, A8, L8, LA8; IWI v8 formats 1–5 and DXT1/3/5. Wavelet IWIs and BC5
-are not decoded yet (none were needed for `mp_rust`). Identical sources are encoded once per role.
+are not decoded yet (none were needed for `mp_rust`). Identical sources are encoded once per role and alpha use.
 
-## First run: `mp_rust` (2026-11-13, retail x86 zone)
-- 608 GfxImages: 16 in the zone, 592 streamed from IWIs. **All found and decoded, 0 failures.** 47 s (release, 2 cores).
-- 373 skipped: 171 normal maps, 179 specular maps, 15 lightmaps/probes, 7 cubes, 1 built-in.
-- 235 encoded into **11.7 MiB** of Wii texture memory (sources: 341 MiB as RGBA8 at full size).
+## Roles and alpha from materials (`converter/src/material_links.rs`)
+IW4L reports every asset pointer it follows (`loaded` for inline assets, `alias` for references to earlier ones). Slot
+maps link each material texture slot to its image. Each material is credited to the top-level zone entry whose load
+referenced it.
 
-| Wii format | Textures | KiB | Source |
-|---|---|---|---|
-| CMPR | 185 | 5,692 | 175 DXT1 (opaque), 9 DXT3/5 with cut-out alpha, 1 RGB8 |
-| RGB5A3 | 49 | 6,304 | DXT3/DXT5 with smooth alpha |
-| IA4 | 1 | 1 | grey with alpha |
+**Role** of a material, then of each image (several materials: the larger size cap wins):
+| Material | Role |
+|---|---|
+| camera region "depth hack" | viewmodel |
+| sort key sky / skybox | sky |
+| used by the GfxWorld | world |
+| used by an XModel whose skeleton has human bones (`j_spinelower`, `j_head`, ...) | character |
+| used by any other XModel | prop |
+| used by Fx / ImpactFx / FxWorld | effect |
+| no user in the zone, technique set `2d` (IW4 names may start with `,`) | UI |
+| no user in the zone, `effect*` technique set or emissive camera region | effect |
 
-Quality (PSNR against the resized source, visible colour + alpha): world mean 39.4 dB, character 40.3, viewmodel 41.0.
+**Alpha** from the material's state bits, applied to the pixels before encoding:
+| Material state | Texture alpha |
+|---|---|
+| any pass blends with source/destination alpha | kept (RGB5A3 when smooth) |
+| alpha test (> 0, < 128, ≥ 128) | cut to 1 bit at the test's threshold, so CMPR |
+| opaque or additive (ONE/ONE) | dropped, so opaque CMPR |
+
+In the retail x86 zones every world, model and effect is a top-level entry, so the crediting is exact there. In IW4x's
+x64 rewrites, models nest inside the world and would count as world.
+
+## `mp_rust` (2026-11-13, retail x86 zone)
+608 GfxImages: 16 in the zone, 592 streamed from IWIs. All found and decoded, 0 failures, about 47 s (release, 2 cores).
+374 skipped: 171 normal maps, 179 specular maps, 15 lightmaps/probes, 7 cubes, 1 built-in, 1 used only as detail.
+282 materials walked, every material texture link resolved.
+
+| | Name-based roles (first run) | Material-based roles and alpha |
+|---|---|---|
+| Textures encoded | 235 | 234 |
+| **Wii texture memory** | **11.72 MiB** | **7.03 MiB (−40%)** |
+| CMPR | 185 textures, 5,692 KiB | 207 textures, 4,602 KiB |
+| RGB5A3 | 49 textures, 6,304 KiB | 26 textures, 2,597 KiB |
+| Roles | world 177, character 46, prop 6, viewmodel 3, effect 2, UI 1 | world 65, prop 90, character 71, UI 7, effect 1 |
+
+Alpha uses: 162 textures dropped alpha (opaque or additive material), 26 alpha-tested, 46 blended. The name guess was wrong
+for 116 textures, mostly world → prop (78) and world → character (28).
+
+Quality (PSNR against the resized source, visible colour + alpha): character mean 40.6 dB, world 37.5, prop 36.0.
 
 ## Findings to act on
-1. **Smooth alpha costs half the memory.** 49 RGB5A3 textures (decals, stains, foam, fences) use 54% of the map's texture
-   memory: RGB5A3 is 16 bpp against CMPR's 4. Options: cap them one size lower, or store colour as CMPR plus alpha as I4
-   (8 bpp total) and combine them in the TEV recipe. Decide with the material work.
-2. **Thin cut-out textures suffer from the downscale.** A metal floor grating (512 → 256) scores 18.4 dB: its fine alpha
-   grid blurs on resize and CMPR's 1-bit alpha then cuts it badly. Cut-out textures (gratings, fences, foliage) may need to
-   keep their size or use a sharper alpha resize.
-3. **Roles should come from materials, not names.** The map's minimap image is the largest single texture (UI role,
-   512² RGB5A3, 512 KiB). Name-based roles are a stopgap. The next step is to walk material → techset → image and the
-   world/xmodel/viewmodel users of each material.
-4. **Does alpha mean transparency?** Some colour maps carry other data in alpha. Only the material (alpha test/blend vs
-   opaque technique) can tell, and an opaque material lets its texture go to CMPR.
+1. **Cut-out foliage suffers at the prop size cap.** The lowest scores are all alpha-tested props: a tree card goes from
+   512×1024 to 64×128 (15.2 dB), and bushes and pine needles from 512 to 128 (about 20 dB). Their fine alpha detail blurs
+   on resize, then the 1-bit cut loses it. Options: a larger cap for alpha-tested props, or a sharper alpha resize.
+2. **Smooth alpha is still over a third of the memory.** 26 RGB5A3 textures (decals, stains, foam, HUD icons) use 2.5 of
+   7 MiB. Options: cap blended world decals one size lower, or store colour as CMPR plus alpha as I4 (8 bpp total) and
+   combine them in the TEV recipe.
+3. **The minimap is the largest texture** (UI, 512² RGB5A3, 512 KiB). It is real HUD art; consider 256² or I4/IA4.
+4. **Sky and effects are mostly absent from this zone.** The `mp_rust` sky is a cube map (skipped for now), and most
+   effect images live in `common_mp`. Converting the shared zones comes next.

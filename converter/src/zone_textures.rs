@@ -1,14 +1,15 @@
 //! Phase 1: a map zone's textures (GfxImage) through the Wii encoders (`shared/gx_texture`).
 //!
-//! For each image the zone loads: decide from its semantic, map type and name whether the Wii needs it, take its
-//! pixels from the zone (in-zone `GfxImageLoadDef`) or from `images/<name>.iwi` in `main/*.iwd`, decode the top mip,
-//! and encode it with `gx_texture::policy::convert` for a role. Identical sources are encoded once.
+//! For each image the zone loads: decide whether the Wii needs it, take its pixels from the zone (in-zone
+//! `GfxImageLoadDef`) or from `images/<name>.iwi` in `main/*.iwd`, decode the top mip, and encode it with
+//! `gx_texture::policy::convert`. Identical sources are encoded once per role.
+//!
+//! Role and alpha come from the materials that use the image (`material_links`): world, model (character or prop),
+//! effect, viewmodel or sky, and whether the material blends, alpha-tests or ignores alpha. Images no material in the
+//! zone uses fall back to a role guessed from the name.
 //!
 //! The `.gxt` files are converted game data and stay under the git-ignored `out/`. The JSON report is content-free
 //! (counts, bytes, quality; no names), like `inventory` and `map`.
-//!
-//! Provisional: the role comes from the image name. It should come from what uses the image (world, xmodel,
-//! viewmodel, effect, UI material); see docs/spikes/results.md.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -23,11 +24,13 @@ use gx_texture::policy::{Role, convert};
 use serde::Serialize;
 
 use crate::inventory::IW4L_REV;
+use crate::material_links::{AlphaUse, ImageUsage, Links, Owner, apply_alpha};
 use crate::pixel_decode::{self, PixelFormat};
 use crate::texture::{format_name, psnr};
 
 /// Report format version. Bump when fields change meaning.
-pub const REPORT_VERSION: u32 = 1;
+/// v2: roles and alpha from materials (`role_sources`, `alpha_uses`, `name_role_changes`).
+pub const REPORT_VERSION: u32 = 2;
 
 /// IW4 `TextureSemantic` values that the Wii does not take as textures.
 const TS_NORMAL_MAP: u8 = 5;
@@ -49,11 +52,16 @@ pub struct ZoneImage {
     pub d3d_format: u32,
     /// In-zone top-mip-first pixel data; empty when the image streams from an IWI.
     pub payload: Vec<u8>,
+    /// How the zone's materials use the image as colour, if any does.
+    pub usage: Option<ImageUsage>,
+    /// Whether any material in the zone references the image (as colour or not).
+    pub used_by_material: bool,
 }
 
 #[derive(Default)]
 struct Collector {
     images: Vec<ZoneImage>,
+    links: Links,
 }
 
 impl AssetLinkSink for Collector {
@@ -61,15 +69,17 @@ impl AssetLinkSink for Collector {
         &mut self,
         s: &ZoneStream<'_>,
         ty: AssetType,
-        _slot: Ptr,
-        _insert_slot: Option<Ptr>,
+        slot: Ptr,
+        insert_slot: Option<Ptr>,
     ) -> fastfile_iw4::Result<()> {
         if ty != AssetType::Image {
+            self.links.loaded(s, ty, slot, insert_slot);
             return Ok(());
         }
         let Some(g) = s.latest_image() else {
             return Ok(());
         };
+        self.links.image_loaded(slot, insert_slot);
         let name = g
             .name
             .and_then(|p| s.cstr(s.resolve_alias(p)).ok())
@@ -90,11 +100,14 @@ impl AssetLinkSink for Collector {
             depth: u32::from(g.depth),
             d3d_format: g.format,
             payload,
+            usage: None,
+            used_by_material: false,
         });
         Ok(())
     }
 
-    fn alias(&mut self, _ty: AssetType, _slot: Ptr, _target: Ptr) -> fastfile_iw4::Result<()> {
+    fn alias(&mut self, ty: AssetType, slot: Ptr, target: Ptr) -> fastfile_iw4::Result<()> {
+        self.links.alias(ty, slot, target);
         Ok(())
     }
 }
@@ -102,33 +115,56 @@ impl AssetLinkSink for Collector {
 struct Driver(Collector);
 
 impl AssetSink for Driver {
-    fn set_script_strings(&mut self, _strings: ScriptStrings) {}
+    fn set_script_strings(&mut self, strings: ScriptStrings) {
+        self.0.links.set_strings(strings);
+    }
 
     fn load_asset(
         &mut self,
         s: &mut ZoneStream<'_>,
-        _index: usize,
+        index: usize,
         ty: AssetType,
         slot: Ptr,
     ) -> fastfile_iw4::Result<()> {
+        self.0.links.owner = Some(Owner::for_entry(ty, index));
         load_asset_at_observed(s, ty, slot, &mut self.0).map(|_| ())
     }
 }
 
-/// Every GfxImage loaded by an inflated zone (top level and nested), in load order.
-pub fn collect(image: &[u8]) -> Result<Vec<ZoneImage>, String> {
+/// What the material walk found, for the report.
+#[derive(Clone, Debug, Default)]
+pub struct LinkStats {
+    pub materials: usize,
+    pub unresolved_texture_links: usize,
+}
+
+/// Every GfxImage loaded by an inflated zone (top level and nested), in load order, with its material usage.
+pub fn collect(image: &[u8]) -> Result<(Vec<ZoneImage>, LinkStats), String> {
     let header = parse_zone_header(image).map_err(|e| format!("{e:?}"))?;
     let mut memory = ZoneMemory::for_header(&header);
     let mut stream = memory.stream(image).map_err(|e| format!("{e:?}"))?;
     let mut driver = Driver(Collector::default());
     load_zone(&mut stream, &mut driver).map_err(|e| format!("{e:?}"))?;
-    Ok(driver.0.images)
+    let Collector {
+        mut images,
+        mut links,
+    } = driver.0;
+    for (img, (usage, used)) in images.iter_mut().zip(links.image_usage()) {
+        img.usage = usage;
+        img.used_by_material = used;
+    }
+    let stats = LinkStats {
+        materials: links.material_info.len(),
+        unresolved_texture_links: links.unresolved_texture_links,
+    };
+    Ok((images, stats))
 }
 
 /// What to do with an image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Plan {
-    Encode(Role),
+    /// Role, the material's alpha use (`None` when no material uses it), and where the role came from.
+    Encode(Role, Option<AlphaUse>, &'static str),
     Skip(&'static str),
 }
 
@@ -147,10 +183,20 @@ pub fn plan(img: &ZoneImage) -> Plan {
     if img.map_type != MAPTYPE_2D || img.depth > 1 {
         return Plan::Skip("cube or 3D map: not supported yet");
     }
-    Plan::Encode(role_from_name(&img.name))
+    match &img.usage {
+        Some(u) => Plan::Encode(u.role, Some(u.alpha), u.source),
+        None if img.used_by_material => {
+            Plan::Skip("materials use it only as normal/specular/detail: not a colour map")
+        }
+        None => Plan::Encode(
+            role_from_name(&img.name),
+            None,
+            "name (no material in zone)",
+        ),
+    }
 }
 
-/// Provisional role from the image name, until roles come from the materials that use each image.
+/// Fallback role from the image name, for images no material in the zone uses (script, menus, code).
 pub fn role_from_name(name: &str) -> Role {
     let n = name.to_ascii_lowercase();
     let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
@@ -221,6 +267,24 @@ pub struct TexturesReport {
     pub semantic_counts: BTreeMap<u8, usize>,
     pub map_type_counts: BTreeMap<u8, usize>,
     pub category_counts: BTreeMap<u8, usize>,
+    /// Materials walked, and material texture slots that did not resolve to an image.
+    pub materials: usize,
+    pub unresolved_texture_links: usize,
+    /// Encoded textures by where their role came from.
+    pub role_sources: BTreeMap<&'static str, usize>,
+    /// Encoded textures by how their materials use alpha ("none" when no material uses them).
+    pub alpha_uses: BTreeMap<&'static str, usize>,
+    /// Encoded textures whose material role differs from the old name guess: (name role, material role) -> count.
+    pub name_role_changes: BTreeMap<String, usize>,
+}
+
+fn alpha_label(a: Option<AlphaUse>) -> &'static str {
+    match a {
+        None => "none (no material)",
+        Some(AlphaUse::Unused) => "unused -> dropped",
+        Some(AlphaUse::Cutout { .. }) => "alpha test -> 1 bit",
+        Some(AlphaUse::Blend) => "blend -> kept",
+    }
 }
 
 /// Pixels of one image: from the zone, or from its IWI.
@@ -270,7 +334,7 @@ pub fn convert_zone(
     out_dir: &Path,
     verbose: bool,
 ) -> Result<TexturesReport, String> {
-    let images = collect(zone_image)?;
+    let (images, stats) = collect(zone_image)?;
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
 
     let mut report = TexturesReport {
@@ -292,34 +356,51 @@ pub fn convert_zone(
         semantic_counts: BTreeMap::new(),
         map_type_counts: BTreeMap::new(),
         category_counts: BTreeMap::new(),
+        materials: stats.materials,
+        unresolved_texture_links: stats.unresolved_texture_links,
+        role_sources: BTreeMap::new(),
+        alpha_uses: BTreeMap::new(),
+        name_role_changes: BTreeMap::new(),
     };
     let mut psnr_sums: HashMap<&'static str, (f64, usize)> = HashMap::new();
-    let mut seen: HashMap<(u64, &'static str), ()> = HashMap::new();
+    let mut seen: HashMap<(u64, &'static str, Option<AlphaUse>), ()> = HashMap::new();
     let mut used_stems: HashMap<String, usize> = HashMap::new();
 
     for img in &images {
         *report.semantic_counts.entry(img.semantic).or_default() += 1;
         *report.map_type_counts.entry(img.map_type).or_default() += 1;
         *report.category_counts.entry(img.category).or_default() += 1;
-        let role = match plan(img) {
+        let (role, alpha, source) = match plan(img) {
             Plan::Skip(why) => {
                 *report.skipped.entry(why).or_default() += 1;
                 continue;
             }
-            Plan::Encode(role) => role,
+            Plan::Encode(role, alpha, source) => (role, alpha, source),
         };
-        let (pixels, src_fmt, hash) = match source_pixels(img, iwds) {
+        let (mut pixels, src_fmt, hash) = match source_pixels(img, iwds) {
             Ok(x) => x,
             Err(e) => {
                 *report.failed.entry(e).or_default() += 1;
                 continue;
             }
         };
-        if seen.insert((hash, role.name()), ()).is_some() {
+        if seen.insert((hash, role.name(), alpha), ()).is_some() {
             report.duplicates += 1;
             continue;
         }
+        if let Some(a) = alpha {
+            apply_alpha(&mut pixels, a);
+        }
         *report.by_source_format.entry(src_fmt.name()).or_default() += 1;
+        *report.role_sources.entry(source).or_default() += 1;
+        *report.alpha_uses.entry(alpha_label(alpha)).or_default() += 1;
+        let guessed = role_from_name(&img.name);
+        if alpha.is_some() && guessed != role {
+            *report
+                .name_role_changes
+                .entry(format!("{} -> {}", guessed.name(), role.name()))
+                .or_default() += 1;
+        }
 
         let c = convert(&pixels, role);
         let q = c
@@ -340,7 +421,7 @@ pub fn convert_zone(
         if verbose {
             // Console only, for tuning: names never go into the report.
             println!(
-                "  {:<9} {:<5} {:>4}x{:<4} -> {:<6} {:>4}x{:<4} {:>6.1} KiB {:>6} dB  alpha {:?}  {}",
+                "  {:<9} {:<5} {:>4}x{:<4} -> {:<6} {:>4}x{:<4} {:>6.1} KiB {:>6} dB  alpha {:?}  [{} | {}]  {}",
                 role.name(),
                 src_fmt.name(),
                 pixels.width,
@@ -351,6 +432,8 @@ pub fn convert_zone(
                 bytes as f64 / 1024.0,
                 q.map_or("-".into(), |d| format!("{d:.1}")),
                 c.traits.alpha,
+                source,
+                alpha_label(alpha),
                 img.name
             );
         }
@@ -432,6 +515,25 @@ pub fn render_text(r: &TexturesReport) -> String {
         let _ = writeln!(s, "  {f:<7} {n:>5}  {:>9.0} KiB", kib(*b));
     }
     let _ = writeln!(s, "Source formats: {:?}", r.by_source_format);
+    let _ = writeln!(
+        s,
+        "\nMaterials walked: {}, texture links not resolved: {}",
+        r.materials, r.unresolved_texture_links
+    );
+    let _ = writeln!(s, "Role from:");
+    for (src, n) in &r.role_sources {
+        let _ = writeln!(s, "  {n:>5}  {src}");
+    }
+    let _ = writeln!(s, "Alpha:");
+    for (a, n) in &r.alpha_uses {
+        let _ = writeln!(s, "  {n:>5}  {a}");
+    }
+    if !r.name_role_changes.is_empty() {
+        let _ = writeln!(s, "Changed from the name guess (name -> material):");
+        for (change, n) in &r.name_role_changes {
+            let _ = writeln!(s, "  {n:>5}  {change}");
+        }
+    }
     if !r.skipped.is_empty() {
         let _ = writeln!(s, "\nSkipped:");
         for (why, n) in &r.skipped {
@@ -473,15 +575,17 @@ mod tests {
             depth: 1,
             d3d_format: 0,
             payload: Vec::new(),
+            usage: None,
+            used_by_material: false,
         }
     }
 
     #[test]
     fn plans_from_semantic_and_type() {
-        assert_eq!(
+        assert!(matches!(
             plan(&img("brick_wall", 2, MAPTYPE_2D)),
-            Plan::Encode(Role::World)
-        );
+            Plan::Encode(Role::World, None, _)
+        ));
         assert!(matches!(
             plan(&img("brick_wall_nml", TS_NORMAL_MAP, MAPTYPE_2D)),
             Plan::Skip(_)
@@ -496,6 +600,30 @@ mod tests {
         ));
         assert!(matches!(plan(&img("$white", 2, MAPTYPE_2D)), Plan::Skip(_)));
         assert!(matches!(plan(&img("sky_cube", 2, 5)), Plan::Skip(_)));
+    }
+
+    #[test]
+    fn material_usage_beats_the_name() {
+        // Named like a world texture, but a material uses it on a character with alpha test.
+        let mut i = img("test_concrete", 2, MAPTYPE_2D);
+        i.usage = Some(ImageUsage {
+            role: Role::Character,
+            alpha: AlphaUse::Cutout { threshold: 128 },
+            source: "material: human skeleton model",
+        });
+        i.used_by_material = true;
+        assert_eq!(
+            plan(&i),
+            Plan::Encode(
+                Role::Character,
+                Some(AlphaUse::Cutout { threshold: 128 }),
+                "material: human skeleton model"
+            )
+        );
+        // Referenced by materials, but never as colour: skipped even with a colour semantic on the image.
+        let mut j = img("test_detail", 2, MAPTYPE_2D);
+        j.used_by_material = true;
+        assert!(matches!(plan(&j), Plan::Skip(_)));
     }
 
     #[test]

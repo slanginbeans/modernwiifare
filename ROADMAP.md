@@ -57,8 +57,10 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
 - [ ] Pack format in `shared/` (zero-copy, big-endian, versioned, hashed).
 - [x] Texture encoders (`shared/gx_texture`): all GX formats incl. CMPR, mips, per-role size/format policy, `mwf-convert texture`.
 - [x] Zone textures through the encoders: `mwf-convert textures` (in-zone + IWI sources, skips normal/spec maps).
-      *`mp_rust`: 608 images, 0 failures, 11.7 MiB on the Wii. Roles are still name-based; see `docs/textures.md`.*
-- [ ] Texture roles and alpha from materials; materials → TEV recipe table; world → cell-chunked display lists + lightmaps;
+      *`mp_rust`: 608 images, 0 failures. See `docs/textures.md`.*
+- [x] Texture roles and alpha from materials (users: world / human-skeleton model / model / effect; state bits: blend,
+      alpha test, opaque). *`mp_rust`: 11.7 → 7.0 MiB on the Wii.*
+- [ ] Materials → TEV recipe table; world → cell-chunked display lists + lightmaps;
       clipmap → Wii collision layout; spawns/entities; weapon defs (lossless); GSC IR.
 - [ ] `out/report.json` budget report. The build fails when over budget. Deterministic output.
 - **Exit:** one small map's pack fits its budget and loads into a Wii viewer.

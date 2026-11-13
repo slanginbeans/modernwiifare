@@ -22,6 +22,7 @@ use std::process::ExitCode;
 
 mod inventory;
 mod map_walk;
+mod material_links;
 mod pixel_decode;
 mod texture;
 mod zone_textures;
