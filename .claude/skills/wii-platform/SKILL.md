@@ -34,9 +34,9 @@ description: Nintendo Wii hardware budgets and homebrew toolchain (devkitPPC, li
 
 ## Toolchain
 - Install devkitPro `devkitPPC` and `libogc` (`dkp-pacman -S wii-dev`). CI uses the `devkitpro/devkitppc` Docker image.
-- The runtime is **Rust**: nightly + `rust-src`, `-Z build-std=core,alloc`, a custom PowerPC EABI target JSON for the 750CL
-  (hard float, big-endian), and the devkitPPC linker. libogc is reached through `ogc-sys`/`ogc-rs` (github.com/rust-wii).
-  The `iw4l-upstream` skill covers how IW4L crates fit into this.
+- The runtime is **stable Rust** built as a `no_std` staticlib for `powerpc-unknown-linux-gnu` (`target-cpu=750`,
+  static relocation), linked by devkitPPC with libogc into a `.dol` (ADR 0006). libogc is reached only through
+  `wii/platform/shim.h`. Add a shim function rather than calling libogc from Rust. Fallback: nightly + custom EABI target.
 - Small C shims are fine where libogc macros don't bind cleanly (for example GX FIFO helpers). Build them with `-mrvl -mcpu=750 -meabi -mhard-float`.
 - Input (ADR 0005): **`PAD` GameCube controller is the target.** USB gamepads go through libogc's USB API (IOS58) as a stretch goal. Wiimote/Classic via `WPAD` are optional extras.
 - Run on Dolphin for fast iteration (`tools/` will hold a launch script). On real hardware, launch through the Homebrew Channel

@@ -17,15 +17,26 @@ The repository holds code, tools and docs only. License: Apache-2.0.
 
 ## Decisions (docs/adr/)
 0001 IW4L base, PC (IW4x) data in, 360 copy as reference · 0002 user's GSC via IW4L's runtime ·
-0003 4 players · 0004 Apache-2.0 · 0005 GameCube pad first, USB pads stretch, wired LAN
+0003 4 players · 0004 Apache-2.0 · 0005 GameCube pad first, USB pads stretch, wired LAN ·
+0006 stable Rust staticlib (powerpc-unknown-linux-gnu) + C shim, linked by devkitPPC
 
 ## Planned layout
 - `converter/`: host Rust tool (stable). Uses IW4L reader/asset crates and writes Wii packs to `out/` (git-ignored).
-- `wii/`: Wii runtime (Rust nightly, no_std + alloc, `ogc-rs`/libogc), builds a `.dol`.
-  - `wii_sim`: IW4L `sim::step` lifted off bevy_ecs · `gx_render` · `syslink` · `snd` · `front` (menus/HUD).
+- `wii/`: Wii runtime (stable Rust, no_std + alloc, ADR 0006), builds `.dol`s with `make -C wii`.
+  - `platform/`: the C shim over libogc (`shim.h` is the whole API Rust sees; keep `spikes/src/ffi.rs` in sync).
+  - `syslink/`: system-link protocol (no_std, host-tested). `spikes/`: Phase 0 spike programs.
+  - Later: `wii_sim` (IW4L `sim::step` lifted off bevy_ecs) · `gx_render` · `snd` · `front` (menus/HUD).
 - `shared/`: pack format definitions used by both the converter and the Wii runtime.
 - `tools/`: asset guard, budget report, Dolphin launch.
 - `docs/`: ADRs, budgets, deviations, references, upstream patches.
+
+## Build and test
+- Host: `cargo test`, `cargo clippy --all-targets`, `cargo fmt --all --check`.
+- Wii Rust half: `cargo build --release -p mwf_spikes --target powerpc-unknown-linux-gnu`.
+- PPC32 tests under qemu (750CL): `cargo test -p iw4l_probe --target powerpc-unknown-linux-gnu`
+  (needs `qemu-user gcc-powerpc-linux-gnu libc6-dev-powerpc-cross`).
+- Full `.dol`: `make -C wii hbc` (needs devkitPro). In the cloud session devkitPro is not reachable, so the `.dol` builds run in
+  GitHub Actions (`wii` job, `devkitpro/devkitppc` image) and come out as a downloadable artifact.
 
 ## Skills
 `iw4l-upstream` · `wii-platform` · `iw4-asset-pipeline` · `systemlink-netcode` · `feel-parity` · `asset-hygiene`
