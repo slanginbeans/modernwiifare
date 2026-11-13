@@ -280,6 +280,11 @@ pub fn plan(img: &ZoneImage) -> Plan {
     if img.name.starts_with('*') {
         return Plan::Skip("engine-generated (lightmap, probe): handled with the world");
     }
+    // IW4 GfxImageCategory: 1 auto-generated, 5 water (the simulation fills it), 6 render target, 7 temp. The engine
+    // makes these at run time; there is no file to convert.
+    if matches!(img.category, 1 | 5 | 6 | 7) {
+        return Plan::Skip("generated at run time (water, render target): no data to convert");
+    }
     // IW4 names a reference to an image that another zone holds with a leading ','; it has no header data here.
     if img.name.starts_with(',') {
         return Plan::Skip("reference to an image in another zone: converted with that zone");
@@ -531,7 +536,10 @@ pub fn convert_zone(
             Ok(x) => x,
             Err(e) => {
                 if verbose {
-                    println!("  FAILED {e}: {}", img.name);
+                    println!(
+                        "  FAILED {e} [category {}, map type {}]: {}",
+                        img.category, img.map_type, img.name
+                    );
                 }
                 *report.failed.entry(e).or_default() += 1;
                 continue;
@@ -634,7 +642,7 @@ pub fn convert_zone(
             if verbose {
                 // Console only, for tuning: names never go into the report.
                 println!(
-                    "  {:<9} {:<5} {:>4}x{:<4} -> {:<6} {:>4}x{:<4} {:>6.1} KiB {:>6} dB  alpha {:?}  [{} | {} | {}]  {}",
+                    "  {:<9} {:<5} {:>4}x{:<4} -> {:<6} {:>4}x{:<4} {:>6.1} KiB {:>6} dB  alpha {:?}  [{} | {} | {}] c{}  {}",
                     role.name(),
                     src_fmt,
                     pixels.width,
@@ -648,6 +656,7 @@ pub fn convert_zone(
                     source,
                     alpha_label(alpha),
                     group.label(),
+                    img.category,
                     img.name
                 );
             }
@@ -896,6 +905,10 @@ mod tests {
             group: Group::Match,
         });
         assert!(matches!(plan(&sky), Plan::Encode(Role::Sky, _, _)));
+        // Water simulation images are made at run time.
+        let mut water = img("watersetup0", 2, MAPTYPE_2D);
+        water.category = 5;
+        assert!(matches!(plan(&water), Plan::Skip(_)));
         // References to images held by another zone have no data here.
         assert_eq!(
             plan(&img(",shadow", 2, 0)),

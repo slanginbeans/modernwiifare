@@ -216,11 +216,18 @@ pub fn convert(img: &Image, role: Role) -> Converted {
 
 /// [`convert`] with what the material says about the texture.
 pub fn convert_with(img: &Image, role: Role, opts: Options) -> Converted {
-    let mut traits = analyze(img);
-    let mut max_dim = role.max_dim();
     let cut = opts.cutout.map(|threshold| coverage(img, threshold));
+    let max_dim = if cut.is_some() {
+        role.cutout_max_dim()
+    } else {
+        role.max_dim()
+    };
+    let (w, h) = fit_pow2(img.width, img.height, max_dim);
+    let base = resize(img, w, h);
+    // Judge the content at the size that is encoded: crisp source alpha (painted text, thin decals) becomes soft
+    // once downscaled, and a 1-bit alpha would then eat the strokes.
+    let mut traits = analyze(&base);
     if let Some(c) = cut {
-        max_dim = role.cutout_max_dim();
         traits.alpha = if c >= 1.0 {
             Alpha::Opaque
         } else {
@@ -233,8 +240,6 @@ pub fn convert_with(img: &Image, role: Role, opts: Options) -> Converted {
     } else {
         choose_format(role, traits)
     };
-    let (w, h) = fit_pow2(img.width, img.height, max_dim);
-    let base = resize(img, w, h);
     let mut chain = if role.mipmapped() {
         mip_chain(&base, min_mip_dim(format))
     } else {
@@ -429,6 +434,26 @@ mod tests {
         assert_eq!(ui.format, TexFormat::Rgb5a3);
         assert_eq!(2 * m.bytes(), ui.bytes());
         assert_eq!(Role::parse("minimap"), Some(Role::Minimap));
+    }
+
+    #[test]
+    fn alpha_is_judged_after_the_downscale() {
+        // Crisp 1-texel strokes every 3 texels (painted text): binary at full size, soft at half size.
+        let src = Image::from_fn(512, 512, |x, _| {
+            [255, 200, 40, if x % 3 == 0 { 255 } else { 0 }]
+        });
+        assert_eq!(analyze(&src).alpha, Alpha::Binary);
+        let c = convert(&src, Role::World);
+        assert_eq!(c.traits.alpha, Alpha::Smooth);
+        // Kept as CMPR + I4, so the strokes' coverage survives instead of a 1-bit cut.
+        assert!(c.alpha_plane.is_some());
+        // A crisp shape that stays crisp at the encoded size keeps 1-bit CMPR.
+        let blocky = Image::from_fn(512, 512, |x, _| [9, 9, 9, if x < 256 { 0 } else { 255 }]);
+        let b = convert(&blocky, Role::World);
+        assert_eq!(
+            (b.traits.alpha, b.alpha_plane.is_none()),
+            (Alpha::Binary, true)
+        );
     }
 
     #[test]
