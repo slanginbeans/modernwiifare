@@ -43,6 +43,7 @@ The repository holds code, tools and docs only. License: Apache-2.0.
     renderer must sample both (colour from one unit, alpha from the I4 unit). See `docs/textures.md`.
     `Role::Minimap`: the HUD minimap (512, no mips, split when its alpha is smooth). The converter finds it through
     the map script's `setupMiniMap("...")` call in the zone's rawfiles.
+    `Role::Sky` has no mips. A sky cube map becomes six face textures `<name>_px/_nx/_py/_ny/_pz/_nz` (D3D order).
   - Later: the pack format.
 - `tools/`: asset guard, budget report, Dolphin launch.
 - `docs/`: ADRs, budgets, deviations, references, upstream patches.

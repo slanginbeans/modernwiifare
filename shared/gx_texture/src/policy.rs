@@ -53,7 +53,8 @@ impl Role {
     }
 
     pub const fn mipmapped(self) -> bool {
-        !matches!(self, Role::Ui | Role::Minimap)
+        // UI and the minimap are drawn about 1:1; the sky is always magnified at 480p. Mips would be unused memory.
+        !matches!(self, Role::Ui | Role::Minimap | Role::Sky)
     }
 
     pub fn parse(s: &str) -> Option<Role> {
@@ -428,6 +429,17 @@ mod tests {
         assert_eq!(ui.format, TexFormat::Rgb5a3);
         assert_eq!(2 * m.bytes(), ui.bytes());
         assert_eq!(Role::parse("minimap"), Some(Role::Minimap));
+    }
+
+    #[test]
+    fn sky_has_no_mips() {
+        let src = Image::from_fn(1024, 1024, |x, y| [(x / 4) as u8, (y / 4) as u8, 200, 255]);
+        let c = convert(&src, Role::Sky);
+        assert_eq!(
+            (c.format, c.width, c.height, c.levels),
+            (TexFormat::Cmpr, 512, 512, 1)
+        );
+        assert_eq!(c.bytes(), 512 * 512 / 2);
     }
 
     #[test]

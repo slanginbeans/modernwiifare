@@ -86,6 +86,8 @@ const TS_NORMAL_MAP: u8 = 5;
 const TS_SPECULAR_MAP: u8 = 8;
 /// IW4 `MapType` for plain 2D images.
 const MAPTYPE_2D: u8 = 3;
+/// IW4 `MapType` for cube maps (six faces).
+const MAPTYPE_CUBE: u8 = 5;
 
 /// One GfxImage as the zone describes it.
 #[derive(Clone, Debug)]
@@ -278,6 +280,10 @@ pub fn plan(img: &ZoneImage) -> Plan {
     if img.name.starts_with('*') {
         return Plan::Skip("engine-generated (lightmap, probe): handled with the world");
     }
+    // IW4 names a reference to an image that another zone holds with a leading ','; it has no header data here.
+    if img.name.starts_with(',') {
+        return Plan::Skip("reference to an image in another zone: converted with that zone");
+    }
     if img.name.starts_with('$') {
         return Plan::Skip("engine built-in ($white...): made on the Wii");
     }
@@ -286,8 +292,16 @@ pub fn plan(img: &ZoneImage) -> Plan {
         TS_SPECULAR_MAP => return Plan::Skip("specular map: dropped"),
         _ => {}
     }
+    if img.map_type == MAPTYPE_CUBE {
+        // The Wii has no cube maps. A sky cube becomes six 2D faces (a skybox); other cubes are environment
+        // reflections, which the Wii does not draw.
+        return match &img.usage {
+            Some(u) if u.role == Role::Sky => Plan::Encode(u.role, Some(u.alpha), u.source),
+            _ => Plan::Skip("environment cube map: reflections are not drawn on the Wii"),
+        };
+    }
     if img.map_type != MAPTYPE_2D || img.depth > 1 {
-        return Plan::Skip("cube or 3D map: not supported yet");
+        return Plan::Skip("3D (volume) map: not used on the Wii");
     }
     match &img.usage {
         Some(u) => Plan::Encode(u.role, Some(u.alpha), u.source),
@@ -400,15 +414,20 @@ fn alpha_label(a: Option<AlphaUse>) -> &'static str {
     }
 }
 
-/// Pixels of one image (from the zone, or from its IWI), a label of the source format, and a hash of the source.
-fn source_pixels(
-    img: &ZoneImage,
-    iwds: Option<&IwdIndex>,
-) -> Result<(Image, &'static str, u64), String> {
+/// (file suffix, image) pairs, source format label, source hash.
+type SourcePixels = (Vec<(&'static str, Image)>, &'static str, u64);
+
+/// Pixels of one image (from the zone, or from its IWI) as (file suffix, image) pairs: one for a 2D image, six for a
+/// cube map (`_px`, `_nx`, `_py`, `_ny`, `_pz`, `_nz`), plus a label of the source format and a hash of the source.
+fn source_pixels(img: &ZoneImage, iwds: Option<&IwdIndex>) -> Result<SourcePixels, String> {
+    let cube = img.map_type == MAPTYPE_CUBE;
     if !img.payload.is_empty() {
+        if cube {
+            return Err("in-zone cube map (not supported yet)".into());
+        }
         let fmt = pixel_decode::d3d_format(img.d3d_format)?;
         let pixels = pixel_decode::decode(&img.payload, img.width, img.height, fmt)?;
-        return Ok((pixels, fmt.name(), fnv1a64(&img.payload)));
+        return Ok((vec![("", pixels)], fmt.name(), fnv1a64(&img.payload)));
     }
     let iwds = iwds.ok_or("streamed image, but no main/*.iwd index")?;
     let file = iwds
@@ -416,8 +435,13 @@ fn source_pixels(
         .and_then(<[_]>::last)
         .ok_or("streamed image: IWI not found in main/*.iwd")?;
     let bytes = file.read()?;
+    if cube {
+        let (faces, label) = pixel_decode::decode_iwi_cube(&bytes)?;
+        let faces = pixel_decode::CUBE_FACES.into_iter().zip(faces).collect();
+        return Ok((faces, label, fnv1a64(&bytes)));
+    }
     let (pixels, label) = pixel_decode::decode_iwi(&bytes)?;
-    Ok((pixels, label, fnv1a64(&bytes)))
+    Ok((vec![("", pixels)], label, fnv1a64(&bytes)))
 }
 
 /// Strip anything that is not safe in a file name.
@@ -491,12 +515,19 @@ pub fn convert_zone(
         *report.category_counts.entry(img.category).or_default() += 1;
         let (role, alpha, source) = match plan(img) {
             Plan::Skip(why) => {
+                if verbose {
+                    let users = img.usage.as_ref().map_or("no colour use", |u| u.source);
+                    println!(
+                        "  SKIPPED {why} [map type {}, {}x{}x{}, {users}]: {}",
+                        img.map_type, img.width, img.height, img.depth, img.name
+                    );
+                }
                 *report.skipped.entry(why).or_default() += 1;
                 continue;
             }
             Plan::Encode(role, alpha, source) => (role, alpha, source),
         };
-        let (mut pixels, src_fmt, hash) = match source_pixels(img, iwds) {
+        let (faces, src_fmt, hash) = match source_pixels(img, iwds) {
             Ok(x) => x,
             Err(e) => {
                 if verbose {
@@ -510,131 +541,138 @@ pub fn convert_zone(
             report.duplicates += 1;
             continue;
         }
-        // Alpha-tested textures keep their smooth alpha: the encoder cuts it per mip level, keeping coverage.
-        let cutout = match alpha {
-            Some(AlphaUse::Cutout { threshold }) => Some(threshold),
-            Some(a) => {
-                apply_alpha(&mut pixels, a);
-                None
+        for (face, mut pixels) in faces {
+            // Alpha-tested textures keep their smooth alpha: the encoder cuts it per mip level, keeping coverage.
+            let cutout = match alpha {
+                Some(AlphaUse::Cutout { threshold }) => Some(threshold),
+                Some(a) => {
+                    apply_alpha(&mut pixels, a);
+                    None
+                }
+                None => None,
+            };
+            *report.by_source_format.entry(src_fmt).or_default() += 1;
+            *report.role_sources.entry(source).or_default() += 1;
+            *report.alpha_uses.entry(alpha_label(alpha)).or_default() += 1;
+            let guessed = role_from_name(&img.name);
+            if alpha.is_some() && guessed != role {
+                *report
+                    .name_role_changes
+                    .entry(format!("{} -> {}", guessed.name(), role.name()))
+                    .or_default() += 1;
             }
-            None => None,
-        };
-        *report.by_source_format.entry(src_fmt).or_default() += 1;
-        *report.role_sources.entry(source).or_default() += 1;
-        *report.alpha_uses.entry(alpha_label(alpha)).or_default() += 1;
-        let guessed = role_from_name(&img.name);
-        if alpha.is_some() && guessed != role {
-            *report
-                .name_role_changes
-                .entry(format!("{} -> {}", guessed.name(), role.name()))
-                .or_default() += 1;
-        }
 
-        let c = convert_with(&pixels, role, Options { cutout });
-        let level0 = c.decode_level(0);
-        let mut reference = resize(&pixels, c.width, c.height);
-        if let (Some(threshold), Some(l0)) = (cutout, &level0) {
-            // Coverage: full size, our cut (level 0 as decoded), and a plain cut of the resized alpha at the threshold.
-            let full = coverage(&pixels, threshold);
-            let naive = coverage(&reference, threshold);
-            let ours = coverage(l0, 128);
-            let k = &mut report.cutouts;
-            k.textures += 1;
-            k.coverage_error_sum += f64::from((ours - full).abs());
-            k.naive_coverage_error_sum += f64::from((naive - full).abs());
-            // Every mip level: ours as decoded, against a plain cut of the same smooth mip chain.
-            let smooth = mip_chain(&reference, 1);
-            for (level, plain) in (0..c.levels).zip(&smooth) {
-                let Some(dec) = c.decode_level(level) else {
-                    break;
-                };
-                let e_ours = f64::from((coverage(&dec, 128) - full).abs());
-                let e_plain = f64::from((coverage(plain, threshold) - full).abs());
-                k.mip_levels += 1;
-                k.mip_coverage_error_sum += e_ours;
-                k.naive_mip_coverage_error_sum += e_plain;
-                k.worst_mip_coverage_error = k.worst_mip_coverage_error.max(e_ours);
-                k.naive_worst_mip_coverage_error = k.naive_worst_mip_coverage_error.max(e_plain);
+            let c = convert_with(&pixels, role, Options { cutout });
+            let level0 = c.decode_level(0);
+            let mut reference = resize(&pixels, c.width, c.height);
+            if let (Some(threshold), Some(l0)) = (cutout, &level0) {
+                // Coverage: full size, our cut (level 0 as decoded), and a plain cut of the resized alpha at the threshold.
+                let full = coverage(&pixels, threshold);
+                let naive = coverage(&reference, threshold);
+                let ours = coverage(l0, 128);
+                let k = &mut report.cutouts;
+                k.textures += 1;
+                k.coverage_error_sum += f64::from((ours - full).abs());
+                k.naive_coverage_error_sum += f64::from((naive - full).abs());
+                // Every mip level: ours as decoded, against a plain cut of the same smooth mip chain.
+                let smooth = mip_chain(&reference, 1);
+                for (level, plain) in (0..c.levels).zip(&smooth) {
+                    let Some(dec) = c.decode_level(level) else {
+                        break;
+                    };
+                    let e_ours = f64::from((coverage(&dec, 128) - full).abs());
+                    let e_plain = f64::from((coverage(plain, threshold) - full).abs());
+                    k.mip_levels += 1;
+                    k.mip_coverage_error_sum += e_ours;
+                    k.naive_mip_coverage_error_sum += e_plain;
+                    k.worst_mip_coverage_error = k.worst_mip_coverage_error.max(e_ours);
+                    k.naive_worst_mip_coverage_error =
+                        k.naive_worst_mip_coverage_error.max(e_plain);
+                }
+                // Judge colour against the same cut, so the score measures the encoder, not the (intended) 1-bit alpha.
+                cut_to_coverage(&mut reference, full);
             }
-            // Judge colour against the same cut, so the score measures the encoder, not the (intended) 1-bit alpha.
-            cut_to_coverage(&mut reference, full);
-        }
-        let q = level0.map(|level0| psnr(&reference, &level0, c.format));
+            let q = level0.map(|level0| psnr(&reference, &level0, c.format));
 
-        let mut stem = file_stem(&img.name);
-        let n = used_stems.entry(stem.clone()).or_default();
-        *n += 1;
-        if *n > 1 {
-            stem = format!("{stem}~{n}");
-        }
-        let gxt = out_dir.join(format!("{stem}.gxt"));
-        std::fs::write(&gxt, gx_texture::container::write(&c))
-            .map_err(|e| format!("{}: {e}", gxt.display()))?;
-
-        let bytes = c.bytes() as u64;
-        let group = img.usage.as_ref().map_or(Group::Match, |u| u.group.clone());
-        let weapons: Vec<String> = match &group {
-            Group::Weapons(w) => w
-                .iter()
-                .filter_map(|&i| stats.weapons.get(i).cloned())
-                .collect(),
-            _ => Vec::new(),
-        };
-        let g = report.groups.totals.entry(group.label()).or_default();
-        g.0 += 1;
-        g.1 += bytes;
-        if let Group::Weapons(w) = &group {
-            weapon_textures.push((w.clone(), bytes));
-        }
-        index.push(IndexEntry {
-            file: format!("{stem}.gxt"),
-            role: role.name(),
-            format: texture_format_name(&c),
-            bytes,
-            group: group.label(),
-            weapons,
-        });
-        if verbose {
-            // Console only, for tuning: names never go into the report.
-            println!(
-                "  {:<9} {:<5} {:>4}x{:<4} -> {:<6} {:>4}x{:<4} {:>6.1} KiB {:>6} dB  alpha {:?}  [{} | {} | {}]  {}",
-                role.name(),
-                src_fmt,
-                pixels.width,
-                pixels.height,
-                texture_format_name(&c),
-                c.width,
-                c.height,
-                bytes as f64 / 1024.0,
-                q.map_or("-".into(), |d| format!("{d:.1}")),
-                c.traits.alpha,
-                source,
-                alpha_label(alpha),
-                group.label(),
-                img.name
+            let mut stem = format!(
+                "{}{}{face}",
+                file_stem(&img.name),
+                if face.is_empty() { "" } else { "_" }
             );
-        }
-        report.encoded += 1;
-        report.wii_bytes += bytes;
-        let f = report
-            .by_wii_format
-            .entry(texture_format_name(&c))
-            .or_default();
-        f.0 += 1;
-        f.1 += bytes;
-        let t = report.by_role.entry(role.name()).or_default();
-        t.textures += 1;
-        t.source_rgba_bytes += pixels.pixels.len() as u64 * 4;
-        t.wii_bytes += bytes;
-        match q {
-            Some(db) if db.is_finite() => {
-                t.psnr_min_db = Some(t.psnr_min_db.map_or(db, |m| m.min(db)));
-                let s = psnr_sums.entry(role.name()).or_default();
-                s.0 += db;
-                s.1 += 1;
+            let n = used_stems.entry(stem.clone()).or_default();
+            *n += 1;
+            if *n > 1 {
+                stem = format!("{stem}~{n}");
             }
-            Some(_) => t.lossless += 1,
-            None => {}
+            let gxt = out_dir.join(format!("{stem}.gxt"));
+            std::fs::write(&gxt, gx_texture::container::write(&c))
+                .map_err(|e| format!("{}: {e}", gxt.display()))?;
+
+            let bytes = c.bytes() as u64;
+            let group = img.usage.as_ref().map_or(Group::Match, |u| u.group.clone());
+            let weapons: Vec<String> = match &group {
+                Group::Weapons(w) => w
+                    .iter()
+                    .filter_map(|&i| stats.weapons.get(i).cloned())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let g = report.groups.totals.entry(group.label()).or_default();
+            g.0 += 1;
+            g.1 += bytes;
+            if let Group::Weapons(w) = &group {
+                weapon_textures.push((w.clone(), bytes));
+            }
+            index.push(IndexEntry {
+                file: format!("{stem}.gxt"),
+                role: role.name(),
+                format: texture_format_name(&c),
+                bytes,
+                group: group.label(),
+                weapons,
+            });
+            if verbose {
+                // Console only, for tuning: names never go into the report.
+                println!(
+                    "  {:<9} {:<5} {:>4}x{:<4} -> {:<6} {:>4}x{:<4} {:>6.1} KiB {:>6} dB  alpha {:?}  [{} | {} | {}]  {}",
+                    role.name(),
+                    src_fmt,
+                    pixels.width,
+                    pixels.height,
+                    texture_format_name(&c),
+                    c.width,
+                    c.height,
+                    bytes as f64 / 1024.0,
+                    q.map_or("-".into(), |d| format!("{d:.1}")),
+                    c.traits.alpha,
+                    source,
+                    alpha_label(alpha),
+                    group.label(),
+                    img.name
+                );
+            }
+            report.encoded += 1;
+            report.wii_bytes += bytes;
+            let f = report
+                .by_wii_format
+                .entry(texture_format_name(&c))
+                .or_default();
+            f.0 += 1;
+            f.1 += bytes;
+            let t = report.by_role.entry(role.name()).or_default();
+            t.textures += 1;
+            t.source_rgba_bytes += pixels.pixels.len() as u64 * 4;
+            t.wii_bytes += bytes;
+            match q {
+                Some(db) if db.is_finite() => {
+                    t.psnr_min_db = Some(t.psnr_min_db.map_or(db, |m| m.min(db)));
+                    let s = psnr_sums.entry(role.name()).or_default();
+                    s.0 += db;
+                    s.1 += 1;
+                }
+                Some(_) => t.lossless += 1,
+                None => {}
+            }
         }
     }
     for (role, (sum, n)) in psnr_sums {
@@ -847,7 +885,26 @@ mod tests {
             Plan::Skip(_)
         ));
         assert!(matches!(plan(&img("$white", 2, MAPTYPE_2D)), Plan::Skip(_)));
+        // A cube nothing draws as sky is an environment reflection: skipped.
         assert!(matches!(plan(&img("sky_cube", 2, 5)), Plan::Skip(_)));
+        // A cube a sky material uses becomes six sky faces.
+        let mut sky = img("test_sky", 2, MAPTYPE_CUBE);
+        sky.usage = Some(ImageUsage {
+            role: Role::Sky,
+            alpha: AlphaUse::Unused,
+            source: "material: sky sort key",
+            group: Group::Match,
+        });
+        assert!(matches!(plan(&sky), Plan::Encode(Role::Sky, _, _)));
+        // References to images held by another zone have no data here.
+        assert_eq!(
+            plan(&img(",shadow", 2, 0)),
+            Plan::Skip("reference to an image in another zone: converted with that zone")
+        );
+        // 3D maps are not used.
+        let mut volume = img("test_volume", 2, 4);
+        volume.depth = 16;
+        assert!(matches!(plan(&volume), Plan::Skip(_)));
     }
 
     #[test]
@@ -893,7 +950,9 @@ mod tests {
         i.payload = [10u8, 20, 30, 255].repeat(16);
         let (pixels, fmt, _) = source_pixels(&i, None).unwrap();
         assert_eq!(fmt, "bgra8");
-        assert_eq!(pixels.pixels[0], [30, 20, 10, 255]);
+        assert_eq!(pixels.len(), 1);
+        assert_eq!(pixels[0].0, "");
+        assert_eq!(pixels[0].1.pixels[0], [30, 20, 10, 255]);
         let streamed = img("test_streamed", 2, MAPTYPE_2D);
         assert!(source_pixels(&streamed, None).is_err());
     }

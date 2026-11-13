@@ -11,7 +11,10 @@ quality only. `--verbose` prints one line per texture, with its name, to the con
 | image semantic normal map (5) or specular map (8) | skipped (normal maps are baked into lighting) |
 | name `*...` (lightmaps, reflection probes) | skipped here: converted with the world |
 | name `$...` (`$white`, ...) | skipped: made on the Wii |
-| map type not 2D, or depth > 1 (cubes, 3D) | skipped: not supported yet |
+| name `,...` (reference to an image another zone holds; no data here) | skipped: converted with that zone |
+| cube map used by a sky material | six 2D faces, sky role (below) |
+| any other cube map (environment reflections) | skipped: the Wii does not draw reflections |
+| 3D (volume) map | skipped: not used on the Wii |
 | used by materials, but never as colour | skipped |
 | used by a material as colour (semantic 2D, function or colour map) | encoded; role and alpha from the materials |
 | used by no material in the zone | encoded; role guessed from the name (fallback) |
@@ -64,6 +67,13 @@ fixed level thins them out, worst in the small mip levels used at a distance. `g
 
 Their PSNR is measured against the resized source cut the same way, so it scores colour; coverage is reported apart.
 
+## Sky cube maps
+GX has no cube maps. A cube a sky material uses (sort key sky / skybox) is decoded face by face from its IWI (the six
+top-mip faces are stored back to back in D3D order and end the top-mip range) and written as six 2D textures
+`<name>_px`, `_nx`, `_py`, `_ny`, `_pz`, `_nz` (+X, −X, +Y, −Y, +Z, −Z) in the sky role, for the renderer to draw as a
+skybox. The sky role has no mips: the sky is always magnified at 480p. `mp_rust`'s sky: 1024² faces → six 512² CMPR
+faces, 768 KiB in all, 41.0–43.6 dB. 256² faces would be 192 KiB if a map needs the room.
+
 ## Smooth alpha: CMPR colour + I4 alpha plane
 A colour texture with smooth alpha (decals, stains, glass, foam), except UI, is stored *split*: the colour as opaque
 CMPR (4 bpp) and the alpha as an I4 plane (4 bpp) of the same size and mip count. That is 8 bpp against RGB5A3's 16, and
@@ -86,7 +96,8 @@ keeps CMPR's 565 colour endpoints and 16 alpha levels. UI stays RGB5A3, since CM
 | Roles and alpha from materials | 7.03 MiB | 207, 4,602 KiB | – | 26, 2,597 KiB |
 | + cut-outs keep size and coverage | 7.56 MiB | 207, 5,146 KiB | – | 26, 2,597 KiB |
 | + smooth alpha split into CMPR + I4 | 6.71 MiB | 207, 5,146 KiB | 19, 875 KiB | 7 (UI), 848 KiB |
-| **+ minimap role** | **6.46 MiB** | 207, 5,146 KiB | 20, 1,131 KiB | 6 (UI), 336 KiB |
+| + minimap role | 6.46 MiB | 207, 5,146 KiB | 20, 1,131 KiB | 6 (UI), 336 KiB |
+| **+ sky cube as six faces** | **7.21 MiB** | 213, 5,914 KiB | 20, 1,131 KiB | 6 (UI), 336 KiB |
 
 Roles (material-based): world 65, prop 90, character 71, UI 7, effect 1. With name guesses they were world 177,
 character 46, prop 6, viewmodel 3, effect 2, UI 1.
@@ -165,7 +176,8 @@ screen. `mp_rust`: match 6.4 MiB, catalog 0.35 MiB.
    `setupMiniMap(...)` gets the `minimap` role. It keeps 512 (the HUD shows a zoomed part of it at about 1:1 at 480p) and
    no mips, but is split into CMPR + I4 like other pictures: 256 KiB, and 38.2 dB instead of 29.6 (RGB5A3's 4-bit colour
    was the loss).
-4. **Sky:** the `mp_rust` sky is a cube map, skipped for now.
+4. ~~Sky: the `mp_rust` sky is a cube map, skipped.~~ Converted as six faces (above). Most "cube or 3D" skips were in
+   fact references to other zones' images (`,` names); they are labelled as such now.
 5. ~~`common_mp` needs a residency plan (46.9 MiB).~~ Done: load by need (above), 13.7 MiB worst case in a match. The
    runtime still has to load groups from `index.json` (front end, loadout changes, calling cards on screen).
 6. ~~About 3 MiB of `weapon_*` textures land in `match`.~~ Fixed: every model referenced while a weapon loads (world

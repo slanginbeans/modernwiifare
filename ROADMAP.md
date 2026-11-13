@@ -71,6 +71,8 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
       The runtime must load groups from the index.*
 - [x] Minimap: the material in the map script's `setupMiniMap(...)` gets the `minimap` role (512, no mips, CMPR + I4).
       *`mp_rust`: 512 → 256 KiB, 29.6 → 38.2 dB; the map is 6.5 MiB.*
+- [x] Sky cube maps → six 2D faces (sky role, no mips) for a skybox; other cubes (reflections) skipped.
+      *`mp_rust`: 768 KiB sky; the map is 7.2 MiB. The renderer draws the skybox from the six faces.*
 - [ ] Materials → TEV recipe table; world → cell-chunked display lists + lightmaps;
       clipmap → Wii collision layout; spawns/entities; weapon defs (lossless); GSC IR.
 - [ ] `out/report.json` budget report. The build fails when over budget. Deterministic output.

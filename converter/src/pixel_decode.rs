@@ -154,6 +154,42 @@ pub fn decode_iwi(bytes: &[u8]) -> Result<(Image, &'static str), String> {
     Ok((decode(&parent, width, height, plane_format)?, "wavelet"))
 }
 
+/// Cube face suffixes in the order IWI (D3D) stores the faces.
+pub const CUBE_FACES: [&str; 6] = ["px", "nx", "py", "ny", "pz", "nz"];
+
+/// Decode the six top-mip faces of a cube-map IWI v8 (D3D order, see [`CUBE_FACES`]): the faces of the top mip are
+/// stored back to back and end the file's top-mip range (as IW4L's `decode_iwi_cubemap` reads them).
+pub fn decode_iwi_cube(bytes: &[u8]) -> Result<([Image; 6], &'static str), String> {
+    let info = iwi_info(bytes)?;
+    let fmt = info.format.map_err(str::to_owned)?;
+    if info.width == 0 || info.width != info.height {
+        return Err(format!(
+            "non-square cube map {}x{}",
+            info.width, info.height
+        ));
+    }
+    let (w, h) = (info.width as usize, info.height as usize);
+    let face_bytes = match fmt {
+        PixelFormat::Bgra8 | PixelFormat::Bgrx8 => w * h * 4,
+        PixelFormat::Rgb8 => w * h * 3,
+        PixelFormat::Bc1 => w.div_ceil(4) * h.div_ceil(4) * 8,
+        PixelFormat::Bc2 | PixelFormat::Bc3 => w.div_ceil(4) * h.div_ceil(4) * 16,
+        other => return Err(format!("unsupported cube map format {}", other.name())),
+    };
+    let end = info.top_mip.1;
+    let start = end
+        .checked_sub(6 * face_bytes)
+        .filter(|&s| s >= asset_iw4::IWI_V8_HEADER_LEN)
+        .ok_or("truncated cube map top mip")?;
+    let mut faces = Vec::with_capacity(6);
+    for i in 0..6 {
+        let face = &bytes[start + i * face_bytes..start + (i + 1) * face_bytes];
+        faces.push(decode(face, info.width, info.height, fmt)?);
+    }
+    let faces: [Image; 6] = faces.try_into().map_err(|_| "cube map faces")?;
+    Ok((faces, fmt.name()))
+}
+
 /// Decode the top mip of `data` (which starts at that mip) to RGBA8.
 pub fn decode(data: &[u8], width: u32, height: u32, format: PixelFormat) -> Result<Image, String> {
     if width == 0 || height == 0 {
@@ -270,6 +306,36 @@ mod tests {
             decode(&block, 2, 3, PixelFormat::Bc1).unwrap().pixels.len(),
             6
         );
+    }
+
+    #[test]
+    fn cube_faces_end_the_top_mip() {
+        // Synthetic 4x4 DXT1 cube IWI: header, then a 1x1-mip filler, then six faces; face i is a solid colour.
+        let colour = |i: u16| (0xF800u16 >> (i * 2)).max(1);
+        let mut f = Vec::from(*b"IWi\x08");
+        f.extend_from_slice(&[0, 0, 0, 0]);
+        f.push(11);
+        f.push(0);
+        for v in [4u16, 4, 1] {
+            f.extend_from_slice(&v.to_le_bytes());
+        }
+        let total = 32 + 8 + 6 * 8;
+        for v in [total, 32 + 8, 32 + 8, 32 + 8] {
+            f.extend_from_slice(&(v as u32).to_le_bytes());
+        }
+        f.extend_from_slice(&[0; 8]);
+        for i in 0..6u16 {
+            let c = colour(i).to_le_bytes();
+            f.extend_from_slice(&[c[0], c[1], c[0], c[1], 0, 0, 0, 0]);
+        }
+        let (faces, fmt) = decode_iwi_cube(&f).unwrap();
+        assert_eq!(fmt, "dxt1");
+        for (i, face) in faces.iter().enumerate() {
+            let expect = decode(&f[40 + i * 8..48 + i * 8], 4, 4, PixelFormat::Bc1).unwrap();
+            assert_eq!(face.pixels, expect.pixels, "face {i}");
+        }
+        assert_ne!(faces[0].pixels, faces[5].pixels);
+        assert!(decode_iwi_cube(&f[..60]).is_err());
     }
 
     #[test]
