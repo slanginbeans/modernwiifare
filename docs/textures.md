@@ -30,6 +30,7 @@ referenced it.
 | camera region "depth hack" | viewmodel |
 | sort key sky / skybox | sky |
 | used by the GfxWorld | world |
+| used by an XModel that a weapon lists as its gun or hand model | viewmodel |
 | used by an XModel whose skeleton has human bones (`j_spinelower`, `j_head`, ...) | character |
 | used by any other XModel | prop |
 | used by Fx / ImpactFx / FxWorld | effect |
@@ -43,8 +44,13 @@ referenced it.
 | alpha test (> 0, < 128, ≥ 128) | 1 bit with the full-size coverage kept at every mip level (below), so CMPR |
 | opaque or additive (ONE/ONE) | dropped, so opaque CMPR |
 
-In the retail x86 zones every world, model and effect is a top-level entry, so the crediting is exact there. In IW4x's
-x64 rewrites, models nest inside the world and would count as world.
+Models are credited through their own material handle arrays, wherever they load (top level, inside a weapon or the
+world). Weapons name their gun and hand models through IW4L's `remember_xmodel_name` / `xmodel_name_ptr` hooks, which
+the converter implements. World and effect users are credited by the top-level entry whose load referenced the
+material. MW2's viewmodel materials do not use the depth-hack camera region (the engine applies it when drawing), so the
+weapon link is what finds viewmodels.
+
+Sources also include wavelet-compressed IWIs (formats 6–10), decoded with IW4L's `asset_iw4` wavelet decoder.
 
 ## Alpha-tested (cut-out) textures
 Foliage, fences and gratings are mostly detail thinner than a texel once downscaled. Cutting the averaged alpha at a
@@ -96,10 +102,66 @@ card 64×128 → 128×256), which costs 544 KiB in all.
 
 Quality (PSNR against the resized source; cut-outs against the same cut): character mean 41.1 dB, prop 40.6, world 38.6.
 
+## `common_mp` (2026-11-13, retail x86 zone)
+The shared multiplayer zone: weapons, HUD, menus, effects. 1,624 GfxImages, all streamed from IWIs (2 of them wavelet),
+**0 failures**, about 15 s. 1,808 materials and 736 models walked, every link resolved; 292 models are weapon gun or hand
+models. 1,249 textures encoded into **46.9 MiB**. That is over half of the Wii's ~88 MB, so it cannot all be resident.
+
+| Role | Textures | Wii MiB | At cap 256 | At cap 128 |
+|---|---|---|---|---|
+| UI | 903 | 30.1 | 19.8 | 9.9 |
+| viewmodel | 126 | 14.0 | 4.3 | 1.2 |
+| effect | 134 | 1.5 | | |
+| prop | 74 | 0.8 | | |
+| world, sky | 10 | 0.3 | | |
+
+UI by kind (from names, for sizing only):
+
+| UI kind | Textures | Wii MiB |
+|---|---|---|
+| full-screen overlays (scopes, AC-130, gas mask, ...) | 44 | 8.2 |
+| calling cards and emblems (menus only) | 430 | 8.1 |
+| weapon icons | 94 | 5.5 |
+| perk and killstreak icons | 86 | 5.2 |
+| HUD, compass, other | 249 | 3.1 |
+
+815 of the 903 UI textures are RGB5A3 (27.9 MiB). The viewmodel figure covers every MP weapon; one player only ever
+holds a few of them at a time.
+
+## Load by need
+Every encoded texture gets a group saying when it has to be in memory, decided from what the zones say
+(`material_links::Group`, merged over all materials that use the image):
+
+| Group | Textures | Loaded |
+|---|---|---|
+| `match` | used by the world, by a model no weapon lists, by an effect, or by nothing in the zone (HUD drawn by script/code) | throughout a match |
+| `weapon` | used only by a weapon's gun, hand or world models, or as the weapon's HUD icons (kill, d-pad) | while the weapon is in someone's loadout |
+| `catalog` | material named in a string table: the zone's own and the shared ones in `code_post_gfx_mp` (calling cards, emblems, icon tables) | by name, when shown |
+| `menu` | used only by menus | in the front end |
+
+When materials disagree, `match` beats `weapon` beats `catalog` beats `menu`. `mwf-convert textures` reads
+`code_post_gfx_mp`'s string tables before converting a zone, and writes `index.json` beside the `.gxt` files: per
+texture its file, role, format, bytes, group and weapon names (converted data, git-ignored like the textures). The
+content-free `report.json` holds the bytes per group, per weapon, and "match + the 8 heaviest weapons" (4 players ×
+2 weapons, worst case).
+
+| `common_mp` group | Textures | MiB |
+|---|---|---|
+| **match** | 420 | **9.8** |
+| weapon | 212 | 17.5 (1,193 weapons: median 0.02, largest 3.4 each) |
+| catalog | 540 | 13.2 (calling cards and emblems 7.3, weapon and perk icons 5.8) |
+| menu | 77 | 6.4 |
+
+Worst case in a match: **match + 8 heaviest weapons = 13.7 MiB** (from 46.9 resident), plus the few calling cards on
+screen. `mp_rust`: match 6.4 MiB, catalog 0.35 MiB.
+
 ## Findings to act on
 1. ~~Cut-out foliage suffers at the prop size cap.~~ Fixed: cut-outs get at least 256 and keep their coverage (above).
 2. ~~Smooth alpha is over a third of the memory.~~ Fixed: split into CMPR + I4 (above). Needs the two-texture TEV
    recipe in the renderer.
 3. **The minimap is the largest texture** (UI, 512² RGB5A3, 512 KiB). It is real HUD art; consider 256² or I4/IA4.
-4. **Sky and effects are mostly absent from this zone.** The `mp_rust` sky is a cube map (skipped for now), and most
-   effect images live in `common_mp`. Converting the shared zones comes next.
+4. **Sky:** the `mp_rust` sky is a cube map, skipped for now.
+5. ~~`common_mp` needs a residency plan (46.9 MiB).~~ Done: load by need (above), 13.7 MiB worst case in a match. The
+   runtime still has to load groups from `index.json` (front end, loadout changes, calling cards on screen).
+6. **About 3 MiB of `weapon_*` textures still land in `match`.** Their models are not listed as any weapon's gun, hand
+   or world model (likely attachment models, which weapons reference another way). Follow the attachment links next.

@@ -17,5 +17,5 @@ Record **every** project we read, borrow from, or test against, with its license
 # Files copied or adapted from IW4L
 | Our file | Adapted from (IW4L `acc57a5`, Apache-2.0) | What |
 |---|---|---|
-| `converter/src/pixel_decode.rs` | `crates/asset_material/src/material_images/decode.rs` | D3D and IWI format tables, IWI v8 top-mip range, BCn decode through `bcdec_rs`. Carried because `asset_material` pulls in Bevy |
+| `converter/src/pixel_decode.rs` | `crates/asset_material/src/material_images/decode.rs` | D3D and IWI format tables, IWI v8 top-mip range, BCn decode through `bcdec_rs`, the wavelet IWI level loop (`decode_wavelet_iwi`, calling `asset_iw4`'s wavelet decoder). Carried because `asset_material` pulls in Bevy |
 | `converter/src/material_links.rs` | `crates/assets/src/lane/helpers.rs` (slot map scheme), `crates/render_material/src/state.rs` (blend bits) | Slot → asset links from `loaded`/`alias`; reading blend op and factors from GfxStateBits word 0. Written fresh, same approach |

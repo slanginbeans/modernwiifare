@@ -4,9 +4,12 @@
 //! `alias(ty, slot, target)` when the slot points at one loaded earlier. Mapping slots to assets (the same scheme as
 //! IW4L's `assets/src/lane/helpers.rs`) links each material texture slot to its image.
 //!
-//! A material is "used by" the top-level zone entry whose load referenced it: GfxWorld (world surfaces and skies),
-//! XModel (characters and props), Fx/ImpactFx/FxWorld (effects). In the retail x86 zones every one of those is a
-//! top-level entry, so this is exact there; in x64 rewrites models nest inside the world and count as world.
+//! Models: each XModel's own material handle array names its materials, wherever the model loads (top level, inside a
+//! weapon, inside the world). A model is a viewmodel when a weapon lists it as a gun or hand model, a character when
+//! its skeleton has human bones, otherwise a prop.
+//!
+//! Other users: a material is "used by" the top-level zone entry whose load referenced it: GfxWorld (world surfaces
+//! and skies), Fx/ImpactFx/FxWorld (effects). In the retail x86 zones those are top-level entries.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -14,7 +17,7 @@ use asset_iw4::material::{
     CAMERA_REGION_DEPTH_HACK, CAMERA_REGION_EMISSIVE, SORT_KEY_SKY, SORT_KEY_SKYBOX,
 };
 use asset_iw4::state_bits::{Gfxs0AlphaTest, alpha_test_from_state_bits};
-use fastfile_iw4::{AssetType, Ptr, ScriptStrings, ZoneStream};
+use fastfile_iw4::{AssetType, Ptr, ScriptStrings, ZonePtr, ZoneStream};
 use gx_texture::policy::Role;
 
 /// Material texture semantics that carry colour the Wii keeps (2D, function, colour map).
@@ -29,21 +32,27 @@ const HUMAN_BONES: [&str; 4] = ["j_spinelower", "j_spineupper", "j_head", "j_nec
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Owner {
     World,
-    /// Top-level XModel, by zone entry index.
+    /// An XModel, by index into `Links::models`.
     Model(usize),
     Effect,
+    /// A menu or menu list.
+    Menu,
+    /// A weapon (HUD icons such as kill and d-pad icons), by index into `Links::weapons`.
+    Weapon(usize),
     /// The material's own top-level entry (used by code, script or menus, not by anything in this zone).
     Standalone,
     Other,
 }
 
 impl Owner {
-    pub fn for_entry(ty: AssetType, index: usize) -> Owner {
+    /// Owner credited for material references made while loading a top-level entry. Models are credited through
+    /// their own material handles instead, so an XModel entry counts as `Other` here.
+    pub fn for_entry(ty: AssetType) -> Owner {
         match ty {
             AssetType::GfxWorld => Owner::World,
-            AssetType::XModel => Owner::Model(index),
             AssetType::Fx | AssetType::ImpactFx | AssetType::FxWorld => Owner::Effect,
             AssetType::Material => Owner::Standalone,
+            AssetType::Menu | AssetType::MenuList => Owner::Menu,
             _ => Owner::Other,
         }
     }
@@ -62,6 +71,7 @@ pub enum AlphaUse {
 
 #[derive(Clone, Debug)]
 pub struct MaterialInfo {
+    pub name: Option<String>,
     pub camera_region: u8,
     pub sort_key: u8,
     pub techset: Option<String>,
@@ -71,6 +81,18 @@ pub struct MaterialInfo {
     pub users: BTreeSet<Owner>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ModelInfo {
+    pub name: String,
+    pub human: bool,
+    /// A weapon lists it as a gun or hand (first-person) model.
+    pub viewmodel: bool,
+    /// The weapons (indices into `Links::weapons`) that list it.
+    pub weapons: BTreeSet<usize>,
+    /// Indices into `Links::material_info`.
+    pub materials: Vec<usize>,
+}
+
 /// Everything a zone says about one image's use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageUsage {
@@ -78,6 +100,33 @@ pub struct ImageUsage {
     pub alpha: AlphaUse,
     /// How the role was decided, for the report.
     pub source: &'static str,
+    /// When the texture has to be in memory.
+    pub group: Group,
+}
+
+/// When a texture has to be in memory (load by need).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Group {
+    /// Throughout a match: world, props, characters, effects, HUD.
+    Match,
+    /// While one of these weapons (indices into `Links::weapons`) is in someone's loadout: first-person models and
+    /// the weapon's HUD icons.
+    Weapons(BTreeSet<usize>),
+    /// Looked up by name from a string table (calling cards, emblems, icon tables) when shown.
+    Catalog,
+    /// Front-end menus only.
+    Menu,
+}
+
+impl Group {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Group::Match => "match",
+            Group::Weapons(_) => "weapon",
+            Group::Catalog => "catalog",
+            Group::Menu => "menu",
+        }
+    }
 }
 
 /// One kind of asset's slot → index links.
@@ -122,11 +171,23 @@ pub struct Links {
     techsets: SlotMap,
     techset_names: Vec<Option<String>>,
     pub material_info: Vec<MaterialInfo>,
-    /// Zone entry index of each top-level XModel → has a human skeleton.
-    pub human_models: HashMap<usize, bool>,
+    xmodels: SlotMap,
+    pub models: Vec<ModelInfo>,
+    /// Model name pointers by slot, for IW4L's weapon loader.
+    xmodel_names: HashMap<Ptr, Ptr>,
+    /// Gun and hand model names → the weapons that list them.
+    viewmodel_names: HashMap<String, BTreeSet<usize>>,
+    /// Third-person (world) model names → the weapons that list them.
+    weapon_world_names: HashMap<String, BTreeSet<usize>>,
+    /// Weapon names, in load order (`Owner::Weapon` indexes this).
+    pub weapons: Vec<String>,
+    /// Every string-table cell in the zone (material names found here are looked up by name).
+    table_strings: std::collections::HashSet<String>,
     /// Image index assigned to each loaded image, in load order (filled by the caller through `image_loaded`).
     image_count: usize,
     pub unresolved_texture_links: usize,
+    /// Model material handles and weapon model slots that did not resolve.
+    pub unresolved_model_links: usize,
 }
 
 impl Links {
@@ -175,8 +236,13 @@ impl Links {
             .technique_set
             .and_then(|slot| self.techsets.resolve(slot))
             .and_then(|i| self.techset_names.get(i).cloned().flatten());
+        let name = g
+            .name
+            .and_then(|p| s.cstr(s.resolve_alias(p)).ok())
+            .map(str::to_owned);
         let index = self.material_info.len();
         self.material_info.push(MaterialInfo {
+            name,
             camera_region: g.camera_region,
             sort_key: g.sort_key,
             techset,
@@ -188,23 +254,113 @@ impl Links {
         self.use_material(index);
     }
 
-    fn xmodel_loaded(&mut self, s: &ZoneStream<'_>) {
-        let Some(Owner::Model(entry)) = self.owner else {
+    fn xmodel_loaded(&mut self, s: &ZoneStream<'_>, slot: Ptr, insert_slot: Option<Ptr>) {
+        let Some(g) = s.xmodel() else {
             return;
         };
-        let (Some(g), Some(strings)) = (s.xmodel(), self.strings) else {
-            return;
-        };
-        let human = g.bone_names.is_some_and(|names| {
-            (0..g.num_bones).any(|i| {
-                s.u16_at(names, i * 2)
-                    .ok()
-                    .and_then(|id| strings.get(s, id))
-                    .is_some_and(|bone| HUMAN_BONES.contains(&bone))
+        let human = self.strings.is_some_and(|strings| {
+            g.bone_names.is_some_and(|names| {
+                (0..g.num_bones).any(|i| {
+                    s.u16_at(names, i * 2)
+                        .ok()
+                        .and_then(|id| strings.get(s, id))
+                        .is_some_and(|bone| HUMAN_BONES.contains(&bone))
+                })
             })
         });
-        // Nested models finish first; the top-level model is the last one seen.
-        self.human_models.insert(entry, human);
+        let mut materials = Vec::new();
+        if let Some(handles) = g.material_handles {
+            for i in 0..g.material_handle_count {
+                match self.materials.resolve(handles.at(i * s.pointer_bytes())) {
+                    Some(m) => materials.push(m),
+                    None => self.unresolved_model_links += 1,
+                }
+            }
+        }
+        let name = g
+            .name
+            .and_then(|p| s.cstr(s.resolve_alias(p)).ok())
+            .unwrap_or_default()
+            .to_owned();
+        let index = self.models.len();
+        self.models.push(ModelInfo {
+            name,
+            human,
+            viewmodel: false,
+            weapons: BTreeSet::new(),
+            materials,
+        });
+        self.xmodels.loaded(slot, insert_slot, index);
+    }
+
+    /// A weapon's gun and hand models are what the player sees in first person. IW4L reports them as model names
+    /// (through the `remember_xmodel_name` / `xmodel_name_ptr` hooks), so they are matched to models by name.
+    fn weapon_loaded(&mut self, s: &ZoneStream<'_>) {
+        let Some(w) = s.weapon() else {
+            return;
+        };
+        let text = |p: Ptr| s.cstr(s.resolve_alias(p)).ok().map(str::to_owned);
+        // The driver set `Owner::Weapon(n)` for this entry, n = the weapon count before it.
+        let index = self.weapons.len();
+        self.weapons.push(w.name.and_then(text).unwrap_or_default());
+        for name in w
+            .gun_xmodel_names
+            .into_iter()
+            .chain([w.hand_xmodel_name])
+            .flatten()
+        {
+            if let Some(n) = text(name) {
+                self.viewmodel_names.entry(n).or_default().insert(index);
+            }
+        }
+        for name in w.world_model_names.into_iter().flatten() {
+            if let Some(n) = text(name) {
+                self.weapon_world_names.entry(n).or_default().insert(index);
+            }
+        }
+    }
+
+    /// Add string-table cells from another zone (the shared tables in `code_post_gfx_mp`).
+    pub fn add_table_strings(&mut self, strings: impl IntoIterator<Item = String>) {
+        self.table_strings.extend(strings);
+    }
+
+    /// The string-table cells seen so far (lower case).
+    pub fn take_table_strings(&mut self) -> std::collections::HashSet<String> {
+        std::mem::take(&mut self.table_strings)
+    }
+
+    /// Hook for `AssetLinkSink::capture_string_table`: remember every cell, so materials named in a table are known.
+    pub fn string_table(&mut self, s: &ZoneStream<'_>, header: Ptr) {
+        let pb = s.pointer_bytes();
+        let columns = s.i32_at(header, pb).unwrap_or(0).max(0) as usize;
+        let rows = s.i32_at(header, pb + 4).unwrap_or(0).max(0) as usize;
+        // StringTableCell is { const char *string; int hash } (x86: 8 bytes, x64: 16).
+        let cell_size = if pb == 4 { 8 } else { 16 };
+        let Ok(ZonePtr::Offset(arr)) = s.ptr_at(header, pb + 8) else {
+            return;
+        };
+        let arr = s.resolve_alias(arr);
+        for i in 0..columns.saturating_mul(rows) {
+            if let Ok(ZonePtr::Offset(p)) = s.ptr_at(arr, i * cell_size)
+                && let Ok(text) = s.cstr(s.resolve_alias(p))
+                && !text.is_empty()
+            {
+                self.table_strings.insert(text.to_ascii_lowercase());
+            }
+        }
+    }
+
+    /// Hook for `AssetLinkSink::remember_xmodel_name`.
+    pub fn remember_xmodel_name(&mut self, slot: Ptr, insert_slot: Option<Ptr>, name: Ptr) {
+        for s in std::iter::once(slot).chain(insert_slot) {
+            self.xmodel_names.insert(s, name);
+        }
+    }
+
+    /// Hook for `AssetLinkSink::xmodel_name_ptr`.
+    pub fn xmodel_name_ptr(&self, slot: Ptr) -> Option<Ptr> {
+        self.xmodel_names.get(&slot).copied()
     }
 
     /// Hook for `AssetLinkSink::loaded` (images are recorded by the caller through `image_loaded`).
@@ -227,7 +383,8 @@ impl Links {
                 self.techset_names.push(name);
                 self.techsets.loaded(slot, insert_slot, i);
             }
-            AssetType::XModel => self.xmodel_loaded(s),
+            AssetType::XModel => self.xmodel_loaded(s, slot, insert_slot),
+            AssetType::Weapon => self.weapon_loaded(s),
             _ => {}
         }
     }
@@ -237,6 +394,7 @@ impl Links {
         match ty {
             AssetType::Image => self.images.alias(slot, target),
             AssetType::TechniqueSet => self.techsets.alias(slot, target),
+            AssetType::XModel => self.xmodels.alias(slot, target),
             AssetType::Material => {
                 self.materials.alias(slot, target);
                 if let Some(i) = self.materials.resolve(slot) {
@@ -250,6 +408,30 @@ impl Links {
     /// Per image (by load index): its usage, or `None` when no material in the zone uses it as colour.
     /// The second value says whether any material uses the image at all (as colour or not).
     pub fn image_usage(&mut self) -> Vec<(Option<ImageUsage>, bool)> {
+        for model in &mut self.models {
+            if let Some(w) = self.viewmodel_names.get(&model.name) {
+                model.viewmodel = true;
+                model.weapons.extend(w.iter().copied());
+            }
+            // Third-person weapon models only appear while someone carries the weapon.
+            if let Some(w) = self.weapon_world_names.get(&model.name) {
+                model.weapons.extend(w.iter().copied());
+            }
+        }
+        let known: std::collections::HashSet<&str> =
+            self.models.iter().map(|m| m.name.as_str()).collect();
+        self.unresolved_model_links += self
+            .viewmodel_names
+            .keys()
+            .filter(|n| !known.contains(n.as_str()))
+            .count();
+        for (i, model) in self.models.iter().enumerate() {
+            for &m in &model.materials {
+                if let Some(info) = self.material_info.get_mut(m) {
+                    info.users.insert(Owner::Model(i));
+                }
+            }
+        }
         let mut out: Vec<(Option<ImageUsage>, bool)> = vec![(None, false); self.image_count];
         let mut unresolved = 0;
         for m in &self.material_info {
@@ -263,11 +445,12 @@ impl Links {
                 if !COLOUR_SEMANTICS.contains(&semantic) {
                     continue;
                 }
-                let (role, source) = material_role(m, &self.human_models);
+                let (role, source) = material_role(m, &self.models);
                 let usage = ImageUsage {
                     role,
                     alpha: m.alpha,
                     source,
+                    group: material_group(m, &self.models, &self.table_strings),
                 };
                 entry.0 = Some(match entry.0.take() {
                     None => usage,
@@ -303,7 +486,7 @@ pub fn alpha_use(rows: &[[u32; 2]]) -> AlphaUse {
 }
 
 /// Role of a material from its users, camera region and sort key.
-fn material_role(m: &MaterialInfo, human: &HashMap<usize, bool>) -> (Role, &'static str) {
+fn material_role(m: &MaterialInfo, models: &[ModelInfo]) -> (Role, &'static str) {
     if m.camera_region == CAMERA_REGION_DEPTH_HACK {
         return (Role::Viewmodel, "material: viewmodel (depth hack)");
     }
@@ -314,12 +497,13 @@ fn material_role(m: &MaterialInfo, human: &HashMap<usize, bool>) -> (Role, &'sta
     for owner in &m.users {
         let pick = match owner {
             Owner::World => (Role::World, "material: world surface"),
-            Owner::Model(entry) if human.get(entry) == Some(&true) => {
-                (Role::Character, "material: human skeleton model")
-            }
-            Owner::Model(_) => (Role::Prop, "material: model"),
+            Owner::Model(i) => match models.get(*i) {
+                Some(m) if m.viewmodel => (Role::Viewmodel, "material: weapon gun/hand model"),
+                Some(m) if m.human => (Role::Character, "material: human skeleton model"),
+                _ => (Role::Prop, "material: model"),
+            },
             Owner::Effect => (Role::Effect, "material: effect"),
-            Owner::Standalone | Owner::Other => continue,
+            Owner::Menu | Owner::Weapon(_) | Owner::Standalone | Owner::Other => continue,
         };
         best = Some(match best {
             Some(b) if rank(b.0) >= rank(pick.0) => b,
@@ -337,6 +521,61 @@ fn material_role(m: &MaterialInfo, human: &HashMap<usize, bool>) -> (Role, &'sta
             (Role::World, "material: no user in zone")
         }
     })
+}
+
+/// When a material's textures have to be in memory: anything a match always draws (world, non-weapon models,
+/// effects) is `Match`; first-person models and weapon HUD icons go with their weapons; then materials named in a
+/// string table (looked up by name), then menu-only materials. Anything else (HUD drawn by script or code) is `Match`.
+fn material_group(
+    m: &MaterialInfo,
+    models: &[ModelInfo],
+    table_strings: &std::collections::HashSet<String>,
+) -> Group {
+    let mut weapons = BTreeSet::new();
+    let mut menu = false;
+    for owner in &m.users {
+        match owner {
+            Owner::World | Owner::Effect => return Group::Match,
+            Owner::Model(i) => match models.get(*i) {
+                Some(model) if !model.weapons.is_empty() => {
+                    weapons.extend(model.weapons.iter().copied())
+                }
+                _ => return Group::Match,
+            },
+            Owner::Weapon(w) => {
+                weapons.insert(*w);
+            }
+            Owner::Menu => menu = true,
+            Owner::Standalone | Owner::Other => {}
+        }
+    }
+    let in_table = m
+        .name
+        .as_ref()
+        .is_some_and(|n| table_strings.contains(&n.to_ascii_lowercase()));
+    if !weapons.is_empty() {
+        Group::Weapons(weapons)
+    } else if in_table {
+        Group::Catalog
+    } else if menu {
+        Group::Menu
+    } else {
+        Group::Match
+    }
+}
+
+/// Combine two materials' groups for one image: needed at all times beats per weapon beats by name beats menus.
+fn merge_group(a: Group, b: Group) -> Group {
+    match (a, b) {
+        (Group::Match, _) | (_, Group::Match) => Group::Match,
+        (Group::Weapons(mut x), Group::Weapons(y)) => {
+            x.extend(y);
+            Group::Weapons(x)
+        }
+        (w @ Group::Weapons(_), _) | (_, w @ Group::Weapons(_)) => w,
+        (Group::Catalog, _) | (_, Group::Catalog) => Group::Catalog,
+        _ => Group::Menu,
+    }
 }
 
 /// Preference when one image has several roles: the larger size cap, then this fixed order.
@@ -375,6 +614,7 @@ fn merge(a: ImageUsage, b: ImageUsage) -> ImageUsage {
         role,
         alpha,
         source,
+        group: merge_group(a.group, b.group),
     }
 }
 
@@ -444,11 +684,13 @@ mod tests {
             role: Role::World,
             alpha: AlphaUse::Unused,
             source: "w",
+            group: Group::Match,
         };
         let prop = ImageUsage {
             role: Role::Prop,
             alpha: AlphaUse::Cutout { threshold: 128 },
             source: "p",
+            group: Group::Match,
         };
         let m = merge(prop.clone(), world.clone());
         assert_eq!(
@@ -460,6 +702,7 @@ mod tests {
 
     fn material(techset: &str, camera_region: u8, users: &[Owner]) -> MaterialInfo {
         MaterialInfo {
+            name: None,
             camera_region,
             sort_key: 0,
             techset: Some(techset.into()),
@@ -471,11 +714,30 @@ mod tests {
 
     #[test]
     fn roles_from_users_and_techniques() {
-        let human = HashMap::from([(1, true), (2, false)]);
-        let role = |m: &MaterialInfo| material_role(m, &human).0;
+        let model = |human, viewmodel| ModelInfo {
+            name: String::new(),
+            human,
+            viewmodel,
+            weapons: BTreeSet::new(),
+            materials: Vec::new(),
+        };
+        // 0: prop, 1: human, 2: prop, 3: weapon viewmodel (hands have human bones too; viewmodel wins).
+        let models = [
+            model(false, false),
+            model(true, false),
+            model(false, false),
+            model(true, true),
+        ];
+        let role = |m: &MaterialInfo| material_role(m, &models).0;
         assert_eq!(role(&material("w", 0, &[Owner::World])), Role::World);
         assert_eq!(role(&material("m", 0, &[Owner::Model(1)])), Role::Character);
         assert_eq!(role(&material("m", 0, &[Owner::Model(2)])), Role::Prop);
+        assert_eq!(role(&material("m", 0, &[Owner::Model(3)])), Role::Viewmodel);
+        // A texture shared by a viewmodel and its third-person prop keeps the viewmodel's size.
+        assert_eq!(
+            role(&material("m", 0, &[Owner::Model(0), Owner::Model(3)])),
+            Role::Viewmodel
+        );
         assert_eq!(
             role(&material("m", 0, &[Owner::Model(2), Owner::World])),
             Role::World
@@ -493,6 +755,59 @@ mod tests {
         assert_eq!(
             role(&material("wc_l", 0, &[Owner::Standalone])),
             Role::World
+        );
+    }
+
+    #[test]
+    fn groups_from_users_and_tables() {
+        let viewmodel = ModelInfo {
+            name: "vm".into(),
+            human: false,
+            viewmodel: true,
+            weapons: BTreeSet::from([4, 7]),
+            materials: Vec::new(),
+        };
+        let prop = ModelInfo::default();
+        let models = [viewmodel, prop];
+        let tables = std::collections::HashSet::from(["callingcard_test".to_owned()]);
+        let group = |name: Option<&str>, users: &[Owner]| {
+            let mut m = material("2d", 4, users);
+            m.name = name.map(str::to_owned);
+            material_group(&m, &models, &tables)
+        };
+        assert_eq!(group(None, &[Owner::World]), Group::Match);
+        assert_eq!(group(None, &[Owner::Model(1)]), Group::Match);
+        assert_eq!(
+            group(None, &[Owner::Model(0)]),
+            Group::Weapons(BTreeSet::from([4, 7]))
+        );
+        assert_eq!(
+            group(None, &[Owner::Weapon(2), Owner::Menu]),
+            Group::Weapons(BTreeSet::from([2]))
+        );
+        // Names are matched case-insensitively against string-table cells.
+        assert_eq!(
+            group(Some("CallingCard_Test"), &[Owner::Standalone, Owner::Menu]),
+            Group::Catalog
+        );
+        assert_eq!(
+            group(Some("menu_bg"), &[Owner::Standalone, Owner::Menu]),
+            Group::Menu
+        );
+        // Script/code HUD: no user in the zone, not in a table.
+        assert_eq!(group(Some("hud_thing"), &[Owner::Standalone]), Group::Match);
+        // A texture shared by a world material and a weapon stays resident.
+        assert_eq!(
+            merge_group(Group::Weapons(BTreeSet::from([1])), Group::Match),
+            Group::Match
+        );
+        assert_eq!(merge_group(Group::Menu, Group::Catalog), Group::Catalog);
+        assert_eq!(
+            merge_group(
+                Group::Weapons(BTreeSet::from([1])),
+                Group::Weapons(BTreeSet::from([3]))
+            ),
+            Group::Weapons(BTreeSet::from([1, 3]))
         );
     }
 

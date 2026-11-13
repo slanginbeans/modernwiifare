@@ -29,7 +29,8 @@ The repository holds code, tools and docs only. License: Apache-2.0.
   `texture <png> --role <role>`: one PNG to a Wii `.gxt` + `_preview.png` (output under `out/`).
   `textures <game folder> [--map <zone>]`: every GfxImage of a map zone (in-zone or IWI) to `.gxt` under
   `out/textures/<zone>/` with a content-free `report.json`. Role and alpha come from the materials that use each image
-  (`material_links.rs`); the name is only a fallback. See `docs/textures.md`.
+  (`material_links.rs`); the name is only a fallback. Each texture also gets a load-by-need group (match / weapon /
+  catalog / menu), listed with its file in `index.json` (git-ignored; it names assets). See `docs/textures.md`.
 - `wii/`: Wii runtime (stable Rust, no_std + alloc, ADR 0006), builds `.dol`s with `make -C wii`.
   - `platform/`: the C shim over libogc (`shim.h` is the whole API Rust sees; keep `spikes/src/ffi.rs` in sync).
   - `syslink/`: system-link protocol (no_std, host-tested). `spikes/`: Phase 0 spike programs.

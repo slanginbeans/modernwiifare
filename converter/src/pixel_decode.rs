@@ -99,6 +99,61 @@ pub fn iwi_info(bytes: &[u8]) -> Result<IwiInfo, String> {
     })
 }
 
+/// Decode an IWI v8 file's top mip to RGBA8: block/plain formats directly, wavelet formats (6–10) through IW4L's
+/// `asset_iw4` wavelet decoder (levels decode smallest first, each from its parent; the last is full size).
+/// Returns the image and a label of the source format.
+pub fn decode_iwi(bytes: &[u8]) -> Result<(Image, &'static str), String> {
+    let header = asset_iw4::IwiHeader::parse(bytes).map_err(|e| format!("IWI header: {e:?}"))?;
+    let wavelet = asset_iw4::img_format_info(header.format)
+        .is_some_and(|i| i.kind == asset_iw4::ImgFormatKind::Wavelet);
+    if !wavelet {
+        let info = iwi_info(bytes)?;
+        let fmt = info.format.map_err(str::to_owned)?;
+        let (start, end) = info.top_mip;
+        return Ok((
+            decode(&bytes[start..end], info.width, info.height, fmt)?,
+            fmt.name(),
+        ));
+    }
+    let err = |e: asset_iw4::WaveletError| format!("wavelet IWI: {e:?}");
+    let format = asset_iw4::wavelet_check_header(&header).map_err(err)?;
+    let channels = asset_iw4::img_format_info(format)
+        .ok_or("wavelet IWI: unknown format")?
+        .channels;
+    let stride = asset_iw4::wavelet_pixel_stride(channels);
+    let plane_format = match format {
+        6 => PixelFormat::Bgra8,
+        7 => PixelFormat::Bgrx8,
+        8 => PixelFormat::La8,
+        9 => PixelFormat::L8,
+        _ => PixelFormat::A8,
+    };
+    let payload = bytes
+        .get(asset_iw4::IWI_V8_HEADER_LEN..)
+        .ok_or("truncated wavelet IWI")?;
+    let mut bits = asset_iw4::WaveletBits::new(payload);
+    let (width, height) = (u32::from(header.width), u32::from(header.height));
+    let mut parent = Vec::new();
+    for level in (0..=asset_iw4::wavelet_top_level(&header)).rev() {
+        let w = asset_iw4::wavelet_level_size(width, level);
+        let h = asset_iw4::wavelet_level_size(height, level);
+        let mut plane = vec![0u8; w as usize * h as usize * stride];
+        asset_iw4::wavelet_decompress_level(
+            &mut bits,
+            &mut parent,
+            &mut plane,
+            w,
+            h,
+            channels,
+            stride,
+        )
+        .map_err(err)?;
+        parent = plane;
+    }
+    bits.check_landing().map_err(err)?;
+    Ok((decode(&parent, width, height, plane_format)?, "wavelet"))
+}
+
 /// Decode the top mip of `data` (which starts at that mip) to RGBA8.
 pub fn decode(data: &[u8], width: u32, height: u32, format: PixelFormat) -> Result<Image, String> {
     if width == 0 || height == 0 {

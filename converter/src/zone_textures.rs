@@ -11,7 +11,7 @@
 //! The `.gxt` files are converted game data and stay under the git-ignored `out/`. The JSON report is content-free
 //! (counts, bytes, quality; no names), like `inventory` and `map`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use asset_transport::{IwdIndex, ZoneMemory, fnv1a64};
@@ -25,14 +25,43 @@ use gx_texture::policy::{Options, Role, convert_with};
 use serde::Serialize;
 
 use crate::inventory::IW4L_REV;
-use crate::material_links::{AlphaUse, ImageUsage, Links, Owner, apply_alpha};
-use crate::pixel_decode::{self, PixelFormat};
+use crate::material_links::{AlphaUse, Group, ImageUsage, Links, Owner, apply_alpha};
+use crate::pixel_decode;
 use crate::texture::{psnr, texture_format_name};
 
 /// Report format version. Bump when fields change meaning.
 /// v2: roles and alpha from materials (`role_sources`, `alpha_uses`, `name_role_changes`).
 /// v3: alpha-tested textures keep their coverage (`cutouts`); their PSNR is measured against the same cut.
-pub const REPORT_VERSION: u32 = 3;
+/// v4: models credited through their material handles; weapon gun/hand models are viewmodels (`models`, `viewmodels`).
+/// v5: load-by-need groups (`groups`): match, per weapon, catalog (by name from string tables), menu.
+pub const REPORT_VERSION: u32 = 5;
+
+/// When textures have to be in memory, in bytes (see `material_links::Group`).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct GroupStats {
+    /// Group label -> (textures, Wii bytes). Weapon textures shared by several weapons count once.
+    pub totals: BTreeMap<&'static str, (usize, u64)>,
+    /// Weapons with first-person textures or HUD icons of their own.
+    pub weapons: usize,
+    /// Bytes per weapon (a texture counts for every weapon that uses it): median and largest.
+    pub weapon_median_bytes: u64,
+    pub weapon_max_bytes: u64,
+    /// `match` plus the 8 weapons with the most bytes (4 players x 2 weapons, worst case), shared textures once.
+    pub match_plus_worst_8_weapons_bytes: u64,
+}
+
+/// One converted texture, for the runtime to load by need. Holds names, so it stays under `out/` like the `.gxt`s.
+#[derive(Clone, Debug, Serialize)]
+pub struct IndexEntry {
+    pub file: String,
+    pub role: &'static str,
+    pub format: &'static str,
+    pub bytes: u64,
+    pub group: &'static str,
+    /// Weapon names, for the `weapon` group.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub weapons: Vec<String>,
+}
 
 /// Alpha-tested textures: how well the 1-bit alpha keeps the full-size coverage at level 0.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -130,6 +159,23 @@ impl AssetLinkSink for Collector {
         self.links.alias(ty, slot, target);
         Ok(())
     }
+
+    fn remember_xmodel_name(&mut self, slot: Ptr, insert_slot: Option<Ptr>, name: Ptr) {
+        self.links.remember_xmodel_name(slot, insert_slot, name);
+    }
+
+    fn xmodel_name_ptr(&self, slot: Ptr) -> Option<Ptr> {
+        self.links.xmodel_name_ptr(slot)
+    }
+
+    fn capture_string_table(
+        &mut self,
+        s: &ZoneStream<'_>,
+        header: Ptr,
+    ) -> fastfile_iw4::Result<()> {
+        self.links.string_table(s, header);
+        Ok(())
+    }
 }
 
 struct Driver(Collector);
@@ -142,11 +188,15 @@ impl AssetSink for Driver {
     fn load_asset(
         &mut self,
         s: &mut ZoneStream<'_>,
-        index: usize,
+        _index: usize,
         ty: AssetType,
         slot: Ptr,
     ) -> fastfile_iw4::Result<()> {
-        self.0.links.owner = Some(Owner::for_entry(ty, index));
+        self.0.links.owner = Some(match ty {
+            // Weapons get their load-order index, which `Links::weapon_loaded` assigns the same way.
+            AssetType::Weapon => Owner::Weapon(self.0.links.weapons.len()),
+            _ => Owner::for_entry(ty),
+        });
         load_asset_at_observed(s, ty, slot, &mut self.0).map(|_| ())
     }
 }
@@ -156,15 +206,37 @@ impl AssetSink for Driver {
 pub struct LinkStats {
     pub materials: usize,
     pub unresolved_texture_links: usize,
+    pub models: usize,
+    pub viewmodels: usize,
+    pub unresolved_model_links: usize,
+    /// Weapon names in load order (`Group::Weapons` indexes them).
+    pub weapons: Vec<String>,
 }
 
-/// Every GfxImage loaded by an inflated zone (top level and nested), in load order, with its material usage.
-pub fn collect(image: &[u8]) -> Result<(Vec<ZoneImage>, LinkStats), String> {
+/// Walk a zone and keep its links (shared by `collect` and `table_strings`).
+fn walk(image: &[u8], tables: &HashSet<String>) -> Result<Collector, String> {
     let header = parse_zone_header(image).map_err(|e| format!("{e:?}"))?;
     let mut memory = ZoneMemory::for_header(&header);
     let mut stream = memory.stream(image).map_err(|e| format!("{e:?}"))?;
     let mut driver = Driver(Collector::default());
+    driver.0.links.add_table_strings(tables.iter().cloned());
     load_zone(&mut stream, &mut driver).map_err(|e| format!("{e:?}"))?;
+    Ok(driver.0)
+}
+
+/// Every string-table cell of a zone (lower case). Used to know, while converting another zone, which materials the
+/// shared tables (calling cards, emblems, icon tables in `code_post_gfx_mp`) look up by name.
+pub fn table_strings(image: &[u8]) -> Result<HashSet<String>, String> {
+    Ok(walk(image, &HashSet::new())?.links.take_table_strings())
+}
+
+/// Every GfxImage loaded by an inflated zone (top level and nested), in load order, with its material usage.
+/// `tables`: string-table cells from other zones, on top of the zone's own.
+pub fn collect(
+    image: &[u8],
+    tables: &HashSet<String>,
+) -> Result<(Vec<ZoneImage>, LinkStats), String> {
+    let driver = Driver(walk(image, tables)?);
     let Collector {
         mut images,
         mut links,
@@ -176,6 +248,10 @@ pub fn collect(image: &[u8]) -> Result<(Vec<ZoneImage>, LinkStats), String> {
     let stats = LinkStats {
         materials: links.material_info.len(),
         unresolved_texture_links: links.unresolved_texture_links,
+        models: links.models.len(),
+        viewmodels: links.models.iter().filter(|m| m.viewmodel).count(),
+        unresolved_model_links: links.unresolved_model_links,
+        weapons: std::mem::take(&mut links.weapons),
     };
     Ok((images, stats))
 }
@@ -290,6 +366,11 @@ pub struct TexturesReport {
     /// Materials walked, and material texture slots that did not resolve to an image.
     pub materials: usize,
     pub unresolved_texture_links: usize,
+    /// Models walked, how many are weapon gun/hand models, and model links (material handles, weapon model slots)
+    /// that did not resolve.
+    pub models: usize,
+    pub viewmodels: usize,
+    pub unresolved_model_links: usize,
     /// Encoded textures by where their role came from.
     pub role_sources: BTreeMap<&'static str, usize>,
     /// Encoded textures by how their materials use alpha ("none" when no material uses them).
@@ -297,6 +378,7 @@ pub struct TexturesReport {
     /// Encoded textures whose material role differs from the old name guess: (name role, material role) -> count.
     pub name_role_changes: BTreeMap<String, usize>,
     pub cutouts: CutoutStats,
+    pub groups: GroupStats,
 }
 
 fn alpha_label(a: Option<AlphaUse>) -> &'static str {
@@ -308,15 +390,15 @@ fn alpha_label(a: Option<AlphaUse>) -> &'static str {
     }
 }
 
-/// Pixels of one image: from the zone, or from its IWI.
+/// Pixels of one image (from the zone, or from its IWI), a label of the source format, and a hash of the source.
 fn source_pixels(
     img: &ZoneImage,
     iwds: Option<&IwdIndex>,
-) -> Result<(Image, PixelFormat, u64), String> {
+) -> Result<(Image, &'static str, u64), String> {
     if !img.payload.is_empty() {
         let fmt = pixel_decode::d3d_format(img.d3d_format)?;
         let pixels = pixel_decode::decode(&img.payload, img.width, img.height, fmt)?;
-        return Ok((pixels, fmt, fnv1a64(&img.payload)));
+        return Ok((pixels, fmt.name(), fnv1a64(&img.payload)));
     }
     let iwds = iwds.ok_or("streamed image, but no main/*.iwd index")?;
     let file = iwds
@@ -324,11 +406,8 @@ fn source_pixels(
         .and_then(<[_]>::last)
         .ok_or("streamed image: IWI not found in main/*.iwd")?;
     let bytes = file.read()?;
-    let info = pixel_decode::iwi_info(&bytes)?;
-    let fmt = info.format.map_err(str::to_owned)?;
-    let (start, end) = info.top_mip;
-    let pixels = pixel_decode::decode(&bytes[start..end], info.width, info.height, fmt)?;
-    Ok((pixels, fmt, fnv1a64(&bytes)))
+    let (pixels, label) = pixel_decode::decode_iwi(&bytes)?;
+    Ok((pixels, label, fnv1a64(&bytes)))
 }
 
 /// Strip anything that is not safe in a file name.
@@ -354,8 +433,9 @@ pub fn convert_zone(
     iwds: Option<&IwdIndex>,
     out_dir: &Path,
     verbose: bool,
-) -> Result<TexturesReport, String> {
-    let (images, stats) = collect(zone_image)?;
+    tables: &HashSet<String>,
+) -> Result<(TexturesReport, Vec<IndexEntry>), String> {
+    let (images, stats) = collect(zone_image, tables)?;
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
 
     let mut report = TexturesReport {
@@ -379,12 +459,19 @@ pub fn convert_zone(
         category_counts: BTreeMap::new(),
         materials: stats.materials,
         unresolved_texture_links: stats.unresolved_texture_links,
+        models: stats.models,
+        viewmodels: stats.viewmodels,
+        unresolved_model_links: stats.unresolved_model_links,
         role_sources: BTreeMap::new(),
         alpha_uses: BTreeMap::new(),
         name_role_changes: BTreeMap::new(),
         cutouts: CutoutStats::default(),
+        groups: GroupStats::default(),
     };
     let mut psnr_sums: HashMap<&'static str, (f64, usize)> = HashMap::new();
+    let mut index: Vec<IndexEntry> = Vec::new();
+    // (weapons that need it, bytes) per weapon-group texture.
+    let mut weapon_textures: Vec<(BTreeSet<usize>, u64)> = Vec::new();
     let mut seen: HashMap<(u64, &'static str, Option<AlphaUse>), ()> = HashMap::new();
     let mut used_stems: HashMap<String, usize> = HashMap::new();
 
@@ -402,6 +489,9 @@ pub fn convert_zone(
         let (mut pixels, src_fmt, hash) = match source_pixels(img, iwds) {
             Ok(x) => x,
             Err(e) => {
+                if verbose {
+                    println!("  FAILED {e}: {}", img.name);
+                }
                 *report.failed.entry(e).or_default() += 1;
                 continue;
             }
@@ -419,7 +509,7 @@ pub fn convert_zone(
             }
             None => None,
         };
-        *report.by_source_format.entry(src_fmt.name()).or_default() += 1;
+        *report.by_source_format.entry(src_fmt).or_default() += 1;
         *report.role_sources.entry(source).or_default() += 1;
         *report.alpha_uses.entry(alpha_label(alpha)).or_default() += 1;
         let guessed = role_from_name(&img.name);
@@ -472,12 +562,34 @@ pub fn convert_zone(
             .map_err(|e| format!("{}: {e}", gxt.display()))?;
 
         let bytes = c.bytes() as u64;
+        let group = img.usage.as_ref().map_or(Group::Match, |u| u.group.clone());
+        let weapons: Vec<String> = match &group {
+            Group::Weapons(w) => w
+                .iter()
+                .filter_map(|&i| stats.weapons.get(i).cloned())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let g = report.groups.totals.entry(group.label()).or_default();
+        g.0 += 1;
+        g.1 += bytes;
+        if let Group::Weapons(w) = &group {
+            weapon_textures.push((w.clone(), bytes));
+        }
+        index.push(IndexEntry {
+            file: format!("{stem}.gxt"),
+            role: role.name(),
+            format: texture_format_name(&c),
+            bytes,
+            group: group.label(),
+            weapons,
+        });
         if verbose {
             // Console only, for tuning: names never go into the report.
             println!(
-                "  {:<9} {:<5} {:>4}x{:<4} -> {:<6} {:>4}x{:<4} {:>6.1} KiB {:>6} dB  alpha {:?}  [{} | {}]  {}",
+                "  {:<9} {:<5} {:>4}x{:<4} -> {:<6} {:>4}x{:<4} {:>6.1} KiB {:>6} dB  alpha {:?}  [{} | {} | {}]  {}",
                 role.name(),
-                src_fmt.name(),
+                src_fmt,
                 pixels.width,
                 pixels.height,
                 texture_format_name(&c),
@@ -488,6 +600,7 @@ pub fn convert_zone(
                 c.traits.alpha,
                 source,
                 alpha_label(alpha),
+                group.label(),
                 img.name
             );
         }
@@ -519,7 +632,38 @@ pub fn convert_zone(
             t.psnr_mean_db = Some(sum / n as f64);
         }
     }
-    Ok(report)
+    report.groups = group_stats(&report.groups.totals, &weapon_textures);
+    Ok((report, index))
+}
+
+/// Per-weapon memory from the weapon-group textures, and the worst case of `match` plus 8 weapons.
+fn group_stats(
+    totals: &BTreeMap<&'static str, (usize, u64)>,
+    weapon_textures: &[(BTreeSet<usize>, u64)],
+) -> GroupStats {
+    let mut per_weapon: BTreeMap<usize, u64> = BTreeMap::new();
+    for (weapons, bytes) in weapon_textures {
+        for &w in weapons {
+            *per_weapon.entry(w).or_default() += bytes;
+        }
+    }
+    let mut sizes: Vec<(u64, usize)> = per_weapon.iter().map(|(&w, &b)| (b, w)).collect();
+    sizes.sort_unstable_by(|a, b| b.cmp(a));
+    let worst: BTreeSet<usize> = sizes.iter().take(8).map(|&(_, w)| w).collect();
+    let worst_bytes: u64 = weapon_textures
+        .iter()
+        .filter(|(weapons, _)| !weapons.is_disjoint(&worst))
+        .map(|(_, b)| b)
+        .sum();
+    let mut sorted: Vec<u64> = sizes.iter().map(|&(b, _)| b).collect();
+    sorted.sort_unstable();
+    GroupStats {
+        totals: totals.clone(),
+        weapons: per_weapon.len(),
+        weapon_median_bytes: sorted.get(sorted.len() / 2).copied().unwrap_or(0),
+        weapon_max_bytes: sorted.last().copied().unwrap_or(0),
+        match_plus_worst_8_weapons_bytes: totals.get("match").map_or(0, |t| t.1) + worst_bytes,
+    }
 }
 
 pub fn render_text(r: &TexturesReport) -> String {
@@ -546,6 +690,23 @@ pub fn render_text(r: &TexturesReport) -> String {
         r.failed.values().sum::<usize>()
     );
     let _ = writeln!(s, "Wii texture memory: {:.2} MiB", mib(r.wii_bytes));
+    let g = &r.groups;
+    let groups: Vec<String> = g
+        .totals
+        .iter()
+        .map(|(k, (n, b))| format!("{k} {n} / {:.2} MiB", mib(*b)))
+        .collect();
+    let _ = writeln!(s, "Load by need: {}", groups.join(", "));
+    if g.weapons > 0 {
+        let _ = writeln!(
+            s,
+            "  {} weapons: median {:.2} MiB, largest {:.2} MiB each; match + worst 8 weapons {:.2} MiB",
+            g.weapons,
+            mib(g.weapon_median_bytes),
+            mib(g.weapon_max_bytes),
+            mib(g.match_plus_worst_8_weapons_bytes)
+        );
+    }
     let _ = writeln!(
         s,
         "\n{:<10} {:>5} {:>12} {:>10} {:>9} {:>9} {:>8}",
@@ -573,6 +734,11 @@ pub fn render_text(r: &TexturesReport) -> String {
         s,
         "\nMaterials walked: {}, texture links not resolved: {}",
         r.materials, r.unresolved_texture_links
+    );
+    let _ = writeln!(
+        s,
+        "Models walked: {} ({} weapon gun/hand models), model links not resolved: {}",
+        r.models, r.viewmodels, r.unresolved_model_links
     );
     let _ = writeln!(s, "Role from:");
     for (src, n) in &r.role_sources {
@@ -682,6 +848,7 @@ mod tests {
             role: Role::Character,
             alpha: AlphaUse::Cutout { threshold: 128 },
             source: "material: human skeleton model",
+            group: Group::Match,
         });
         i.used_by_material = true;
         assert_eq!(
@@ -715,10 +882,27 @@ mod tests {
         i.d3d_format = 21;
         i.payload = [10u8, 20, 30, 255].repeat(16);
         let (pixels, fmt, _) = source_pixels(&i, None).unwrap();
-        assert_eq!(fmt, PixelFormat::Bgra8);
+        assert_eq!(fmt, "bgra8");
         assert_eq!(pixels.pixels[0], [30, 20, 10, 255]);
         let streamed = img("test_streamed", 2, MAPTYPE_2D);
         assert!(source_pixels(&streamed, None).is_err());
+    }
+
+    #[test]
+    fn group_stats_per_weapon_and_worst_case() {
+        let totals = BTreeMap::from([("match", (3, 1000)), ("weapon", (3, 600))]);
+        // Texture A (300 bytes) shared by weapons 0 and 1; B (200) only weapon 1; C (100) only weapon 2.
+        let textures = [
+            (BTreeSet::from([0, 1]), 300),
+            (BTreeSet::from([1]), 200),
+            (BTreeSet::from([2]), 100),
+        ];
+        let g = group_stats(&totals, &textures);
+        assert_eq!(g.weapons, 3);
+        // Per weapon: 0 -> 300, 1 -> 500, 2 -> 100.
+        assert_eq!((g.weapon_median_bytes, g.weapon_max_bytes), (300, 500));
+        // All three fit in the worst 8; shared texture counted once.
+        assert_eq!(g.match_plus_worst_8_weapons_bytes, 1000 + 600);
     }
 
     #[test]

@@ -27,6 +27,9 @@ mod pixel_decode;
 mod texture;
 mod zone_textures;
 
+/// The zone holding the shared multiplayer string tables.
+const SHARED_TABLES_ZONE: &str = "code_post_gfx_mp";
+
 const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <report.json>]\n  \
      mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]\n  \
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
@@ -260,13 +263,28 @@ fn run_textures(args: &[String]) -> ExitCode {
         .out
         .clone()
         .unwrap_or_else(|| PathBuf::from(format!("out/textures/{}", a.map)));
-    let report = match zone_textures::convert_zone(
+    // Shared string tables (calling cards, emblems, icon tables) live in code_post_gfx_mp; materials they name are
+    // looked up by name at run time, so they go in the `catalog` group.
+    let mut tables = std::collections::HashSet::new();
+    if a.map != SHARED_TABLES_ZONE
+        && let Ok(path) = map_walk::locate_zone(&a.game, SHARED_TABLES_ZONE)
+    {
+        match asset_transport::open_zone(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|z| zone_textures::table_strings(&z.bytes))
+        {
+            Ok(t) => tables = t,
+            Err(e) => eprintln!("warning: could not read {SHARED_TABLES_ZONE} string tables ({e})"),
+        }
+    }
+    let (report, index) = match zone_textures::convert_zone(
         &image,
         &a.map,
         &label,
         iwds.as_deref(),
         &out_dir,
         verbose,
+        &tables,
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -276,6 +294,10 @@ fn run_textures(args: &[String]) -> ExitCode {
     };
     print!("{}", zone_textures::render_text(&report));
     println!("\nWii textures (.gxt) written to {}", out_dir.display());
+    // The index names textures and weapons, so it is converted data like the .gxt files (git-ignored under out/).
+    if write_json(&out_dir.join("index.json"), &index) != ExitCode::SUCCESS {
+        return ExitCode::FAILURE;
+    }
     write_json(&out_dir.join("report.json"), &report)
 }
 
