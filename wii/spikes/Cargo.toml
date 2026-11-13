@@ -13,4 +13,5 @@ doctest = false
 
 [dependencies]
 syslink = { path = "../syslink" }
+iw4l_probe = { path = "../iw4l_probe" }
 libm = "0.2"

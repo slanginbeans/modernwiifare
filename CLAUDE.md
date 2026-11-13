@@ -33,6 +33,8 @@ The repository holds code, tools and docs only. License: Apache-2.0.
 ## Build and test
 - Host: `cargo test`, `cargo clippy --all-targets`, `cargo fmt --all --check`.
 - Wii Rust half: `cargo build --release -p mwf_spikes --target powerpc-unknown-linux-gnu`.
+- PPC32 tests under qemu (750CL): `cargo test -p iw4l_probe --target powerpc-unknown-linux-gnu`
+  (needs `qemu-user gcc-powerpc-linux-gnu libc6-dev-powerpc-cross`).
 - Full `.dol`: `make -C wii hbc` (needs devkitPro). In the cloud session devkitPro is not reachable, so the `.dol` builds run in
   GitHub Actions (`wii` job, `devkitpro/devkitppc` image) and come out as a downloadable artifact.
 

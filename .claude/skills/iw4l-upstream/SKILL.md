@@ -16,9 +16,14 @@ The ADR 0001 audit was done at `acc57a5`.
 - Keep the IW4L `NOTICE` attribution. Copied files keep their headers and are listed in `docs/references.md`.
 
 ## The no_std boundary
-Wii-side crates are `#![no_std]` + `alloc`. The upstream crates already in that set are:
-math, trace, playerstate, movement, clipmap, weapon, gamemode, entity, anim, input, killcam, hud, dpvs, fx, lighting,
-asset, fastfile and structured_data (all `*_iw4`).
+Wii-side crates are `#![no_std]` + `alloc`. These upstream crates are verified std-free in the Wii build
+(`wii/iw4l_probe`): math, trace, playerstate, movement, clipmap, weapon, gamemode, anim, input, killcam, hud, dpvs, fx,
+lighting, asset, fastfile and structured_data (all `*_iw4`). `entity_iw4` says `no_std` but pulls std via `asset_core`
+(see `docs/upstream-patches.md`).
+- **`#![no_std]` on a crate is not proof.** A dependency can still bring in std, and the Linux PPC target ships std, so the
+  build succeeds anyway. The real check is linking it into `mwf_spikes`: if std sneaks in, you get a duplicate `panic_impl` error.
+- IW4L movement determinism is guarded by `iw4l_probe::REFERENCE_HASH`, tested on x86 and on PPC 750CL under qemu
+  (`cargo test -p iw4l_probe --target powerpc-unknown-linux-gnu`). A bump that changes it is a feel change.
 - Before using a new upstream crate on the Wii, check it for `std`, `bevy`, `glam` with std features, `tokio`, `rayon`
   and threads. Anything there stays host-only.
 - `f64` is present in movement/weapon/clipmap. Broadway's FPU does scalar double natively, so **do not** convert to f32

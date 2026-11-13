@@ -51,6 +51,22 @@ fn self_tests() -> Vec<Check> {
         format!("{:>6.2}|{:#x}", core::hint::black_box(1.255f64), 255) == "  1.25|0xff",
     );
 
+    // Spike E on hardware: IW4L pmove + collision must match the x86/qemu reference bit for bit.
+    let t0 = ffi::ms();
+    let trace = iw4l_probe::movement_trace(iw4l_probe::TRACE_TICKS);
+    let elapsed = ffi::ms().wrapping_sub(t0);
+    say!(
+        "  IW4L movement trace: {} ticks in {} ms, hash {:016x} (reference {:016x})\n",
+        iw4l_probe::TRACE_TICKS,
+        elapsed,
+        trace.hash,
+        iw4l_probe::REFERENCE_HASH
+    );
+    check(
+        "IW4L movement matches x86 reference",
+        trace.hash == iw4l_probe::REFERENCE_HASH,
+    );
+
     out
 }
 

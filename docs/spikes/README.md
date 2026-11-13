@@ -24,7 +24,9 @@ WIILOAD=tcp:192.168.1.50 make -C wii run-b
 ## Spike A: Rust toolchain + GX
 Run it on one Wii with a GameCube controller in port 1.
 
-1. A text screen lists the self-tests, each `OK` or `FAIL`, plus free MEM1/MEM2.
+1. A text screen lists the self-tests, each `OK` or `FAIL`, plus free MEM1/MEM2. It also runs IW4L's movement code
+   for 1,200 ticks and shows the time taken and the result hash. **IW4L movement matches x86 reference** must say `OK`
+   (this is Spike E on real hardware).
 2. Press **A** (or wait 10 s). A spinning coloured tetrahedron appears.
    - Main stick rotates it, C-stick moves it, **A** cycles colours, **START**/**RESET** exits to the HBC.
    - The background is **green** if all self-tests passed, **red** if any failed.
@@ -33,6 +35,8 @@ Record in `docs/spikes/results.md`: the self-test screen (a phone photo is fine)
 smooth, whether the controls respond, whether START returns to the HBC, and the MEM1/MEM2 numbers. Note 4:3 vs 16:9 and the TV mode.
 
 ## Spike B: system link discovery
+*Deferred to Phase 5. The game comes first. The build is kept in CI so it can be run any time.*
+
 Run it on **2 or more Wiis** with USB LAN adapters on the same switch/router at the same time.
 
 What each screen shows:

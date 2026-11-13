@@ -6,6 +6,7 @@
 | Build (sha) | |
 | Wii model / region / TV mode / aspect | |
 | Self-tests (all OK?) | |
+| IW4L movement trace: hash / ms | |
 | Background colour | |
 | Scene smooth / controls respond | |
 | START returns to HBC | |

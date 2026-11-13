@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["wii/syslink", "wii/spikes"]
+members = ["wii/syslink", "wii/spikes", "wii/iw4l_probe"]
 # `mwf_spikes` is a Wii-only staticlib (no_std + panic handler); host builds/tests skip it.
-default-members = ["wii/syslink"]
+default-members = ["wii/syslink", "wii/iw4l_probe"]
 
 [workspace.package]
 edition = "2024"

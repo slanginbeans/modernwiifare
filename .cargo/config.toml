@@ -3,3 +3,7 @@
 # - relocation-model=static: no PIC/GOT; the .dol is linked at a fixed address.
 [target.powerpc-unknown-linux-gnu]
 rustflags = ["-C", "target-cpu=750", "-C", "relocation-model=static"]
+# Host-side PPC32 testing (Spike E): link test binaries with the Debian cross gcc and run them
+# under qemu emulating a 750CL. Only test binaries link; the Wii staticlib build never uses these.
+linker = "powerpc-linux-gnu-gcc"
+runner = "qemu-ppc -cpu 750cl -L /usr/powerpc-linux-gnu"
