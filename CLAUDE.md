@@ -24,11 +24,15 @@ The repository holds code, tools and docs only. License: Apache-2.0.
 - `converter/`: host Rust tool `mwf-convert` (stable). Uses IW4L reader/asset crates and writes to `out/` (git-ignored).
   `inventory <game folder>`: per-zone sizes and asset counts (Spike D). Reports must stay content-free: relative paths,
   sizes and counts only. On Windows, `inventory.bat` runs it with a double-click.
+  `texture <png> --role <role>`: one PNG to a Wii `.gxt` + `_preview.png` (output under `out/`).
 - `wii/`: Wii runtime (stable Rust, no_std + alloc, ADR 0006), builds `.dol`s with `make -C wii`.
   - `platform/`: the C shim over libogc (`shim.h` is the whole API Rust sees; keep `spikes/src/ffi.rs` in sync).
   - `syslink/`: system-link protocol (no_std, host-tested). `spikes/`: Phase 0 spike programs.
   - Later: `wii_sim` (IW4L `sim::step` lifted off bevy_ecs) · `gx_render` · `snd` · `front` (menus/HUD).
-- `shared/`: pack format definitions used by both the converter and the Wii runtime.
+- `shared/`: code used by both the converter and the Wii runtime (no_std).
+  - `gx_texture/`: GX formats (I4..RGBA8, CMPR) encode/decode, gamma-correct resize + mips, per-role format policy,
+    `.gxt` container. CMPR blends 5/8+3/8 like Dolphin (`cmpr::BLEND_NEAR`); confirm on hardware.
+  - Later: the pack format.
 - `tools/`: asset guard, budget report, Dolphin launch.
 - `docs/`: ADRs, budgets, deviations, references, upstream patches.
 

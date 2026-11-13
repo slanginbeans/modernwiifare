@@ -1,0 +1,10 @@
+[package]
+name = "gx_texture"
+version = "0.1.0"
+description = "Wii GX texture formats: tiled encoders/decoders (I4..RGBA8, CMPR), resize, mipmaps, format policy. no_std."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+libm = "0.2"

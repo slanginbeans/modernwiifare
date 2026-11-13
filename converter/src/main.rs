@@ -5,18 +5,24 @@
 //!       Lists every zone (.ff) with sizes and asset counts per type, flags the multiplayer maps,
 //!       and writes a JSON report (default: out/inventory.json). The report contains only
 //!       relative paths, sizes and counts, no game content, so it is safe to share.
+//!   mwf-convert texture <image.png> [--role <role>] [--out <folder>]
+//!       Converts one PNG to a Wii texture (`.gxt`) plus a `_preview.png` of what the Wii shows,
+//!       and prints the chosen format, size and quality. Default output folder: out/textures.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod inventory;
+mod texture;
 
-const USAGE: &str = "usage: mwf-convert inventory <game folder> [--out <report.json>]";
+const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <report.json>]\n  \
+     mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask] [--out <folder>]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("inventory") => run_inventory(&args[1..]),
+        Some("texture") => run_texture(&args[1..]),
         Some("-h" | "--help") | None => {
             println!("{USAGE}");
             ExitCode::SUCCESS
@@ -86,4 +92,50 @@ fn run_inventory(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+fn run_texture(args: &[String]) -> ExitCode {
+    let mut input: Option<PathBuf> = None;
+    let mut role = gx_texture::Role::World;
+    let mut out = PathBuf::from("out/textures");
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--role" => match it.next().and_then(|r| gx_texture::Role::parse(r)) {
+                Some(r) => role = r,
+                None => {
+                    eprintln!("--role needs one of the roles below\n{USAGE}");
+                    return ExitCode::from(2);
+                }
+            },
+            "--out" => match it.next() {
+                Some(p) => out = PathBuf::from(p),
+                None => {
+                    eprintln!("--out needs a folder\n{USAGE}");
+                    return ExitCode::from(2);
+                }
+            },
+            _ if input.is_none() => input = Some(PathBuf::from(a)),
+            _ => {
+                eprintln!("unexpected argument `{a}`\n{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let Some(input) = input else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    match texture::convert_file(&input, role, &out) {
+        Ok((summary, gxt, preview)) => {
+            println!("{} as {}:", input.display(), role.name());
+            println!("{}", texture::describe(&summary));
+            println!("wrote {}\nwrote {}", gxt.display(), preview.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::FAILURE
+        }
+    }
 }

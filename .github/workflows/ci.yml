@@ -26,13 +26,13 @@ jobs:
       - run: cargo test
       - name: Wii staticlib (big-endian PPC32) builds and lints
         run: |
-          cargo clippy --release -p mwf_spikes -p iw4l_probe --target powerpc-unknown-linux-gnu -- -D warnings
+          cargo clippy --release -p mwf_spikes -p iw4l_probe -p gx_texture --target powerpc-unknown-linux-gnu -- -D warnings
           cargo build --release -p mwf_spikes --target powerpc-unknown-linux-gnu
       - name: IW4L movement determinism on PPC 750CL (qemu)
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q qemu-user gcc-powerpc-linux-gnu libc6-dev-powerpc-cross
-          cargo test -p iw4l_probe --target powerpc-unknown-linux-gnu
+          cargo test -p iw4l_probe -p gx_texture --target powerpc-unknown-linux-gnu
 
   wii:
     runs-on: ubuntu-latest
