@@ -2,6 +2,10 @@
 
 use core::ffi::c_char;
 
+pub const BTN_UP: u16 = 0x0008;
+pub const BTN_Z: u16 = 0x0010;
+pub const BTN_L: u16 = 0x0040;
+pub const BTN_A: u16 = 0x0100;
 pub const BTN_B: u16 = 0x0200;
 pub const BTN_Y: u16 = 0x0800;
 pub const BTN_START: u16 = 0x1000;

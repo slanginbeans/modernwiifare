@@ -25,7 +25,8 @@ pub const PITCH_RATE: f32 = 110.0;
 /// Sticks rest a few counts off centre.
 pub const DEADZONE: i32 = 12;
 
-fn axis(v: i8) -> f32 {
+/// Stick count to −1..1 with the dead zone removed.
+pub fn axis(v: i8) -> f32 {
     let v = i32::from(v);
     if v.abs() <= DEADZONE {
         0.0

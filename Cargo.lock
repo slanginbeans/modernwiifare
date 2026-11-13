@@ -439,7 +439,11 @@ dependencies = [
 name = "game_core"
 version = "0.1.0"
 dependencies = [
+ "clipmap_iw4",
  "libm",
+ "movement_iw4",
+ "playerstate_iw4",
+ "trace_iw4",
  "wpk",
 ]
 
@@ -720,6 +724,7 @@ dependencies = [
  "asset_iw4",
  "asset_transport",
  "bcdec_rs",
+ "clipmap_iw4",
  "fastfile_iw4",
  "gx_texture",
  "png",
@@ -1236,6 +1241,9 @@ dependencies = [
 [[package]]
 name = "wpk"
 version = "0.1.0"
+dependencies = [
+ "clipmap_iw4",
+]
 
 [[package]]
 name = "zip"

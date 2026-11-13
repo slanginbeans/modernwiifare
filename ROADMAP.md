@@ -76,14 +76,15 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
 - [x] Sky cube maps → six 2D faces (sky role, no mips) for a skybox; other cubes (reflections) skipped.
       *`mp_rust`: 768 KiB sky; the map is 7.2 MiB. The renderer draws the skybox from the six faces.*
 - [x] Materials → TEV recipe table; world → cell-chunked display lists + lightmaps (first version, `docs/pack.md`).
-- [ ] Fixed-point vertices, visibility cells, static models;
-      clipmap → Wii collision layout; spawns/entities; weapon defs (lossless); GSC IR.
+- [x] clipmap → pack collision (`CLIP`, unsimplified, IW4L's IW4 extraction); spawns.
+- [ ] Fixed-point vertices, visibility cells, static models (render + collision); weapon defs (lossless); GSC IR.
 - [ ] `out/report.json` budget report. The build fails when over budget. Deterministic output.
 - **Exit:** one small map's pack fits its budget and loads into a Wii viewer.
 
 ## Phase 2: Renderer and "walk the map"
 - [ ] `gx_render`: cells/portals via `dpvs_iw4`, display lists, TEV recipes, sky, fog, viewmodel pass.
-- [ ] First-person controller using IW4L `movement_iw4` on converted collision.
+- [x] First-person controller using IW4L `movement_iw4` on converted collision (`game_core::player`; host-tested on
+      every `mp_rust` spawn). Not yet: brush models, penetration recovery, other players.
 - [ ] Input: **GameCube pad** → binding table → IW4L `input_iw4` usercmds. Stick/C-stick curves, analog trigger thresholds, sprint scheme.
 - **Exit:** walk the map at a stable 30 fps on real hardware, with movement trace = IW4L host trace.
 

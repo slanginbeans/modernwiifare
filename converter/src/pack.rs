@@ -57,6 +57,8 @@ pub struct WorldData {
     /// Lightmap pages the world uses (surfaces index `0..lightmap_count`).
     lightmap_count: usize,
     entity_string: String,
+    /// Collision, or why it could not be read.
+    clip: Result<wpk::clip::Clip, String>,
 }
 
 /// Read the world after a zone walk (the stream still holds its blocks).
@@ -102,12 +104,14 @@ pub fn read_world(s: &ZoneStream<'_>, links: &Links) -> Result<WorldData, String
         })
         .map(|b| String::from_utf8_lossy(b).trim_end_matches('\0').to_owned())
         .unwrap_or_default();
+    let clip = crate::collision::read_clip(s);
     Ok(WorldData {
         vertices,
         indices,
         surfaces,
         lightmap_count,
         entity_string,
+        clip,
     })
 }
 
@@ -238,6 +242,7 @@ pub struct PackReport {
     pub materials_without_texture: usize,
     pub skybox: bool,
     pub spawns: usize,
+    pub collision: crate::collision::ClipReport,
     pub content_hash: String,
 }
 
@@ -549,6 +554,9 @@ pub fn build(
         spawns.len() as u32,
         records::encode(&spawns),
     );
+    let clip = world.clip.as_ref().map_err(|e| format!("collision: {e}"))?;
+    report.collision = crate::collision::ClipReport::of(clip);
+    b.section(wpk::tag::CLIP, 1, clip.encode());
     let bytes = b.finish();
     let pack = wpk::Pack::parse(&bytes, true).map_err(|e| format!("pack self-check: {e:?}"))?;
     for t in [
@@ -560,6 +568,7 @@ pub fn build(
         wpk::tag::WORLD_DISPLAY_LISTS,
         wpk::tag::SKYBOX,
         wpk::tag::SPAWNS,
+        wpk::tag::CLIP,
     ] {
         if let Some(s) = pack.section(t) {
             report.sections.insert(
@@ -599,6 +608,12 @@ pub fn render_text(r: &PackReport) -> String {
         r.surfaces_without_material,
         r.skybox,
         r.spawns
+    ));
+    let c = &r.collision;
+    s.push_str(&format!(
+        "collision: {} brushes ({} planes), {} nodes, {} leaves, {} mesh triangles, {} brush models
+",
+        c.brushes, c.planes, c.nodes, c.leaves, c.mesh_triangles, c.brush_models
     ));
     s
 }

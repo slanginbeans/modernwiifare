@@ -26,6 +26,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod collision;
 mod inventory;
 mod map_walk;
 mod material_links;

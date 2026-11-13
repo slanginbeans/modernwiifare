@@ -5,12 +5,16 @@
 //! - [`world`]: a loaded pack's textures, materials and batches, and the per-frame draw order.
 //! - [`sky`]: skybox face quads in D3D cube orientation.
 //! - [`fly`]: free-fly camera on the GameCube pad.
+//! - [`collision`]: IW4L traces over the pack's `CLIP` section.
+//! - [`player`]: pad -> `UserCmd` -> IW4L `pmove`.
 #![no_std]
 
 extern crate alloc;
 
 pub mod camera;
+pub mod collision;
 pub mod fly;
 pub mod gfx;
+pub mod player;
 pub mod sky;
 pub mod world;

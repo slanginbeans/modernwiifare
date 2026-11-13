@@ -7,3 +7,4 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+clipmap_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }

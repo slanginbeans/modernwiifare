@@ -21,6 +21,7 @@ MEM2 (after `DCFlushRange`).
 | `WDLS` | – | GX display lists: `0x90` (triangles, VTXFMT0), u16 count, per vertex u16 indices for POS/CLR0/TEX0/TEX1 (all the same, relative to the batch's vertex base), NOP-padded to 32 |
 | `SKYB` | `Skybox` (16 B) | six sky face textures, D3D cube order |
 | `SPWN` | `SpawnRecord` (24 B) | origin, yaw, kind (TDM / DM), team, initial flag |
+| `CLIP` | one blob (`wpk::clip::Clip`) | collision, unsimplified: a table of 16 arrays (count, offset), then pooled brush planes + surface flags, brushes (contents, glass), BSP nodes, leaves, leaf brushes, mesh vertices / triangles / walkable-edge bits / triangle flags / AABB trees / partitions / borders / roots, brush models. Decoded and validated at load into the `clipmap_iw4` types IW4L traces with |
 
 ## How the world is built (`converter/src/pack.rs`)
 - Surfaces are batched by vertex group (consecutive surfaces spanning under 65,536 vertices, so u16 indices reach
@@ -46,3 +47,7 @@ Findings it caught:
 14.5 MiB: textures 3.8, display lists 4.4, vertices 6.3. 235,386 vertices, 193,276 triangles in 171 batches, 75
 materials, 3 lightmaps, skybox, 51 spawns. Next: fixed-point positions and UVs (smaller vertices), visibility cells,
 static models, collision.
+
+With collision (same day): 17.1 MiB. `CLIP` is 2.6 MiB: 2,668 brushes (19,959 planes), 704 BSP nodes, 723 leaves,
+68,408 mesh triangles, 18 brush models. The host test `game_core::player::tests::spawns_stand_on_the_real_map`
+puts a player on each of the 51 spawns with IW4L `pmove`: all land, and all run forward without falling through.

@@ -18,6 +18,7 @@
 extern crate alloc;
 
 pub mod be;
+pub mod clip;
 pub mod records;
 
 use alloc::vec::Vec;
@@ -52,6 +53,8 @@ pub mod tag {
     pub const SKYBOX: Tag = *b"SKYB";
     /// Player spawn points ([`crate::records::SpawnRecord`]).
     pub const SPAWNS: Tag = *b"SPWN";
+    /// Collision (`clip::Clip`), one blob.
+    pub const CLIP: Tag = *b"CLIP";
 }
 
 /// FNV-1a 64-bit, the pack's content hash (also what both Wiis compare in the system-link handshake).
