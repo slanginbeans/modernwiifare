@@ -47,6 +47,7 @@ void mwf_video_init(void); /* video + text console on framebuffer 0 */
 void mwf_vsync(void);      /* flush stdout, wait for vertical sync */
 void mwf_print(const char *s, size_t len);
 void mwf_mem_info(mwf_mem *out);
+int mwf_widescreen(void);     /* 1 when the console is set to 16:9 */
 void mwf_input_scan(void);
 void mwf_pad_read(int chan, mwf_pad *out);
 double mwf_ffi_echo(float a, double b, int32_t c); /* returns a + b + c; float-ABI self-test */
@@ -56,6 +57,62 @@ void mwf_panic(const char *msg, size_t len) __attribute__((noreturn));
 void mwf_gx_init(uint32_t clear_rgba);
 void mwf_gx_draw(const float mtx[3][4], const mwf_vtx *v, uint32_t n);
 void mwf_gx_end_frame(void);
+
+/* ---- game world (shim_world.c) ---- see docs/wii-gx.md and docs/pack.md */
+
+/* Blend classes, same values as wpk::records::Blend. */
+#define MWF_BLEND_OPAQUE 0
+#define MWF_BLEND_ALPHA_TEST 1
+#define MWF_BLEND_BLEND 2
+#define MWF_BLEND_ADD 3
+#define MWF_BLEND_MULTIPLY 4
+/* Cull, same values as wpk::records::Cull. */
+#define MWF_CULL_NONE 0
+#define MWF_CULL_BACK 1
+#define MWF_CULL_FRONT 2
+
+/* Texture description, filled by Rust from a pack TextureRecord. Pointers are into the loaded pack (MEM2). */
+typedef struct {
+    const void *data;       /* GX texture data, 32-byte aligned */
+    const void *alpha;      /* I4 alpha plane, or NULL */
+    uint16_t width, height;
+    uint8_t format;         /* GX texture format id */
+    uint8_t levels;
+    uint8_t wrap;           /* 0 repeat, 1 clamp, 2 mirror */
+    uint8_t _pad;
+} mwf_tex_desc; /* 16 bytes */
+
+/* State for one world draw. tex/lightmap are texture handles from mwf_tex_create, or -1. */
+typedef struct {
+    int32_t tex;
+    int32_t lightmap;
+    uint8_t blend;
+    uint8_t alpha_ref;
+    uint8_t cull;
+    uint8_t _pad;
+} mwf_draw_state; /* 12 bytes */
+
+/* Allocate from MEM2 (bump allocator over the MEM2 arena; never freed). NULL when out of memory. */
+void *mwf_mem2_alloc(uint32_t size, uint32_t align);
+uint32_t mwf_mem2_free_bytes(void);
+/* Read a whole file from the SD card into MEM2 (32-byte aligned, flushed for GX). Returns NULL on failure. */
+void *mwf_file_load(const char *path, uint32_t *size_out);
+
+/* Create a GX texture object; returns a handle >= 0, or -1 when the table is full. */
+int32_t mwf_tex_create(const mwf_tex_desc *desc);
+
+/* Frame: clear, set the camera. view is a GX 3x4 world->eye matrix (row-major); fovy in degrees. */
+void mwf_frame_begin(const float view[3][4], float fovy_deg, float znear, float zfar, uint32_t clear_rgba);
+/* Point the world vertex arrays at an interleaved vertex block (stride 28: pos f32x3, rgba, uv f32x2, lm u16x2). */
+void mwf_world_arrays(const void *vertices);
+/* Set TEV, blend, alpha test, Z and cull for one world draw. */
+void mwf_world_state(const mwf_draw_state *s);
+/* Call a prebuilt display list (32-byte aligned, length a multiple of 32). */
+void mwf_call_dl(const void *dl, uint32_t len);
+/* Draw one skybox face: 4 corners (x,y,z relative to the eye) with texcoords (s,t), textured with `tex`. */
+void mwf_sky_face(const float view_rot[3][4], const float corners[4][5], int32_t tex);
+/* Copy to the XFB and flip. Returns GPU+CPU milliseconds of the frame. */
+void mwf_frame_end(void);
 
 /* ---- network (shim_net.c) ---- all addresses are numeric a.b.c.d == network order on the Wii */
 int mwf_net_init(char ip[16], char mask[16], char gw[16]);

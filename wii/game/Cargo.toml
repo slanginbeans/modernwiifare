@@ -1,0 +1,16 @@
+[package]
+name = "mwf_game"
+version = "0.1.0"
+description = "The Modern Wiifare game: loads a map pack from SD and runs it (Wii-only staticlib, linked into mwf_game.dol)."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+test = false
+doctest = false
+
+[dependencies]
+game_core = { path = "../game_core" }
+wpk = { path = "../../shared/wpk" }

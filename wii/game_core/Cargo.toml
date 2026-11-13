@@ -1,0 +1,11 @@
+[package]
+name = "game_core"
+version = "0.1.0"
+description = "Wii game logic that does not touch the hardware: camera, culling, pack world drawing order, input. no_std + alloc, host-tested."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+wpk = { path = "../../shared/wpk" }
+libm = "0.2"

@@ -1,4 +1,4 @@
-# Builds the Phase 0 spike .dol files.
+# Builds the Phase 0 spike .dol files and the game (mwf_game.dol).
 #   Needs devkitPro (devkitPPC + libogc) and the Rust toolchain from rust-toolchain.toml.
 #   make            -> build/spike_a_gx.dol, build/spike_b_net.dol
 #   make package    -> ../dist/apps/<app>/{boot.dol,meta.xml}  (copy dist/apps to the SD card root)
@@ -19,22 +19,25 @@ MACHDEP := -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float
 CFLAGS  := -O2 -g -Wall -Wextra -ffunction-sections -fdata-sections $(MACHDEP) -I$(OGC)/include -Iplatform
 LDFLAGS := -g $(MACHDEP) -L$(OGC)/lib/wii -Wl,--gc-sections
 LIBS    := -logc -lm
+GAME_LIBS := -lfat -logc -lm
 
 RUST_TARGET := powerpc-unknown-linux-gnu
 RUSTLIB     := ../target/$(RUST_TARGET)/release/libmwf_spikes.a
+GAMELIB     := ../target/$(RUST_TARGET)/release/libmwf_game.a
 BUILD_ID    ?= $(shell git rev-parse --short=8 HEAD 2>/dev/null || echo dev)
 
 BUILD  := build
 COMMON := $(BUILD)/shim_common.o $(BUILD)/shim_gx.o $(BUILD)/shim_net.o
-SPIKES := spike_a_gx spike_b_net
+SPIKES := spike_a_gx spike_b_net game
 
 .PHONY: all hbc package clean rustlib run-a run-b
 all: $(SPIKES:%=$(BUILD)/%.dol)
 
 # Cargo tracks its own dependencies; always ask it.
 rustlib:
-	MWF_BUILD_ID=$(BUILD_ID) cargo build --release -p mwf_spikes --target $(RUST_TARGET)
+	MWF_BUILD_ID=$(BUILD_ID) cargo build --release -p mwf_spikes -p mwf_game --target $(RUST_TARGET)
 $(RUSTLIB): rustlib
+$(GAMELIB): rustlib
 
 $(BUILD):
 	mkdir -p $@
@@ -47,6 +50,9 @@ $(BUILD)/spike_a_gx.elf: $(BUILD)/main_spike_a.o $(COMMON) $(RUSTLIB)
 
 $(BUILD)/spike_b_net.elf: $(BUILD)/main_spike_b.o $(COMMON) $(RUSTLIB)
 	$(CC) $(LDFLAGS) $(BUILD)/main_spike_b.o $(COMMON) $(RUSTLIB) $(LIBS) -Wl,-Map,$@.map -o $@
+
+$(BUILD)/game.elf: $(BUILD)/main_game.o $(COMMON) $(BUILD)/shim_world.o $(GAMELIB)
+	$(CC) $(LDFLAGS) $(BUILD)/main_game.o $(COMMON) $(BUILD)/shim_world.o $(GAMELIB) $(GAME_LIBS) -Wl,-Map,$@.map -o $@
 
 $(BUILD)/%.dol: $(BUILD)/%.elf
 	$(ELF2DOL) $< $@

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+  <name>Modern Wiifare</name>
+  <coder>Modern Wiifare</coder>
+  <version>@BUILD_ID@</version>
+  <short_description>MW2 multiplayer maps on the Wii (fly-through)</short_description>
+  <long_description>Loads sd:/modernwiifare/maps/mp_rust.wpk (made with mwf-convert from your own copy of the game) and flies through it. Main stick move, C-stick look, L/R down/up, B fast, Y next spawn, START exits. A solid red screen means the pack was not found on the SD card.</long_description>
+</app>

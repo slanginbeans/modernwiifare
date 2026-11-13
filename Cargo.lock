@@ -436,6 +436,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "game_core"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "wpk",
+]
+
+[[package]]
 name = "gamemode_iw4"
 version = "0.1.0"
 source = "git+https://github.com/vladtrc/iw4L?rev=acc57a5c9dd027db8eb5ef17c792fa69f059daa1#acc57a5c9dd027db8eb5ef17c792fa69f059daa1"
@@ -717,6 +725,14 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "wpk",
+]
+
+[[package]]
+name = "mwf_game"
+version = "0.1.0"
+dependencies = [
+ "game_core",
  "wpk",
 ]
 

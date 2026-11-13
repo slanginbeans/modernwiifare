@@ -26,7 +26,7 @@ jobs:
       - run: cargo test
       - name: Wii staticlib (big-endian PPC32) builds and lints
         run: |
-          cargo clippy --release -p mwf_spikes -p iw4l_probe -p gx_texture -p wpk --target powerpc-unknown-linux-gnu -- -D warnings
+          cargo clippy --release -p mwf_spikes -p mwf_game -p game_core -p iw4l_probe -p gx_texture -p wpk --target powerpc-unknown-linux-gnu -- -D warnings
           cargo build --release -p mwf_spikes --target powerpc-unknown-linux-gnu
       - name: IW4L movement determinism on PPC 750CL (qemu)
         run: |

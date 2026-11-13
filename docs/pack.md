@@ -39,8 +39,8 @@ world-space view ray. Debug switches: `MWF_PREVIEW_NOCULL=1`, `MWF_PREVIEW_OPAQU
 Findings it caught:
 - A material's look comes from its **first colour-band technique** (slot 4 up), as IW4L reads it. The later "lit"
   slots (37–39) are additive per-light passes; taking those made most of the world additive.
-- **Winding:** IW4 front faces have positive signed area in screen space with y pointing down (counter-clockwise as
-  seen on screen). The GX renderer must cull to match (check `GX_SetCullMode` with this in Dolphin).
+- **Winding:** IW4 front faces have positive signed area in screen space with y pointing down (clockwise as
+  seen on screen, D3D's default). The GX renderer must cull to match (check `GX_SetCullMode` with this in Dolphin).
 
 ## `mp_rust` (first pack, 2026-11-13)
 14.5 MiB: textures 3.8, display lists 4.4, vertices 6.3. 235,386 vertices, 193,276 triangles in 171 batches, 75

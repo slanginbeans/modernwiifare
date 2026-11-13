@@ -56,6 +56,10 @@ void mwf_mem_info(mwf_mem *out) {
     out->arena2_hi = (uint32_t)SYS_GetArena2Hi();
 }
 
+int mwf_widescreen(void) {
+    return CONF_GetAspectRatio() == CONF_ASPECT_16_9;
+}
+
 void mwf_input_scan(void) {
     pads_connected = PAD_ScanPads();
 }
