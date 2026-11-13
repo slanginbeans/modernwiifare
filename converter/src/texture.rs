@@ -133,9 +133,8 @@ pub fn convert_file(
     Ok((summary, gxt, preview))
 }
 
-pub fn describe(s: &Summary) -> String {
-    let c = &s.converted;
-    let fmt = match c.format {
+pub fn format_name(format: TexFormat) -> &'static str {
+    match format {
         TexFormat::Cmpr => "CMPR",
         TexFormat::I4 => "I4",
         TexFormat::I8 => "I8",
@@ -144,7 +143,12 @@ pub fn describe(s: &Summary) -> String {
         TexFormat::Rgb565 => "RGB565",
         TexFormat::Rgb5a3 => "RGB5A3",
         TexFormat::Rgba8 => "RGBA8",
-    };
+    }
+}
+
+pub fn describe(s: &Summary) -> String {
+    let c = &s.converted;
+    let fmt = format_name(c.format);
     format!(
         "{fmt} {}x{}, {} level(s), {} KB (source as RGBA8: {} KB, {:.1}x smaller)\n\
          content: {}, alpha {:?}\n\

@@ -15,4 +15,6 @@ Record **every** project we read, borrow from, or test against, with its license
 **Excluded:** leaked IW source, private decompilations (e.g. momo5502's AI-assisted MW2 decomp), repos of dumped game scripts or assets.
 
 # Files copied or adapted from IW4L
-_None yet._
+| Our file | Adapted from (IW4L `acc57a5`, Apache-2.0) | What |
+|---|---|---|
+| `converter/src/pixel_decode.rs` | `crates/asset_material/src/material_images/decode.rs` | D3D and IWI format tables, IWI v8 top-mip range, BCn decode through `bcdec_rs`. Carried because `asset_material` pulls in Bevy |
