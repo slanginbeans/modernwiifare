@@ -53,7 +53,8 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
 
 ## Phase 1: Converter MVP
 - [ ] Pack format in `shared/` (zero-copy, big-endian, versioned, hashed).
-- [ ] Textures → CMPR/I4/RGB5A3; materials → TEV recipe table; world → cell-chunked display lists + lightmaps;
+- [x] Texture encoders (`shared/gx_texture`): all GX formats incl. CMPR, mips, per-role size/format policy, `mwf-convert texture`.
+- [ ] Wire textures from zones (GfxImage) through the encoders; materials → TEV recipe table; world → cell-chunked display lists + lightmaps;
       clipmap → Wii collision layout; spawns/entities; weapon defs (lossless); GSC IR.
 - [ ] `out/report.json` budget report. The build fails when over budget. Deterministic output.
 - **Exit:** one small map's pack fits its budget and loads into a Wii viewer.
