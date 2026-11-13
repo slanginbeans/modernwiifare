@@ -27,7 +27,7 @@ use serde::Serialize;
 use crate::inventory::IW4L_REV;
 use crate::material_links::{AlphaUse, ImageUsage, Links, Owner, apply_alpha};
 use crate::pixel_decode::{self, PixelFormat};
-use crate::texture::{format_name, psnr};
+use crate::texture::{psnr, texture_format_name};
 
 /// Report format version. Bump when fields change meaning.
 /// v2: roles and alpha from materials (`role_sources`, `alpha_uses`, `name_role_changes`).
@@ -471,7 +471,7 @@ pub fn convert_zone(
         std::fs::write(&gxt, gx_texture::container::write(&c))
             .map_err(|e| format!("{}: {e}", gxt.display()))?;
 
-        let bytes = c.data.len() as u64;
+        let bytes = c.bytes() as u64;
         if verbose {
             // Console only, for tuning: names never go into the report.
             println!(
@@ -480,7 +480,7 @@ pub fn convert_zone(
                 src_fmt.name(),
                 pixels.width,
                 pixels.height,
-                format_name(c.format),
+                texture_format_name(&c),
                 c.width,
                 c.height,
                 bytes as f64 / 1024.0,
@@ -495,7 +495,7 @@ pub fn convert_zone(
         report.wii_bytes += bytes;
         let f = report
             .by_wii_format
-            .entry(format_name(c.format))
+            .entry(texture_format_name(&c))
             .or_default();
         f.0 += 1;
         f.1 += bytes;

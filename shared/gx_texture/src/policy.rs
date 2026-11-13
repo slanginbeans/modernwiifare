@@ -130,7 +130,15 @@ pub fn choose_format(role: Role, t: Traits) -> TexFormat {
     }
 }
 
+/// Format of the separate alpha plane of a split texture.
+pub const ALPHA_PLANE_FORMAT: TexFormat = TexFormat::I4;
+
 /// A texture ready for the Wii: level 0 first, then each mip, back to back.
+///
+/// A colour texture with smooth alpha is *split*: `data` holds the colour as CMPR (opaque) and `alpha_plane` holds the
+/// alpha as I4 with the same size and levels. 8 bits per texel instead of RGB5A3's 16, with 565 colour and 16 alpha
+/// levels where RGB5A3 drops to 4-4-4 colour and 3-bit alpha. The renderer samples the colour map in one TEV stage
+/// and takes alpha from the I4 map (GX reads I4 as I,I,I,I) in the next.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Converted {
     pub format: TexFormat,
@@ -139,27 +147,47 @@ pub struct Converted {
     pub levels: u32,
     pub traits: Traits,
     pub data: Vec<u8>,
+    /// I4 alpha plane of a split texture (see above).
+    pub alpha_plane: Option<Vec<u8>>,
 }
 
 impl Converted {
-    /// Decode level `level` (for previews and checks).
+    /// Bytes the texture takes on the Wii (colour plus alpha plane).
+    pub fn bytes(&self) -> usize {
+        self.data.len() + self.alpha_plane.as_ref().map_or(0, Vec::len)
+    }
+
+    /// Decode level `level` as the Wii would show it (for previews and checks).
     pub fn decode_level(&self, level: u32) -> Option<Image> {
         if level >= self.levels {
             return None;
         }
-        let mut off = 0;
-        for l in 0..level {
-            off += self
-                .format
-                .level_size((self.width >> l).max(1), (self.height >> l).max(1));
+        let (w, h) = ((self.width >> level).max(1), (self.height >> level).max(1));
+        let offset = |format: TexFormat| -> usize {
+            (0..level)
+                .map(|l| format.level_size((self.width >> l).max(1), (self.height >> l).max(1)))
+                .sum()
+        };
+        let mut img = codec::decode(&self.data[offset(self.format)..], w, h, self.format)?;
+        if let Some(plane) = &self.alpha_plane {
+            let alpha = codec::decode(
+                &plane[offset(ALPHA_PLANE_FORMAT)..],
+                w,
+                h,
+                ALPHA_PLANE_FORMAT,
+            )?;
+            for (p, a) in img.pixels.iter_mut().zip(&alpha.pixels) {
+                p[3] = a[0];
+            }
         }
-        codec::decode(
-            &self.data[off..],
-            (self.width >> level).max(1),
-            (self.height >> level).max(1),
-            self.format,
-        )
+        Some(img)
     }
+}
+
+/// Whether a texture of this role and content is stored split (CMPR colour + I4 alpha). UI keeps RGB5A3: its text
+/// and icon edges need exact colour more than they need the memory.
+pub fn splits_alpha(role: Role, t: Traits) -> bool {
+    !t.grey && t.alpha == Alpha::Smooth && role != Role::Ui
 }
 
 /// Smallest mip worth storing: below one block the level is mostly padding.
@@ -193,7 +221,12 @@ pub fn convert_with(img: &Image, role: Role, opts: Options) -> Converted {
             Alpha::Binary
         };
     }
-    let format = choose_format(role, traits);
+    let split = splits_alpha(role, traits);
+    let format = if split {
+        TexFormat::Cmpr
+    } else {
+        choose_format(role, traits)
+    };
     let (w, h) = fit_pow2(img.width, img.height, max_dim);
     let base = resize(img, w, h);
     let mut chain = if role.mipmapped() {
@@ -208,8 +241,23 @@ pub fn convert_with(img: &Image, role: Role, opts: Options) -> Converted {
         }
     }
     let mut data = Vec::with_capacity(format.chain_size(w, h, chain.len() as u32));
+    let mut alpha_plane =
+        split.then(|| Vec::with_capacity(ALPHA_PLANE_FORMAT.chain_size(w, h, chain.len() as u32)));
     for level in &chain {
-        data.extend_from_slice(&codec::encode(level, format));
+        match &mut alpha_plane {
+            None => data.extend_from_slice(&codec::encode(level, format)),
+            Some(plane) => {
+                // Colour without alpha (so CMPR stays in 4-colour mode), alpha as intensity.
+                let mut colour = level.clone();
+                let mut alpha = level.clone();
+                for (c, a) in colour.pixels.iter_mut().zip(alpha.pixels.iter_mut()) {
+                    c[3] = 255;
+                    *a = [a[3], a[3], a[3], 255];
+                }
+                data.extend_from_slice(&codec::encode(&colour, format));
+                plane.extend_from_slice(&codec::encode(&alpha, ALPHA_PLANE_FORMAT));
+            }
+        }
     }
     Converted {
         format,
@@ -218,6 +266,7 @@ pub fn convert_with(img: &Image, role: Role, opts: Options) -> Converted {
         levels: chain.len() as u32,
         traits,
         data,
+        alpha_plane,
     }
 }
 
@@ -320,6 +369,40 @@ mod tests {
         assert_eq!(Role::World.cutout_max_dim(), 256);
         assert_eq!(Role::Viewmodel.cutout_max_dim(), 512);
         assert_eq!(Role::Effect.cutout_max_dim(), 256);
+    }
+
+    #[test]
+    fn smooth_alpha_colour_is_split_into_cmpr_and_i4() {
+        // A decal: colour gradient, alpha fading out smoothly.
+        let src = Image::from_fn(256, 256, |x, y| [x as u8, y as u8, 90, (255 - x) as u8]);
+        let c = convert(&src, Role::World);
+        assert_eq!(c.format, TexFormat::Cmpr);
+        let plane = c.alpha_plane.as_ref().expect("split");
+        assert_eq!(
+            plane.len(),
+            ALPHA_PLANE_FORMAT.chain_size(c.width, c.height, c.levels)
+        );
+        // Half the bytes of the same texture as RGB5A3.
+        assert_eq!(
+            2 * c.bytes(),
+            TexFormat::Rgb5a3.chain_size(c.width, c.height, c.levels)
+        );
+        // Alpha comes back within one I4 step, colour as CMPR.
+        let l0 = c.decode_level(0).unwrap();
+        for (p, q) in src.pixels.iter().zip(&l0.pixels) {
+            assert!((p[3] as i32 - q[3] as i32).abs() <= 9, "{p:?} -> {q:?}");
+        }
+        assert!(c.decode_level(c.levels - 1).is_some());
+        // UI keeps RGB5A3; grey keeps IA4/IA8; opaque and cut-outs are not split.
+        assert_eq!(convert(&src, Role::Ui).alpha_plane, None);
+        let grey = Image::from_fn(64, 64, |x, _| [100, 100, 100, (x * 4) as u8]);
+        assert_eq!(convert(&grey, Role::World).alpha_plane, None);
+        assert_eq!(
+            convert(&Image::new(64, 64, [1, 2, 3, 255]), Role::World).alpha_plane,
+            None
+        );
+        let cut = convert_with(&src, Role::Prop, Options { cutout: Some(128) });
+        assert_eq!(cut.alpha_plane, None);
     }
 
     #[test]

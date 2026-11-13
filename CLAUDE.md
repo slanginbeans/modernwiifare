@@ -38,6 +38,8 @@ The repository holds code, tools and docs only. License: Apache-2.0.
   - `gx_texture/`: GX formats (I4..RGBA8, CMPR) encode/decode, gamma-correct resize + mips, per-role format policy,
     `.gxt` container. CMPR blends 5/8+3/8 like Dolphin (`cmpr::BLEND_NEAR`); confirm on hardware.
     `convert_with(.., Options { cutout })`: alpha-tested textures get a ≥256 cap and keep their coverage per mip.
+    Smooth-alpha colour textures (not UI) are split: CMPR colour + `alpha_plane` (I4); `.gxt` flag bit 0. The
+    renderer must sample both (colour from one unit, alpha from the I4 unit). See `docs/textures.md`.
   - Later: the pack format.
 - `tools/`: asset guard, budget report, Dolphin launch.
 - `docs/`: ADRs, budgets, deviations, references, upstream patches.

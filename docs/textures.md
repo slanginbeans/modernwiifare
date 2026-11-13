@@ -39,7 +39,7 @@ referenced it.
 **Alpha** from the material's state bits, applied to the pixels before encoding:
 | Material state | Texture alpha |
 |---|---|
-| any pass blends with source/destination alpha | kept (RGB5A3 when smooth) |
+| any pass blends with source/destination alpha | kept: smooth colour alpha is split into CMPR + I4 (below); UI keeps RGB5A3 |
 | alpha test (> 0, < 128, ≥ 128) | 1 bit with the full-size coverage kept at every mip level (below), so CMPR |
 | opaque or additive (ONE/ONE) | dropped, so opaque CMPR |
 
@@ -57,18 +57,35 @@ fixed level thins them out, worst in the small mip levels used at a distance. `g
 
 Their PSNR is measured against the resized source cut the same way, so it scores colour; coverage is reported apart.
 
+## Smooth alpha: CMPR colour + I4 alpha plane
+A colour texture with smooth alpha (decals, stains, glass, foam), except UI, is stored *split*: the colour as opaque
+CMPR (4 bpp) and the alpha as an I4 plane (4 bpp) of the same size and mip count. That is 8 bpp against RGB5A3's 16, and
+better on both channels: RGB5A3 falls back to 4-4-4 colour and 3-bit alpha wherever alpha is not full, while the split
+keeps CMPR's 565 colour endpoints and 16 alpha levels. UI stays RGB5A3, since CMPR's 4×4 blocks soften icon and text edges.
+
+- `gx_texture::policy::Converted.alpha_plane` holds the I4 plane; `decode_level` merges both as the Wii shows them.
+- `.gxt`: flag bit 0 in the header, then a second header (I4, same size and levels) and the plane; still 32-byte aligned.
+- **Renderer (`gx_render`, later):** bind the colour map and the I4 map to two texture units; take colour from the first
+  and alpha from the second (GX reads I4 as I,I,I,I) in the TEV.
+
 ## `mp_rust` (2026-11-13, retail x86 zone)
 608 GfxImages: 16 in the zone, 592 streamed from IWIs. All found and decoded, 0 failures, about 47 s (release, 2 cores).
 374 skipped: 171 normal maps, 179 specular maps, 15 lightmaps/probes, 7 cubes, 1 built-in, 1 used only as detail.
 282 materials walked, every material texture link resolved.
 
-| | Name-based roles (first run) | Material-based roles and alpha | + cut-outs keep size and coverage |
-|---|---|---|---|
-| Textures encoded | 235 | 234 | 234 |
-| **Wii texture memory** | **11.72 MiB** | **7.03 MiB** | **7.56 MiB** |
-| CMPR | 185 textures, 5,692 KiB | 207 textures, 4,602 KiB | 207 textures, 5,146 KiB |
-| RGB5A3 | 49 textures, 6,304 KiB | 26 textures, 2,597 KiB | 26 textures, 2,597 KiB |
-| Roles | world 177, character 46, prop 6, viewmodel 3, effect 2, UI 1 | world 65, prop 90, character 71, UI 7, effect 1 | same |
+| Step | Wii texture memory | CMPR | CMPR + I4 | RGB5A3 |
+|---|---|---|---|---|
+| Name-based roles (first run) | 11.72 MiB | 185 textures, 5,692 KiB | – | 49, 6,304 KiB |
+| Roles and alpha from materials | 7.03 MiB | 207, 4,602 KiB | – | 26, 2,597 KiB |
+| + cut-outs keep size and coverage | 7.56 MiB | 207, 5,146 KiB | – | 26, 2,597 KiB |
+| **+ smooth alpha split into CMPR + I4** | **6.71 MiB** | 207, 5,146 KiB | 19, 875 KiB | 7 (UI), 848 KiB |
+
+Roles (material-based): world 65, prop 90, character 71, UI 7, effect 1. With name guesses they were world 177,
+character 46, prop 6, viewmodel 3, effect 2, UI 1.
+
+Split textures: the 19 decals, stains, glass and foam textures halved (1,750 → 874 KiB) and scored 5.1 dB better on
+average (−4.5 to +10.5). The one that lost is a team icon drawn as an effect (42.3 → 37.8 dB): flat icon art suits CMPR
+blocks less.
 
 Alpha uses: 162 textures dropped alpha (opaque or additive material), 26 alpha-tested, 46 blended. The name guess was wrong
 for 116 textures, mostly world → prop (78) and world → character (28).
@@ -77,13 +94,12 @@ Cut-outs (26 textures, 154 mip levels): coverage error with coverage kept is 0.1
 be 4.3% mean and 47% on its worst level. The 19 prop cut-outs (trees, bushes, grass, flags) doubled in size (e.g. a tree
 card 64×128 → 128×256), which costs 544 KiB in all.
 
-Quality (PSNR against the resized source; cut-outs against the same cut): character mean 40.8 dB, prop 40.1, world 38.1.
+Quality (PSNR against the resized source; cut-outs against the same cut): character mean 41.1 dB, prop 40.6, world 38.6.
 
 ## Findings to act on
 1. ~~Cut-out foliage suffers at the prop size cap.~~ Fixed: cut-outs get at least 256 and keep their coverage (above).
-2. **Smooth alpha is still over a third of the memory.** 26 RGB5A3 textures (decals, stains, foam, HUD icons) use 2.5 of
-   7 MiB. Options: cap blended world decals one size lower, or store colour as CMPR plus alpha as I4 (8 bpp total) and
-   combine them in the TEV recipe.
+2. ~~Smooth alpha is over a third of the memory.~~ Fixed: split into CMPR + I4 (above). Needs the two-texture TEV
+   recipe in the renderer.
 3. **The minimap is the largest texture** (UI, 512² RGB5A3, 512 KiB). It is real HUD art; consider 256² or I4/IA4.
 4. **Sky and effects are mostly absent from this zone.** The `mp_rust` sky is a cube map (skipped for now), and most
    effect images live in `common_mp`. Converting the shared zones comes next.

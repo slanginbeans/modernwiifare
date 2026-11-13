@@ -62,6 +62,8 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
       alpha test, opaque). *`mp_rust`: 11.7 → 7.0 MiB on the Wii.*
 - [x] Cut-outs: size cap ≥ 256 and alpha-test coverage kept at every mip level. *`mp_rust`: 7.6 MiB; worst mip
       coverage error 1% (plain cut: 47%).*
+- [x] Smooth alpha split into CMPR colour + I4 alpha plane (8 bpp instead of RGB5A3's 16; UI keeps RGB5A3).
+      *`mp_rust`: 6.7 MiB; split textures halved and +5.1 dB. The renderer needs a two-texture TEV recipe for them.*
 - [ ] Materials → TEV recipe table; world → cell-chunked display lists + lightmaps;
       clipmap → Wii collision layout; spawns/entities; weapon defs (lossless); GSC IR.
 - [ ] `out/report.json` budget report. The build fails when over budget. Deterministic output.

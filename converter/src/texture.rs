@@ -146,9 +146,18 @@ pub fn format_name(format: TexFormat) -> &'static str {
     }
 }
 
+/// Format label of a converted texture: "CMPR+I4" when split into colour and an alpha plane.
+pub fn texture_format_name(c: &gx_texture::Converted) -> &'static str {
+    if c.alpha_plane.is_some() {
+        "CMPR+I4"
+    } else {
+        format_name(c.format)
+    }
+}
+
 pub fn describe(s: &Summary) -> String {
     let c = &s.converted;
-    let fmt = format_name(c.format);
+    let fmt = texture_format_name(c);
     format!(
         "{fmt} {}x{}, {} level(s), {} KB (source as RGBA8: {} KB, {:.1}x smaller)\n\
          content: {}, alpha {:?}\n\
@@ -156,9 +165,9 @@ pub fn describe(s: &Summary) -> String {
         c.width,
         c.height,
         c.levels,
-        c.data.len().div_ceil(1024),
+        c.bytes().div_ceil(1024),
         s.source_bytes.div_ceil(1024),
-        s.source_bytes as f64 / c.data.len().max(1) as f64,
+        s.source_bytes as f64 / c.bytes().max(1) as f64,
         if c.traits.grey { "grey" } else { "colour" },
         c.traits.alpha,
         s.psnr_db,
