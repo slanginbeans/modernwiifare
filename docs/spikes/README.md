@@ -34,6 +34,26 @@ Run it on one Wii with a GameCube controller in port 1.
 Record in `docs/spikes/results.md`: the self-test screen (a phone photo is fine), the background colour, whether the scene is
 smooth, whether the controls respond, whether START returns to the HBC, and the MEM1/MEM2 numbers. Note 4:3 vs 16:9 and the TV mode.
 
+## Spike D: converter reads your IW4x install
+Runs on your PC, not the Wii. It needs Rust (stable, see `rust-toolchain.toml`). Two commands:
+
+```bash
+cargo run -p mwf_convert --release -- inventory "D:/path/to/Call of Duty Modern Warfare 2"
+```
+
+```bash
+cargo run -p mwf_convert --release -- map "D:/path/to/Call of Duty Modern Warfare 2" --map mp_rust
+```
+
+`inventory` (or double-click `inventory.bat`) lists every zone's sizes and asset counts into `out/inventory.json`.
+`map` walks one map zone (`mp_rust` by default, or `--zone <file.ff>`) and measures each asset's bytes per type into
+`out/map_<zone>.json`. It prefers the retail x86 zone in `zone/iw4x/x86/english/` and falls back to `zone/english/`.
+Both reports contain sizes and counts only, never names or content.
+
+*Windows without Visual Studio:* build for `x86_64-pc-windows-gnullvm` with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)
+(UCRT) as linker and C compiler (IW4L's `diag` pulls in mimalloc, which is C). The plain `windows-gnu` toolchain
+links, but its binaries crash at start-up here.
+
 ## Spike B: system link discovery
 *Deferred to Phase 5. The game comes first. The build is kept in CI so it can be run any time.*
 

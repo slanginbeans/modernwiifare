@@ -24,6 +24,8 @@ The repository holds code, tools and docs only. License: Apache-2.0.
 - `converter/`: host Rust tool `mwf-convert` (stable). Uses IW4L reader/asset crates and writes to `out/` (git-ignored).
   `inventory <game folder>`: per-zone sizes and asset counts (Spike D). Reports must stay content-free: relative paths,
   sizes and counts only. On Windows, `inventory.bat` runs it with a double-click.
+  `map <game folder> [--map <zone>]`: walks one map zone with IW4L's loader, per-type stream/resident/payload bytes
+  (Spike D). Prefers the retail x86 zone in `zone/iw4x/x86/english/` over IW4x's x64 rewrite in `zone/english/`.
   `texture <png> --role <role>`: one PNG to a Wii `.gxt` + `_preview.png` (output under `out/`).
 - `wii/`: Wii runtime (stable Rust, no_std + alloc, ADR 0006), builds `.dol`s with `make -C wii`.
   - `platform/`: the C shim over libogc (`shim.h` is the whole API Rust sees; keep `spikes/src/ffi.rs` in sync).
