@@ -63,13 +63,30 @@ pub fn write_png(path: &Path, img: &Image) -> Result<(), String> {
     w.write_image_data(&flat).map_err(|e| e.to_string())
 }
 
-/// PSNR of RGB (and alpha, weighted equally) between two same-sized images.
-pub fn psnr(a: &Image, b: &Image) -> f64 {
+/// PSNR of what the Wii shows for `decoded` against `reference` (same size), in dB.
+///
+/// Colour is compared premultiplied by alpha, so colour under fully transparent pixels (which CMPR stores as black)
+/// costs nothing and half-transparent pixels count half. Alpha is compared as a channel of its own, except for
+/// I4/I8: GX copies their intensity into alpha, and whether that alpha is used is the material's choice, not the
+/// texture's, so only colour is measured for them.
+pub fn psnr(reference: &Image, decoded: &Image, format: TexFormat) -> f64 {
+    let alpha_is_intensity = matches!(format, TexFormat::I4 | TexFormat::I8);
     let mut se = 0.0f64;
     let mut n = 0.0f64;
-    for (p, q) in a.pixels.iter().zip(&b.pixels) {
-        for c in 0..4 {
-            let d = p[c] as f64 - q[c] as f64;
+    for (p, q) in reference.pixels.iter().zip(&decoded.pixels) {
+        let pa = f64::from(p[3]) / 255.0;
+        let qa = if alpha_is_intensity {
+            pa
+        } else {
+            f64::from(q[3]) / 255.0
+        };
+        for c in 0..3 {
+            let d = f64::from(p[c]) * pa - f64::from(q[c]) * qa;
+            se += d * d;
+            n += 1.0;
+        }
+        if !alpha_is_intensity {
+            let d = f64::from(p[3]) - f64::from(q[3]);
             se += d * d;
             n += 1.0;
         }
@@ -100,7 +117,7 @@ pub fn convert_file(
     let reference = resize(&src, c.width, c.height);
     let summary = Summary {
         source_bytes: src.pixels.len() * 4,
-        psnr_db: psnr(&reference, &level0),
+        psnr_db: psnr(&reference, &level0, c.format),
         converted: c,
     };
     std::fs::create_dir_all(out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
@@ -131,7 +148,7 @@ pub fn describe(s: &Summary) -> String {
     format!(
         "{fmt} {}x{}, {} level(s), {} KB (source as RGBA8: {} KB, {:.1}x smaller)\n\
          content: {}, alpha {:?}\n\
-         quality vs resized source: {:.1} dB PSNR",
+         quality vs resized source: {:.1} dB PSNR ({})",
         c.width,
         c.height,
         c.levels,
@@ -140,7 +157,12 @@ pub fn describe(s: &Summary) -> String {
         s.source_bytes as f64 / c.data.len().max(1) as f64,
         if c.traits.grey { "grey" } else { "colour" },
         c.traits.alpha,
-        s.psnr_db
+        s.psnr_db,
+        if matches!(c.format, TexFormat::I4 | TexFormat::I8) {
+            "colour only; I4/I8 alpha mirrors intensity"
+        } else {
+            "visible colour + alpha"
+        }
     )
 }
 
@@ -169,5 +191,35 @@ mod tests {
         assert_eq!(data, &s.converted.data[..]);
         assert_eq!(read_png(&preview).unwrap().width, 128);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn solid(px: [u8; 4]) -> Image {
+        Image::from_fn(4, 4, |_, _| px)
+    }
+
+    #[test]
+    fn psnr_ignores_colour_under_transparent_pixels() {
+        // CMPR stores fully transparent texels as black: invisible, so no error.
+        let src = solid([200, 150, 100, 0]);
+        let dec = solid([0, 0, 0, 0]);
+        assert_eq!(psnr(&src, &dec, TexFormat::Cmpr), f64::INFINITY);
+    }
+
+    #[test]
+    fn psnr_still_counts_visible_and_alpha_errors() {
+        let src = solid([200, 150, 100, 255]);
+        assert!(psnr(&src, &solid([0, 0, 0, 255]), TexFormat::Cmpr) < 10.0);
+        // Losing alpha on an opaque texel is an error for formats that store real alpha.
+        assert!(psnr(&src, &solid([200, 150, 100, 0]), TexFormat::Rgb5a3) < 10.0);
+    }
+
+    #[test]
+    fn psnr_skips_intensity_alpha_for_i4_and_i8() {
+        // Opaque black decodes as (0, 0, 0, 0) in I4/I8 because GX copies intensity into alpha.
+        let src = solid([0, 0, 0, 255]);
+        let dec = solid([0, 0, 0, 0]);
+        assert_eq!(psnr(&src, &dec, TexFormat::I4), f64::INFINITY);
+        assert_eq!(psnr(&src, &dec, TexFormat::I8), f64::INFINITY);
+        assert!(psnr(&src, &solid([90, 90, 90, 90]), TexFormat::I4) < 20.0);
     }
 }
