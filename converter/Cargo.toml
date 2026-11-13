@@ -1,0 +1,16 @@
+[package]
+name = "mwf_converter"
+version = "0.1.0"
+description = "Host converter: reads the user's own IW4x install through IW4L and (later) writes Wii packs. Spike D: zone inventory."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mwf-convert"
+path = "src/main.rs"
+
+[dependencies]
+# Same pinned rev as wii/iw4l_probe (see docs/upstream-patches.md). Host-only: asset_transport uses std.
+fastfile_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
+asset_transport = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }

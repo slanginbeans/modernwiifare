@@ -27,4 +27,7 @@ Status: **accepted** (2026-11-13)
 ## Consequences
 - The Wii build uses **nightly Rust + `build-std`** with a custom PowerPC EABI target, linking libogc through `ogc-sys`/`ogc-rs` (rust-wii). IW4L itself stays on stable. Our host crates stay on stable too.
 - We track upstream IW4L. Patches that make crates more portable go upstream first, and we carry a fork only when upstream declines. See the `iw4l-upstream` skill.
-- To check later: whether IW4L's install detection finds an **IW4x** install layout and its extra `iw4x_*` zones.
+- ~~To check later: whether IW4L's install detection finds an **IW4x** install layout and its extra `iw4x_*` zones.~~
+  Checked in Spike D (2026-11-13): yes. IW4x keeps the retail x86 zones under `zone/iw4x/x86/` and rewrites
+  `zone/english` as x64. IW4L reads both. Its zone search can prefer a same-named `usermaps/` map, so the converter
+  picks paths itself. See `docs/spikes/results.md`.
