@@ -24,4 +24,4 @@ pub mod policy;
 pub use codec::{decode, encode};
 pub use format::TexFormat;
 pub use image::Image;
-pub use policy::{Converted, Role, convert};
+pub use policy::{Converted, Options, Role, convert, convert_with};

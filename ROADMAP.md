@@ -60,6 +60,8 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
       *`mp_rust`: 608 images, 0 failures. See `docs/textures.md`.*
 - [x] Texture roles and alpha from materials (users: world / human-skeleton model / model / effect; state bits: blend,
       alpha test, opaque). *`mp_rust`: 11.7 → 7.0 MiB on the Wii.*
+- [x] Cut-outs: size cap ≥ 256 and alpha-test coverage kept at every mip level. *`mp_rust`: 7.6 MiB; worst mip
+      coverage error 1% (plain cut: 47%).*
 - [ ] Materials → TEV recipe table; world → cell-chunked display lists + lightmaps;
       clipmap → Wii collision layout; spawns/entities; weapon defs (lossless); GSC IR.
 - [ ] `out/report.json` budget report. The build fails when over budget. Deterministic output.

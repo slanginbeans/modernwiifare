@@ -37,6 +37,7 @@ The repository holds code, tools and docs only. License: Apache-2.0.
 - `shared/`: code used by both the converter and the Wii runtime (no_std).
   - `gx_texture/`: GX formats (I4..RGBA8, CMPR) encode/decode, gamma-correct resize + mips, per-role format policy,
     `.gxt` container. CMPR blends 5/8+3/8 like Dolphin (`cmpr::BLEND_NEAR`); confirm on hardware.
+    `convert_with(.., Options { cutout })`: alpha-tested textures get a ≥256 cap and keep their coverage per mip.
   - Later: the pack format.
 - `tools/`: asset guard, budget report, Dolphin launch.
 - `docs/`: ADRs, budgets, deviations, references, upstream patches.

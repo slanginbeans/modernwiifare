@@ -155,6 +155,62 @@ pub fn fit_pow2(width: u32, height: u32, max_dim: u32) -> (u32, u32) {
     (w, h)
 }
 
+/// Fraction of texels whose alpha is at least `threshold` (what an alpha test at that threshold lets through).
+pub fn coverage(img: &Image, threshold: u8) -> f32 {
+    let n = img.pixels.len();
+    if n == 0 {
+        return 0.0;
+    }
+    img.pixels.iter().filter(|p| p[3] >= threshold).count() as f32 / n as f32
+}
+
+/// Cut alpha to 0 or 255 so that `target` of the texels stay opaque.
+///
+/// Alpha-test coverage preservation: a downscaled cut-out has averaged (smooth) alpha, and cutting it at a fixed 50%
+/// thins out branches, bars and leaves that are narrower than a texel. Picking the cut level from the full-size
+/// coverage keeps the same fraction of the texture solid at every size.
+///
+/// Texels above the cut level become opaque. When the level itself holds more texels than needed (fine detail that
+/// averaged to one even alpha), just enough of them are switched on in 4x4 Bayer order, so coverage stays right and
+/// the result is deterministic.
+pub fn cut_to_coverage(img: &mut Image, target: f32) {
+    const BAYER: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+    let n = img.pixels.len();
+    let want = libm::roundf(target.clamp(0.0, 1.0) * n as f32) as usize;
+    let mut hist = [0usize; 256];
+    for p in &img.pixels {
+        hist[p[3] as usize] += 1;
+    }
+    // Highest cut level t whose texels (alpha >= t) reach `want`; alpha 0 texels are never drawn.
+    let (mut cut, mut at_or_above) = (1usize, 0usize);
+    for t in (1..=255usize).rev() {
+        at_or_above += hist[t];
+        cut = t;
+        if at_or_above >= want {
+            break;
+        }
+    }
+    let above = at_or_above - hist[cut];
+    let mut extra = want.saturating_sub(above);
+    // Texels exactly at the cut level, in Bayer order.
+    let w = img.width.max(1) as usize;
+    let mut ties: Vec<usize> = (0..n)
+        .filter(|&i| img.pixels[i][3] as usize == cut)
+        .collect();
+    ties.sort_by_key(|&i| (BAYER[(i / w) % 4][(i % w) % 4], i));
+    let mut on = vec![false; n];
+    for i in ties {
+        if extra == 0 {
+            break;
+        }
+        on[i] = true;
+        extra -= 1;
+    }
+    for (i, p) in img.pixels.iter_mut().enumerate() {
+        p[3] = if p[3] as usize > cut || on[i] { 255 } else { 0 };
+    }
+}
+
 /// Mip chain from `base`: each level halves both sides (never below 1) until both are at most
 /// `min_dim` or a level is 1x1. Level 0 is `base` itself.
 pub fn mip_chain(base: &Image, min_dim: u32) -> Vec<Image> {
@@ -222,6 +278,42 @@ mod tests {
         let img = Image::new(300, 77, [10, 200, 30, 255]);
         let small = resize(&img, 64, 16);
         assert!(small.pixels.iter().all(|&p| p == [10, 200, 30, 255]));
+    }
+
+    #[test]
+    fn coverage_counts_texels_passing_the_test() {
+        let img = Image::from_fn(4, 1, |x, _| [0, 0, 0, [0, 100, 128, 255][x as usize]]);
+        assert_eq!(coverage(&img, 128), 0.5);
+        assert_eq!(coverage(&img, 1), 0.75);
+    }
+
+    #[test]
+    fn thin_bars_survive_downscale_with_coverage_kept() {
+        // 1-texel-wide opaque bars every 4 texels: 25% coverage. A 4x downscale averages each bar to alpha 64,
+        // which a fixed 128 cut would erase entirely.
+        let src = Image::from_fn(64, 64, |x, _| {
+            [200, 200, 200, if x % 4 == 0 { 255 } else { 0 }]
+        });
+        let want = coverage(&src, 128);
+        let mut small = resize(&src, 16, 16);
+        assert_eq!(coverage(&small, 128), 0.0, "naive cut loses the bars");
+        cut_to_coverage(&mut small, want);
+        assert!(small.pixels.iter().all(|p| p[3] == 0 || p[3] == 255));
+        assert!(
+            (coverage(&small, 128) - want).abs() < 0.05,
+            "{}",
+            coverage(&small, 128)
+        );
+    }
+
+    #[test]
+    fn cut_to_coverage_edges() {
+        let mut img = Image::from_fn(2, 2, |x, y| [0, 0, 0, (x * 100 + y * 50) as u8]);
+        cut_to_coverage(&mut img, 0.0);
+        assert!(img.pixels.iter().all(|p| p[3] == 0));
+        let mut img = Image::from_fn(2, 2, |x, y| [0, 0, 0, (x * 100 + y * 50 + 1) as u8]);
+        cut_to_coverage(&mut img, 1.0);
+        assert!(img.pixels.iter().all(|p| p[3] == 255));
     }
 
     #[test]

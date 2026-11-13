@@ -40,34 +40,47 @@ referenced it.
 | Material state | Texture alpha |
 |---|---|
 | any pass blends with source/destination alpha | kept (RGB5A3 when smooth) |
-| alpha test (> 0, < 128, ≥ 128) | cut to 1 bit at the test's threshold, so CMPR |
+| alpha test (> 0, < 128, ≥ 128) | 1 bit with the full-size coverage kept at every mip level (below), so CMPR |
 | opaque or additive (ONE/ONE) | dropped, so opaque CMPR |
 
 In the retail x86 zones every world, model and effect is a top-level entry, so the crediting is exact there. In IW4x's
 x64 rewrites, models nest inside the world and would count as world.
+
+## Alpha-tested (cut-out) textures
+Foliage, fences and gratings are mostly detail thinner than a texel once downscaled. Cutting the averaged alpha at a
+fixed level thins them out, worst in the small mip levels used at a distance. `gx_texture::policy::convert_with` with
+`Options { cutout: Some(threshold) }` therefore:
+- caps the texture at `Role::cutout_max_dim()`: at least 256, so props and effects are not cut to 128;
+- builds the mips from the smooth alpha, then cuts each level so that the same fraction of texels passes the alpha
+  test as at full size (`image::cut_to_coverage`). Where fine detail averaged to one even alpha, just enough of those
+  texels are turned on in 4×4 Bayer order.
+
+Their PSNR is measured against the resized source cut the same way, so it scores colour; coverage is reported apart.
 
 ## `mp_rust` (2026-11-13, retail x86 zone)
 608 GfxImages: 16 in the zone, 592 streamed from IWIs. All found and decoded, 0 failures, about 47 s (release, 2 cores).
 374 skipped: 171 normal maps, 179 specular maps, 15 lightmaps/probes, 7 cubes, 1 built-in, 1 used only as detail.
 282 materials walked, every material texture link resolved.
 
-| | Name-based roles (first run) | Material-based roles and alpha |
-|---|---|---|
-| Textures encoded | 235 | 234 |
-| **Wii texture memory** | **11.72 MiB** | **7.03 MiB (−40%)** |
-| CMPR | 185 textures, 5,692 KiB | 207 textures, 4,602 KiB |
-| RGB5A3 | 49 textures, 6,304 KiB | 26 textures, 2,597 KiB |
-| Roles | world 177, character 46, prop 6, viewmodel 3, effect 2, UI 1 | world 65, prop 90, character 71, UI 7, effect 1 |
+| | Name-based roles (first run) | Material-based roles and alpha | + cut-outs keep size and coverage |
+|---|---|---|---|
+| Textures encoded | 235 | 234 | 234 |
+| **Wii texture memory** | **11.72 MiB** | **7.03 MiB** | **7.56 MiB** |
+| CMPR | 185 textures, 5,692 KiB | 207 textures, 4,602 KiB | 207 textures, 5,146 KiB |
+| RGB5A3 | 49 textures, 6,304 KiB | 26 textures, 2,597 KiB | 26 textures, 2,597 KiB |
+| Roles | world 177, character 46, prop 6, viewmodel 3, effect 2, UI 1 | world 65, prop 90, character 71, UI 7, effect 1 | same |
 
 Alpha uses: 162 textures dropped alpha (opaque or additive material), 26 alpha-tested, 46 blended. The name guess was wrong
 for 116 textures, mostly world → prop (78) and world → character (28).
 
-Quality (PSNR against the resized source, visible colour + alpha): character mean 40.6 dB, world 37.5, prop 36.0.
+Cut-outs (26 textures, 154 mip levels): coverage error with coverage kept is 0.1% mean, 1% worst level; a plain cut would
+be 4.3% mean and 47% on its worst level. The 19 prop cut-outs (trees, bushes, grass, flags) doubled in size (e.g. a tree
+card 64×128 → 128×256), which costs 544 KiB in all.
+
+Quality (PSNR against the resized source; cut-outs against the same cut): character mean 40.8 dB, prop 40.1, world 38.1.
 
 ## Findings to act on
-1. **Cut-out foliage suffers at the prop size cap.** The lowest scores are all alpha-tested props: a tree card goes from
-   512×1024 to 64×128 (15.2 dB), and bushes and pine needles from 512 to 128 (about 20 dB). Their fine alpha detail blurs
-   on resize, then the 1-bit cut loses it. Options: a larger cap for alpha-tested props, or a sharper alpha resize.
+1. ~~Cut-out foliage suffers at the prop size cap.~~ Fixed: cut-outs get at least 256 and keep their coverage (above).
 2. **Smooth alpha is still over a third of the memory.** 26 RGB5A3 textures (decals, stains, foam, HUD icons) use 2.5 of
    7 MiB. Options: cap blended world decals one size lower, or store colour as CMPR plus alpha as I4 (8 bpp total) and
    combine them in the TEV recipe.

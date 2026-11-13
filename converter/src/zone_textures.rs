@@ -20,7 +20,8 @@ use fastfile_iw4::{
     load_zone, parse_zone_header,
 };
 use gx_texture::image::{Image, resize};
-use gx_texture::policy::{Role, convert};
+use gx_texture::image::{coverage, cut_to_coverage, mip_chain};
+use gx_texture::policy::{Options, Role, convert_with};
 use serde::Serialize;
 
 use crate::inventory::IW4L_REV;
@@ -30,7 +31,26 @@ use crate::texture::{format_name, psnr};
 
 /// Report format version. Bump when fields change meaning.
 /// v2: roles and alpha from materials (`role_sources`, `alpha_uses`, `name_role_changes`).
-pub const REPORT_VERSION: u32 = 2;
+/// v3: alpha-tested textures keep their coverage (`cutouts`); their PSNR is measured against the same cut.
+pub const REPORT_VERSION: u32 = 3;
+
+/// Alpha-tested textures: how well the 1-bit alpha keeps the full-size coverage at level 0.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct CutoutStats {
+    pub textures: usize,
+    /// Sum over textures of |level-0 coverage - full-size coverage| (fraction of texels), with coverage kept.
+    pub coverage_error_sum: f64,
+    /// The same for a plain cut of the resized alpha at the material threshold (the old behaviour).
+    pub naive_coverage_error_sum: f64,
+    /// Over every mip level of every alpha-tested texture: number of levels, and the summed coverage error with
+    /// coverage kept and with a plain cut. Distant (small) levels are where plain cuts lose foliage.
+    pub mip_levels: usize,
+    pub mip_coverage_error_sum: f64,
+    pub naive_mip_coverage_error_sum: f64,
+    /// Worst single mip level, with coverage kept and with a plain cut.
+    pub worst_mip_coverage_error: f64,
+    pub naive_worst_mip_coverage_error: f64,
+}
 
 /// IW4 `TextureSemantic` values that the Wii does not take as textures.
 const TS_NORMAL_MAP: u8 = 5;
@@ -276,6 +296,7 @@ pub struct TexturesReport {
     pub alpha_uses: BTreeMap<&'static str, usize>,
     /// Encoded textures whose material role differs from the old name guess: (name role, material role) -> count.
     pub name_role_changes: BTreeMap<String, usize>,
+    pub cutouts: CutoutStats,
 }
 
 fn alpha_label(a: Option<AlphaUse>) -> &'static str {
@@ -361,6 +382,7 @@ pub fn convert_zone(
         role_sources: BTreeMap::new(),
         alpha_uses: BTreeMap::new(),
         name_role_changes: BTreeMap::new(),
+        cutouts: CutoutStats::default(),
     };
     let mut psnr_sums: HashMap<&'static str, (f64, usize)> = HashMap::new();
     let mut seen: HashMap<(u64, &'static str, Option<AlphaUse>), ()> = HashMap::new();
@@ -388,9 +410,15 @@ pub fn convert_zone(
             report.duplicates += 1;
             continue;
         }
-        if let Some(a) = alpha {
-            apply_alpha(&mut pixels, a);
-        }
+        // Alpha-tested textures keep their smooth alpha: the encoder cuts it per mip level, keeping coverage.
+        let cutout = match alpha {
+            Some(AlphaUse::Cutout { threshold }) => Some(threshold),
+            Some(a) => {
+                apply_alpha(&mut pixels, a);
+                None
+            }
+            None => None,
+        };
         *report.by_source_format.entry(src_fmt.name()).or_default() += 1;
         *report.role_sources.entry(source).or_default() += 1;
         *report.alpha_uses.entry(alpha_label(alpha)).or_default() += 1;
@@ -402,10 +430,36 @@ pub fn convert_zone(
                 .or_default() += 1;
         }
 
-        let c = convert(&pixels, role);
-        let q = c
-            .decode_level(0)
-            .map(|level0| psnr(&resize(&pixels, c.width, c.height), &level0, c.format));
+        let c = convert_with(&pixels, role, Options { cutout });
+        let level0 = c.decode_level(0);
+        let mut reference = resize(&pixels, c.width, c.height);
+        if let (Some(threshold), Some(l0)) = (cutout, &level0) {
+            // Coverage: full size, our cut (level 0 as decoded), and a plain cut of the resized alpha at the threshold.
+            let full = coverage(&pixels, threshold);
+            let naive = coverage(&reference, threshold);
+            let ours = coverage(l0, 128);
+            let k = &mut report.cutouts;
+            k.textures += 1;
+            k.coverage_error_sum += f64::from((ours - full).abs());
+            k.naive_coverage_error_sum += f64::from((naive - full).abs());
+            // Every mip level: ours as decoded, against a plain cut of the same smooth mip chain.
+            let smooth = mip_chain(&reference, 1);
+            for (level, plain) in (0..c.levels).zip(&smooth) {
+                let Some(dec) = c.decode_level(level) else {
+                    break;
+                };
+                let e_ours = f64::from((coverage(&dec, 128) - full).abs());
+                let e_plain = f64::from((coverage(plain, threshold) - full).abs());
+                k.mip_levels += 1;
+                k.mip_coverage_error_sum += e_ours;
+                k.naive_mip_coverage_error_sum += e_plain;
+                k.worst_mip_coverage_error = k.worst_mip_coverage_error.max(e_ours);
+                k.naive_worst_mip_coverage_error = k.naive_worst_mip_coverage_error.max(e_plain);
+            }
+            // Judge colour against the same cut, so the score measures the encoder, not the (intended) 1-bit alpha.
+            cut_to_coverage(&mut reference, full);
+        }
+        let q = level0.map(|level0| psnr(&reference, &level0, c.format));
 
         let mut stem = file_stem(&img.name);
         let n = used_stems.entry(stem.clone()).or_default();
@@ -527,6 +581,24 @@ pub fn render_text(r: &TexturesReport) -> String {
     let _ = writeln!(s, "Alpha:");
     for (a, n) in &r.alpha_uses {
         let _ = writeln!(s, "  {n:>5}  {a}");
+    }
+    if r.cutouts.textures > 0 {
+        let n = r.cutouts.textures as f64;
+        let k = &r.cutouts;
+        let levels = k.mip_levels.max(1) as f64;
+        let _ = writeln!(
+            s,
+            "Alpha-tested: {} textures. Coverage error, kept vs plain cut: level 0 mean {:.1}% vs {:.1}%; \
+             all {} mip levels mean {:.1}% vs {:.1}%, worst {:.0}% vs {:.0}%",
+            k.textures,
+            100.0 * k.coverage_error_sum / n,
+            100.0 * k.naive_coverage_error_sum / n,
+            k.mip_levels,
+            100.0 * k.mip_coverage_error_sum / levels,
+            100.0 * k.naive_mip_coverage_error_sum / levels,
+            100.0 * k.worst_mip_coverage_error,
+            100.0 * k.naive_worst_mip_coverage_error
+        );
     }
     if !r.name_role_changes.is_empty() {
         let _ = writeln!(s, "Changed from the name guess (name -> material):");

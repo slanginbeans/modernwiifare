@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::codec;
 use crate::format::TexFormat;
-use crate::image::{Image, fit_pow2, mip_chain, resize};
+use crate::image::{Image, coverage, cut_to_coverage, fit_pow2, mip_chain, resize};
 
 /// What a texture is used for. Decides its size cap, format family and whether it gets mips.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -39,6 +39,13 @@ impl Role {
             Role::Prop | Role::Effect | Role::Mask => 128,
             Role::Viewmodel | Role::Sky | Role::Ui => 512,
         }
+    }
+
+    /// Longest side for an alpha-tested (cut-out) texture: at least 256. Foliage, fences and gratings are mostly thin
+    /// detail that a 128 cap erases, and as CMPR they still cost only 4 bits per texel.
+    pub const fn cutout_max_dim(self) -> u32 {
+        let d = self.max_dim();
+        if d < 256 { 256 } else { d }
     }
 
     pub const fn mipmapped(self) -> bool {
@@ -160,17 +167,46 @@ fn min_mip_dim(fmt: TexFormat) -> u32 {
     fmt.block_dims().0.min(fmt.block_dims().1)
 }
 
+/// What the material does with the texture, beyond its role.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Options {
+    /// The material alpha-tests at this threshold (texels with alpha >= threshold are drawn). The texture keeps a
+    /// 1-bit alpha with the full-size coverage at every mip level, and gets [`Role::cutout_max_dim`].
+    pub cutout: Option<u8>,
+}
+
 /// Resize to the role's cap (power of two), pick the format, build mips, and encode.
 pub fn convert(img: &Image, role: Role) -> Converted {
-    let traits = analyze(img);
+    convert_with(img, role, Options::default())
+}
+
+/// [`convert`] with what the material says about the texture.
+pub fn convert_with(img: &Image, role: Role, opts: Options) -> Converted {
+    let mut traits = analyze(img);
+    let mut max_dim = role.max_dim();
+    let cut = opts.cutout.map(|threshold| coverage(img, threshold));
+    if let Some(c) = cut {
+        max_dim = role.cutout_max_dim();
+        traits.alpha = if c >= 1.0 {
+            Alpha::Opaque
+        } else {
+            Alpha::Binary
+        };
+    }
     let format = choose_format(role, traits);
-    let (w, h) = fit_pow2(img.width, img.height, role.max_dim());
+    let (w, h) = fit_pow2(img.width, img.height, max_dim);
     let base = resize(img, w, h);
-    let chain = if role.mipmapped() {
+    let mut chain = if role.mipmapped() {
         mip_chain(&base, min_mip_dim(format))
     } else {
         alloc::vec![base]
     };
+    // Mips are built from the smooth (averaged) alpha above; each level is then cut to the source coverage.
+    if let Some(c) = cut {
+        for level in &mut chain {
+            cut_to_coverage(level, c);
+        }
+    }
     let mut data = Vec::with_capacity(format.chain_size(w, h, chain.len() as u32));
     for level in &chain {
         data.extend_from_slice(&codec::encode(level, format));
@@ -257,6 +293,33 @@ mod tests {
         let l5 = c.decode_level(5).unwrap();
         assert_eq!((l5.width, l5.height), (8, 8));
         assert!(c.decode_level(6).is_none());
+    }
+
+    #[test]
+    fn cutout_keeps_size_format_and_coverage() {
+        // A 512x1024 "tree card": smooth alpha (anti-aliased like DXT5 foliage), thin branches every 8 texels.
+        let src = Image::from_fn(512, 1024, |x, _| {
+            let d = (x % 8) as i32;
+            [40, 90, 30, (255 - 120 * d).clamp(0, 255) as u8]
+        });
+        let want = crate::image::coverage(&src, 128);
+        let plain = convert(&src, Role::Prop);
+        assert_eq!((plain.width, plain.height), (64, 128));
+        let cut = convert_with(&src, Role::Prop, Options { cutout: Some(128) });
+        assert_eq!(
+            (cut.format, cut.width, cut.height),
+            (TexFormat::Cmpr, 128, 256)
+        );
+        assert!(cut.levels > 1);
+        for level in 0..cut.levels {
+            let l = cut.decode_level(level).unwrap();
+            let got = crate::image::coverage(&l, 128);
+            assert!((got - want).abs() < 0.1, "level {level}: {got} vs {want}");
+        }
+        // Roles whose cap is already 256 or more keep it.
+        assert_eq!(Role::World.cutout_max_dim(), 256);
+        assert_eq!(Role::Viewmodel.cutout_max_dim(), 512);
+        assert_eq!(Role::Effect.cutout_max_dim(), 256);
     }
 
     #[test]
