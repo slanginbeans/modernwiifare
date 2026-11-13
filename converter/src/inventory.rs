@@ -1,362 +1,341 @@
-//! Walk an inflated IW4 zone with IW4L's loader and record each asset's name and size.
+//! Spike D: inventory of the user's install through IW4L's zone readers.
 //!
-//! Sizes per top-level asset entry:
-//! - `stream`: bytes of the inflated zone stream the entry consumed (its on-disk weight, nested assets included).
-//! - `blocks`: bytes it allocated in each XFile block. This is what the PC game keeps resident:
-//!   virtual/large = structs and arrays, physical = GPU-bound data, vertex/index = mesh buffers.
-//! - `payload`: raw pixel bytes of images and PCM/compressed bytes of loaded sounds inside the entry.
-//!
-//! Assets loaded inline inside another (e.g. a material and its images inside an xmodel) are counted in the parent
-//! entry; `nested` says how many there were.
+//! Output is metadata only (relative paths, byte sizes, per-type asset counts). Asset *names* and
+//! asset *content* are never read into the report.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 
-use asset_transport::ZoneMemory;
-use fastfile_iw4::{
-    AssetLinkSink, AssetSink, AssetType, MAX_XFILE_COUNT, Ptr, ScriptStrings, XFILE_BLOCK_TEMP,
-    ZonePtr, ZoneStream, load_asset_at_observed, load_zone, parse_zone_header,
-};
+use asset_transport::{ZoneOpenError, open_zone};
+use serde::Serialize;
 
-use crate::layout::mib;
+/// Report format version. Bump when fields change meaning.
+pub const REPORT_VERSION: u32 = 1;
+/// IW4L revision the readers come from (keep in sync with Cargo.toml).
+pub const IW4L_REV: &str = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1";
+const MAX_DEPTH: usize = 8;
 
-pub const BLOCK_NAMES: [&str; MAX_XFILE_COUNT] = [
-    "temp", "physical", "runtime", "virtual", "large", "callback", "vertex", "index",
-];
-
-pub struct Row {
-    pub index: usize,
-    pub ty: AssetType,
-    pub name: Option<String>,
-    /// false: the entry only points at an asset loaded earlier (an alias); it costs nothing new.
-    pub loaded: bool,
-    pub nested: usize,
-    pub stream: usize,
-    pub blocks: [usize; MAX_XFILE_COUNT],
-    pub payload: usize,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneKind {
+    /// `mp_*` map zone: what the Wii will load per match.
+    MpMap,
+    /// `mp_*_load` loading-screen zone.
+    MpLoadScreen,
+    /// Shared multiplayer zones (common_mp, code_post_gfx_mp, patch_mp, localized variants...).
+    MpCommon,
+    /// Anything else (campaign, Spec Ops, UI-only...). Multiplayer-only project: ignored.
+    Other,
 }
 
-impl Row {
-    pub fn resident(&self) -> usize {
-        // temp is scratch reused during load; runtime/callback are zero-filled at load time but still resident.
-        self.blocks
-            .iter()
-            .enumerate()
-            .filter(|(b, _)| *b != 0)
-            .map(|(_, n)| n)
-            .sum()
+pub fn classify(stem: &str) -> ZoneKind {
+    let s = stem.to_ascii_lowercase();
+    if s.starts_with("mp_") && s.ends_with("_load") {
+        ZoneKind::MpLoadScreen
+    } else if s.starts_with("mp_") {
+        ZoneKind::MpMap
+    } else if s.ends_with("_mp") || s.contains("_mp_") || s.starts_with("iw4x") {
+        ZoneKind::MpCommon
+    } else {
+        ZoneKind::Other
     }
 }
 
-pub struct Inventory {
-    pub wire_format: &'static str,
-    pub block_size: [u32; MAX_XFILE_COUNT],
-    pub inflated_len: usize,
-    pub script_strings: usize,
-    pub rows: Vec<Row>,
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ZoneEntry {
+    /// Path relative to the game folder, `/`-separated.
+    pub path: String,
+    pub stem: String,
+    pub kind: Option<ZoneKind>,
+    pub file_bytes: u64,
+    pub game: Option<String>,
+    pub version: Option<u32>,
+    /// Size after inflating the fastfile.
+    pub inflated_bytes: Option<u64>,
+    /// Sum of the zone's XFILE memory blocks: what the PC game allocates to hold it.
+    pub memory_bytes: Option<u64>,
+    pub block_bytes: Option<Vec<u32>>,
+    pub asset_count: Option<usize>,
+    pub assets_by_type: BTreeMap<String, u32>,
+    pub error: Option<String>,
 }
 
-#[derive(Default)]
-struct Links {
-    last_name: Option<String>,
-    loads: usize,
-    payload: usize,
+#[derive(Clone, Debug, Serialize)]
+pub struct Report {
+    pub report_version: u32,
+    pub tool_version: &'static str,
+    pub iw4l_rev: &'static str,
+    /// Only the folder's own name, never the absolute path.
+    pub game_folder_name: String,
+    pub zones: Vec<ZoneEntry>,
+    pub totals: Totals,
 }
 
-impl AssetLinkSink for Links {
-    fn loaded(
-        &mut self,
-        s: &ZoneStream<'_>,
-        ty: AssetType,
-        slot: Ptr,
-        _insert_slot: Option<Ptr>,
-    ) -> fastfile_iw4::Result<()> {
-        self.loads += 1;
-        if ty == AssetType::Image
-            && let Some(g) = s.latest_image()
-        {
-            self.payload += g.source_len;
-        }
-        // Inline nested assets finish before their parent, so the last name seen belongs to the top-level entry.
-        self.last_name = asset_name(s, ty, slot);
-        Ok(())
-    }
-
-    fn alias(&mut self, _ty: AssetType, _slot: Ptr, _target: Ptr) -> fastfile_iw4::Result<()> {
-        Ok(())
-    }
-
-    fn capture_loaded_sound(
-        &mut self,
-        _s: &ZoneStream<'_>,
-        _header: Ptr,
-        _pcm: Ptr,
-        data_len: usize,
-    ) -> fastfile_iw4::Result<()> {
-        self.payload += data_len;
-        Ok(())
-    }
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Totals {
+    pub zones: usize,
+    pub zones_failed: usize,
+    pub mp_maps: Vec<String>,
+    /// Asset counts per type summed over all `mp_*` map zones.
+    pub mp_map_assets_by_type: BTreeMap<String, u64>,
+    pub mp_common_memory_bytes: u64,
 }
 
-/// Name of an inline-loaded asset from what IW4L recorded while loading it (only for types it records).
-fn asset_name(s: &ZoneStream<'_>, ty: AssetType, _slot: Ptr) -> Option<String> {
-    let text = |p: Ptr| s.cstr(s.resolve_alias(p)).ok().map(str::to_owned);
-    match ty {
-        AssetType::Image => s.latest_image()?.name.and_then(text),
-        AssetType::XModel => s.xmodel()?.name.and_then(text),
-        _ => None,
-    }
-}
-
-/// Name of a top-level asset read from its header struct. IW4L allocates the header first, in the TEMP block, at the
-/// TEMP watermark the entry started from; nearly every IW4 header starts with its name pointer.
-fn header_name(s: &ZoneStream<'_>, ty: AssetType, temp_mark: usize) -> Option<String> {
-    let field = match ty {
-        AssetType::Image => return None, // GfxImage's name is not first; asset_name handles it
-        AssetType::Localize => s.pointer_bytes(), // LocalizeEntry is { value, name }
-        _ => 0,
-    };
-    let header = Ptr {
-        block: XFILE_BLOCK_TEMP as u8,
-        offset: temp_mark.next_multiple_of(4) as u32,
-    };
-    match s.ptr_at(header, field).ok()? {
-        ZonePtr::Offset(p) => s
-            .cstr(s.resolve_alias(p))
-            .ok()
-            .filter(|n| !n.is_empty())
-            .map(str::to_owned),
-        _ => None,
-    }
-}
-
-struct Driver {
-    script_strings: usize,
-    rows: Vec<Row>,
-}
-
-impl AssetSink for Driver {
-    fn set_script_strings(&mut self, strings: ScriptStrings) {
-        self.script_strings = strings.count();
-    }
-
-    fn begin_assets(&mut self, count: usize) {
-        self.rows.reserve(count);
-    }
-
-    fn load_asset(
-        &mut self,
-        s: &mut ZoneStream<'_>,
-        index: usize,
-        ty: AssetType,
-        slot: Ptr,
-    ) -> fastfile_iw4::Result<()> {
-        let cursor0 = s.cursor();
-        let marks0: [usize; MAX_XFILE_COUNT] = std::array::from_fn(|b| s.watermark(b as u8));
-        let mut links = Links::default();
-        let loaded = load_asset_at_observed(s, ty, slot, &mut links)?;
-        let blocks = std::array::from_fn(|b| s.watermark(b as u8).saturating_sub(marks0[b]));
-        let name = if loaded {
-            header_name(s, ty, marks0[XFILE_BLOCK_TEMP]).or(links.last_name)
-        } else {
-            None
+/// All `.ff` files under `root`, sorted, depth-limited.
+pub fn find_zone_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
         };
-        self.rows.push(Row {
-            index,
-            ty,
-            name,
-            loaded,
-            nested: links.loads.saturating_sub(1),
-            stream: s.cursor() - cursor0,
-            blocks,
-            payload: links.payload,
-        });
-        Ok(())
-    }
-}
-
-/// `image` is an inflated XFile (header + stream), as `asset_transport::open_zone` returns it.
-pub fn take(image: &[u8]) -> Result<Inventory, String> {
-    let header = parse_zone_header(image).map_err(|e| format!("{e:?}"))?;
-    let mut memory = ZoneMemory::for_header(&header);
-    let mut stream = memory.stream(image).map_err(|e| format!("{e:?}"))?;
-    let wire_format = match stream.wire_format() {
-        fastfile_iw4::Iw4WireFormat::X86 => "x86",
-        fastfile_iw4::Iw4WireFormat::X64 => "x64",
-    };
-    let mut driver = Driver {
-        script_strings: 0,
-        rows: Vec::new(),
-    };
-    load_zone(&mut stream, &mut driver).map_err(|e| {
-        let at = driver.rows.len();
-        format!(
-            "{e:?} (after {at} assets, stream offset {})",
-            stream.cursor()
-        )
-    })?;
-    Ok(Inventory {
-        wire_format,
-        block_size: header.block_size,
-        inflated_len: image.len(),
-        script_strings: driver.script_strings,
-        rows: driver.rows,
-    })
-}
-
-#[derive(Default)]
-struct TypeTotal {
-    entries: usize,
-    loaded: usize,
-    stream: usize,
-    resident: usize,
-    payload: usize,
-}
-
-impl Inventory {
-    fn totals(&self) -> BTreeMap<&'static str, TypeTotal> {
-        let mut t: BTreeMap<&'static str, TypeTotal> = BTreeMap::new();
-        for r in &self.rows {
-            let e = t.entry(r.ty.name()).or_default();
-            e.entries += 1;
-            e.loaded += usize::from(r.loaded);
-            e.stream += r.stream;
-            e.resident += r.resident();
-            e.payload += r.payload;
-        }
-        t
-    }
-
-    pub fn render_summary(&self, file_len: u64, inflate_ms: u128, walk_ms: u128) -> String {
-        let mut s = String::new();
-        let _ = writeln!(
-            s,
-            "fastfile {:.1} MiB -> inflated {:.1} MiB ({} ms), wire format {}, walked in {} ms",
-            mib(file_len),
-            mib(self.inflated_len as u64),
-            inflate_ms,
-            self.wire_format,
-            walk_ms
-        );
-        let _ = writeln!(
-            s,
-            "script strings: {}, asset entries: {}",
-            self.script_strings,
-            self.rows.len()
-        );
-        let blocks: Vec<String> = BLOCK_NAMES
-            .iter()
-            .zip(self.block_size)
-            .map(|(n, b)| format!("{n} {:.2}", mib(u64::from(b))))
-            .collect();
-        let total: u64 = self.block_size.iter().map(|&b| u64::from(b)).sum();
-        let _ = writeln!(
-            s,
-            "XFile blocks (MiB): {}  | total {:.1}",
-            blocks.join(", "),
-            mib(total)
-        );
-
-        let _ = writeln!(
-            s,
-            "\n{:<18} {:>7} {:>7} {:>11} {:>11} {:>11}",
-            "type", "entries", "loaded", "stream MiB", "resident MiB", "payload MiB"
-        );
-        let mut totals: Vec<_> = self.totals().into_iter().collect();
-        totals.sort_by(|a, b| b.1.resident.cmp(&a.1.resident).then(a.0.cmp(b.0)));
-        for (name, t) in &totals {
-            let _ = writeln!(
-                s,
-                "{name:<18} {:>7} {:>7} {:>11.2} {:>11.2} {:>11.2}",
-                t.entries,
-                t.loaded,
-                mib(t.stream as u64),
-                mib(t.resident as u64),
-                mib(t.payload as u64)
-            );
-        }
-        let unnamed = self
-            .rows
-            .iter()
-            .filter(|r| r.loaded && r.name.is_none())
-            .count();
-        let _ = writeln!(s, "loaded entries without a resolved name: {unnamed}");
-
-        let _ = writeln!(s, "\nLargest 15 entries by resident size:");
-        let mut big: Vec<&Row> = self.rows.iter().filter(|r| r.loaded).collect();
-        big.sort_by(|a, b| b.resident().cmp(&a.resident()).then(a.index.cmp(&b.index)));
-        for r in big.iter().take(15) {
-            let _ = writeln!(
-                s,
-                "  {:>5} {:<14} {:>9.2} MiB  {}",
-                r.index,
-                r.ty.name(),
-                mib(r.resident() as u64),
-                r.name.as_deref().unwrap_or("?")
-            );
-        }
-        s
-    }
-
-    pub fn render_tsv(&self) -> String {
-        let mut s = String::from("index\ttype\tname\tloaded\tnested\tstream\tresident\tpayload");
-        for n in BLOCK_NAMES {
-            s.push('\t');
-            s.push_str(n);
-        }
-        s.push('\n');
-        for r in &self.rows {
-            let _ = write!(
-                s,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                r.index,
-                r.ty.name(),
-                r.name.as_deref().unwrap_or(""),
-                u8::from(r.loaded),
-                r.nested,
-                r.stream,
-                r.resident(),
-                r.payload
-            );
-            for b in r.blocks {
-                let _ = write!(s, "\t{b}");
+        for e in entries.flatten() {
+            let p = e.path();
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                if depth < MAX_DEPTH {
+                    pending.push((p, depth + 1));
+                }
+            } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("ff")) {
+                out.push(p);
             }
-            s.push('\n');
         }
-        s
     }
+    out.sort();
+    out
+}
+
+fn rel(root: &Path, p: &Path) -> String {
+    p.strip_prefix(root)
+        .unwrap_or(p)
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Error text without the absolute path IW4L attaches.
+fn describe(e: &ZoneOpenError) -> String {
+    match e {
+        ZoneOpenError::AtPath { source, .. } => describe(source),
+        other => other.to_string(),
+    }
+}
+
+pub fn scan_zone(root: &Path, path: &Path) -> ZoneEntry {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut z = ZoneEntry {
+        path: rel(root, path),
+        kind: Some(classify(&stem)),
+        stem,
+        file_bytes: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+        ..ZoneEntry::default()
+    };
+    let image = match open_zone(path) {
+        Ok(i) => i,
+        Err(e) => {
+            z.error = Some(describe(&e));
+            return z;
+        }
+    };
+    z.game = Some(format!("{:?}", image.game));
+    z.version = Some(image.version);
+    z.inflated_bytes = Some(image.bytes.len() as u64);
+    if let Ok(h) = image.header() {
+        z.memory_bytes = Some(h.block_size.iter().map(|&b| u64::from(b)).sum());
+        z.block_bytes = Some(h.block_size.to_vec());
+    }
+    match image.iw4_table() {
+        Ok(table) => {
+            z.asset_count = Some(table.asset_count);
+            for kind in table.kinds() {
+                *z.assets_by_type.entry(format!("{kind:?}")).or_default() += 1;
+            }
+        }
+        Err(e) => z.error = Some(describe(&e)),
+    }
+    z
+}
+
+pub fn scan(root: &Path) -> Report {
+    let zones: Vec<ZoneEntry> = find_zone_files(root)
+        .iter()
+        .map(|p| scan_zone(root, p))
+        .collect();
+    let totals = summarize(&zones);
+    Report {
+        report_version: REPORT_VERSION,
+        tool_version: env!("CARGO_PKG_VERSION"),
+        iw4l_rev: IW4L_REV,
+        game_folder_name: root
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        zones,
+        totals,
+    }
+}
+
+pub fn summarize(zones: &[ZoneEntry]) -> Totals {
+    let mut t = Totals {
+        zones: zones.len(),
+        ..Totals::default()
+    };
+    for z in zones {
+        if z.error.is_some() {
+            t.zones_failed += 1;
+        }
+        match z.kind {
+            Some(ZoneKind::MpMap) => {
+                if !t.mp_maps.contains(&z.stem) {
+                    t.mp_maps.push(z.stem.clone());
+                }
+                for (k, n) in &z.assets_by_type {
+                    *t.mp_map_assets_by_type.entry(k.clone()).or_default() += u64::from(*n);
+                }
+            }
+            Some(ZoneKind::MpCommon) => t.mp_common_memory_bytes += z.memory_bytes.unwrap_or(0),
+            _ => {}
+        }
+    }
+    t.mp_maps.sort();
+    t
+}
+
+fn mb(b: u64) -> String {
+    format!("{:.1}", b as f64 / (1024.0 * 1024.0))
+}
+
+pub fn render_text(r: &Report) -> String {
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "Modern Wiifare inventory (report v{}, IW4L {})",
+        r.report_version,
+        &r.iw4l_rev[..7]
+    );
+    let _ = writeln!(s, "Game folder: {}", r.game_folder_name);
+    let _ = writeln!(
+        s,
+        "Zones: {} found, {} could not be read\n",
+        r.totals.zones, r.totals.zones_failed
+    );
+
+    for (title, kind) in [
+        ("Multiplayer maps", ZoneKind::MpMap),
+        ("Multiplayer shared zones", ZoneKind::MpCommon),
+    ] {
+        let _ = writeln!(s, "{title}:");
+        let _ = writeln!(
+            s,
+            "  {:<28} {:>8} {:>9} {:>9} {:>7}",
+            "zone", "file MB", "inflated", "PC mem MB", "assets"
+        );
+        for z in r.zones.iter().filter(|z| z.kind == Some(kind)) {
+            let _ = writeln!(
+                s,
+                "  {:<28} {:>8} {:>9} {:>9} {:>7}{}",
+                z.stem,
+                mb(z.file_bytes),
+                z.inflated_bytes.map(mb).unwrap_or_else(|| "-".into()),
+                z.memory_bytes.map(mb).unwrap_or_else(|| "-".into()),
+                z.asset_count
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                z.error
+                    .as_deref()
+                    .map(|e| format!("  ERROR: {e}"))
+                    .unwrap_or_default()
+            );
+        }
+        let _ = writeln!(s);
+    }
+
+    let other = r
+        .zones
+        .iter()
+        .filter(|z| matches!(z.kind, Some(ZoneKind::Other | ZoneKind::MpLoadScreen)))
+        .count();
+    let _ = writeln!(
+        s,
+        "Other zones (loading screens, non-multiplayer; not used): {other}"
+    );
+
+    if !r.totals.mp_map_assets_by_type.is_empty() {
+        let _ = writeln!(s, "\nAsset types across all multiplayer maps:");
+        let mut v: Vec<_> = r.totals.mp_map_assets_by_type.iter().collect();
+        v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        for (k, n) in v {
+            let _ = writeln!(s, "  {k:<24} {n:>7}");
+        }
+    }
+    let _ = writeln!(
+        s,
+        "\nShared multiplayer zones need {} MB of PC memory; the Wii has ~88 MB in total.",
+        mb(r.totals.mp_common_memory_bytes)
+    );
+    s
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A synthetic, empty x86 zone written by hand: XFile header (size, externalSize, 8 block sizes) then an
-    /// XAssetList with no strings and no assets. No game data involved.
-    fn empty_zone() -> Vec<u8> {
-        let mut z = Vec::new();
-        z.extend_from_slice(&16u32.to_le_bytes()); // size of the stream after the header
-        z.extend_from_slice(&0u32.to_le_bytes()); // externalSize
-        for _ in 0..MAX_XFILE_COUNT {
-            z.extend_from_slice(&0u32.to_le_bytes());
+    #[test]
+    fn classifies_zone_names() {
+        assert_eq!(classify("mp_rust"), ZoneKind::MpMap);
+        assert_eq!(classify("MP_Terminal"), ZoneKind::MpMap);
+        assert_eq!(classify("mp_rust_load"), ZoneKind::MpLoadScreen);
+        for c in [
+            "common_mp",
+            "code_post_gfx_mp",
+            "patch_mp",
+            "localized_common_mp",
+            "iw4x_patch_mp",
+        ] {
+            assert_eq!(classify(c), ZoneKind::MpCommon, "{c}");
         }
-        for _ in 0..4 {
-            z.extend_from_slice(&0u32.to_le_bytes()); // stringCount, strings, assetCount, assets
+        for o in ["common", "ui", "trainer", "contingency"] {
+            assert_eq!(classify(o), ZoneKind::Other, "{o}");
         }
-        z
     }
 
     #[test]
-    fn empty_zone_has_no_assets() {
-        let inv = take(&empty_zone()).expect("empty zone walks");
-        assert_eq!(inv.wire_format, "x86");
-        assert_eq!(inv.rows.len(), 0);
-        assert_eq!(inv.script_strings, 0);
-        assert!(inv.render_tsv().starts_with("index\ttype"));
-    }
-
-    #[test]
-    fn truncated_zone_is_an_error() {
-        assert!(take(&[0u8; 8]).is_err());
+    fn summarizes_maps_and_common() {
+        let mut a = ZoneEntry {
+            stem: "mp_b".into(),
+            kind: Some(ZoneKind::MpMap),
+            ..Default::default()
+        };
+        a.assets_by_type.insert("XModel".into(), 3);
+        let mut b = ZoneEntry {
+            stem: "mp_a".into(),
+            kind: Some(ZoneKind::MpMap),
+            ..Default::default()
+        };
+        b.assets_by_type.insert("XModel".into(), 2);
+        b.assets_by_type.insert("GfxImage".into(), 5);
+        let c = ZoneEntry {
+            stem: "common_mp".into(),
+            kind: Some(ZoneKind::MpCommon),
+            memory_bytes: Some(1000),
+            ..Default::default()
+        };
+        let d = ZoneEntry {
+            stem: "broken".into(),
+            error: Some("x".into()),
+            ..Default::default()
+        };
+        let t = summarize(&[a, b, c, d]);
+        assert_eq!(t.zones, 4);
+        assert_eq!(t.zones_failed, 1);
+        assert_eq!(t.mp_maps, ["mp_a", "mp_b"]);
+        assert_eq!(t.mp_map_assets_by_type["XModel"], 5);
+        assert_eq!(t.mp_map_assets_by_type["GfxImage"], 5);
+        assert_eq!(t.mp_common_memory_bytes, 1000);
     }
 }

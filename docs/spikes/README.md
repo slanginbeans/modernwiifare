@@ -35,15 +35,20 @@ Record in `docs/spikes/results.md`: the self-test screen (a phone photo is fine)
 smooth, whether the controls respond, whether START returns to the HBC, and the MEM1/MEM2 numbers. Note 4:3 vs 16:9 and the TV mode.
 
 ## Spike D: converter reads your IW4x install
-Runs on your PC, not the Wii. It needs Rust (stable, see `rust-toolchain.toml`).
+Runs on your PC, not the Wii. It needs Rust (stable, see `rust-toolchain.toml`). Two commands:
 
 ```bash
-cargo run -p mwf_converter --release -- inventory --game "D:/path/to/Call of Duty Modern Warfare 2"
+cargo run -p mwf_convert --release -- inventory "D:/path/to/Call of Duty Modern Warfare 2"
 ```
 
-It prints the zone layout IW4L sees, then inventories `mp_rust` (or `--map <zone>`, or `--zone <file.ff>`). It prefers
-the retail x86 zone in `zone/iw4x/x86/english/` and falls back to `zone/english/`. The per-asset table goes to
-`out/spike_d/<map>.tsv`. It contains names from your game data, so it stays in the git-ignored `out/`.
+```bash
+cargo run -p mwf_convert --release -- map "D:/path/to/Call of Duty Modern Warfare 2" --map mp_rust
+```
+
+`inventory` (or double-click `inventory.bat`) lists every zone's sizes and asset counts into `out/inventory.json`.
+`map` walks one map zone (`mp_rust` by default, or `--zone <file.ff>`) and measures each asset's bytes per type into
+`out/map_<zone>.json`. It prefers the retail x86 zone in `zone/iw4x/x86/english/` and falls back to `zone/english/`.
+Both reports contain sizes and counts only, never names or content.
 
 *Windows without Visual Studio:* build for `x86_64-pc-windows-gnullvm` with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)
 (UCRT) as linker and C compiler (IW4L's `diag` pulls in mimalloc, which is C). The plain `windows-gnu` toolchain

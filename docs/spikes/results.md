@@ -14,9 +14,9 @@
 | Notes | |
 
 ## Spike D: converter reads the IW4x install (2026-11-13)
-Run on the user's own IW4x install (Windows host) with `mwf-convert inventory` (`converter/`). The per-asset table,
-which holds asset names from the user's data, stays in `out/spike_d/` and is never committed. Only aggregate numbers
-are recorded here.
+Run on the user's own IW4x install (Windows host) with `mwf-convert map` (`converter/src/map_walk.rs`). Its JSON
+report is content-free (sizes and counts, no names) and stays in the git-ignored `out/`. Only aggregate numbers are
+recorded here.
 
 | Field | Result |
 |---|---|
@@ -40,6 +40,9 @@ are recorded here.
   `zone/english/mp_rust.ff`. The converter therefore picks `zone/english/<map>.ff` itself and only reports IW4L's
   choice. Logged in `docs/upstream-patches.md`.
 - `main/` holds 15 `.iwd` archives (4.9 GiB). They were not needed for this inventory.
+- `mwf-convert inventory` over the whole install (134 s): 389 zones, 77 `mp_*` maps, 332 read. All stock zones in
+  `zone/english/` and `zone/iw4x/x86/english/` read. The 57 failures are 26 custom `usermaps/` zones in IW4x's own
+  container (magic `IW4x`, not `IWff`) plus the 31 non-IW4 files in `zone/iw4x/x86/dlc`. Both are out of scope.
 
 **Decision for Phase 1:** convert from the x86 originals in `zone/iw4x/x86/` when present, since they are the retail
 bytes and give a per-asset breakdown, and fall back to `zone/english/`.

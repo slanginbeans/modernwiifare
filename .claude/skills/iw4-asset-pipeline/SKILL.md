@@ -20,7 +20,7 @@ in Wii-native formats. Everything it writes is git-ignored.
 ## Per-asset policy
 | IW4 asset | Wii output | Downsizing rules |
 |---|---|---|
-| GfxImage | CMPR / I4 / IA8 / RGB5A3 + mips | Use a per-category max size (world 256, props 128, viewmodel 512, UI as needed). Drop normal/spec maps and bake their contribution into lighting. Dedupe by hash. |
+| GfxImage (`shared/gx_texture`, `policy::convert`) | CMPR / I4 / IA8 / RGB5A3 + mips | Use a per-category max size (world 256, props 128, viewmodel 512, UI as needed). Drop normal/spec maps and bake their contribution into lighting. Dedupe by hash. |
 | Material / Techset | TEV recipe id + texture refs | Map each techset family to one of a small fixed set of TEV recipes. Log unmapped techsets and never silently drop them. |
 | XModel | Quantized display lists, ≤2 LODs | Keep the original LOD chain, but pick the 2 that fit budget. Characters target ~1.5–3k tris, the viewmodel ~4–6k. Split by bone palette (10 matrices per draw). |
 | XAnimParts | Quantized keyframes | Reduce the keyframe rate where the curve error is below a threshold. Keep viewmodel anims at **full rate** because that is where the feel lives. |

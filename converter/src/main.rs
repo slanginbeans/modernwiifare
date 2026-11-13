@@ -1,91 +1,234 @@
-//! `mwf-convert`: the host converter.
+//! `mwf-convert`: the host-side converter. It runs on the user's own PC against their own install.
 //!
-//! Phase 0 / Spike D only does an inventory: it finds the user's IW4x install, reports the zone layout, then opens one
-//! map zone through IW4L (`asset_transport` inflates it, `fastfile_iw4` walks it) and lists every asset with its size.
-//!
-//! Everything it writes goes under `out/` (git-ignored). Asset names come from the user's own data, so the report
-//! must never be committed (CLAUDE.md rule 1).
-
-mod inventory;
-mod layout;
+//! Commands:
+//!   mwf-convert inventory <game folder> [--out <report.json>]
+//!       Lists every zone (.ff) with sizes and asset counts per type, flags the multiplayer maps,
+//!       and writes a JSON report (default: out/inventory.json). The report contains only
+//!       relative paths, sizes and counts, no game content, so it is safe to share.
+//!   mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]
+//!       Walks one map zone (default mp_rust) with IW4L's loader and measures every asset entry: stream,
+//!       resident and image/sound payload bytes, per type. Content-free like `inventory`.
+//!       Default output: out/map_<zone>.json.
+//!   mwf-convert texture <image.png> [--role <role>] [--out <folder>]
+//!       Converts one PNG to a Wii texture (`.gxt`) plus a `_preview.png` of what the Wii shows,
+//!       and prints the chosen format, size and quality. Default output folder: out/textures.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "\
-usage: mwf-convert inventory --game <IW4x install dir> [--map <zone>] [--out <dir>] [--zone <file.ff>]
+mod inventory;
+mod map_walk;
+mod texture;
 
-  --game   folder that holds iw4x.exe and zone/ (your own install)
-  --map    zone to inventory (default: mp_rust, the smallest base MP map)
-  --out    output folder (default: out); the report goes to <out>/spike_d/<map>.tsv
-  --zone   inventory this .ff instead of zone/english/<map>.ff (name the report with --map)
-";
+const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <report.json>]\n  \
+     mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]\n  \
+     mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask] [--out <folder>]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match run(&args) {
-        Ok(()) => ExitCode::SUCCESS,
+    match args.first().map(String::as_str) {
+        Some("inventory") => run_inventory(&args[1..]),
+        Some("map") => run_map(&args[1..]),
+        Some("texture") => run_texture(&args[1..]),
+        Some("-h" | "--help") | None => {
+            println!("{USAGE}");
+            ExitCode::SUCCESS
+        }
+        Some(other) => {
+            eprintln!("unknown command `{other}`\n{USAGE}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn run_inventory(args: &[String]) -> ExitCode {
+    let mut game: Option<PathBuf> = None;
+    let mut out = PathBuf::from("out/inventory.json");
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--out" => match it.next() {
+                Some(p) => out = PathBuf::from(p),
+                None => {
+                    eprintln!("--out needs a path\n{USAGE}");
+                    return ExitCode::from(2);
+                }
+            },
+            _ if game.is_none() => game = Some(PathBuf::from(a)),
+            _ => {
+                eprintln!("unexpected argument `{a}`\n{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let Some(game) = game else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    if !game.is_dir() {
+        eprintln!("not a folder: {}", game.display());
+        return ExitCode::from(2);
+    }
+
+    let report = inventory::scan(&game);
+    print!("{}", inventory::render_text(&report));
+
+    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty())
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        eprintln!("could not create {}: {e}", dir.display());
+        return ExitCode::FAILURE;
+    }
+    match serde_json::to_string_pretty(&report) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&out, json) {
+                eprintln!("could not write {}: {e}", out.display());
+                return ExitCode::FAILURE;
+            }
+            println!("\nReport written to {}", out.display());
+        }
         Err(e) => {
-            eprintln!("error: {e}");
+            eprintln!("could not serialise report: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+    if report.zones.is_empty() {
+        eprintln!(
+            "No .ff zone files found. Point this at the game folder (the one containing `zone`)."
+        );
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_map(args: &[String]) -> ExitCode {
+    let mut game: Option<PathBuf> = None;
+    let mut map = String::from("mp_rust");
+    let mut zone: Option<PathBuf> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let target = match a.as_str() {
+            "--map" | "--zone" | "--out" => a.as_str(),
+            _ if game.is_none() => {
+                game = Some(PathBuf::from(a));
+                continue;
+            }
+            _ => {
+                eprintln!("unexpected argument `{a}`\n{USAGE}");
+                return ExitCode::from(2);
+            }
+        };
+        let Some(value) = it.next() else {
+            eprintln!("{target} needs a value\n{USAGE}");
+            return ExitCode::from(2);
+        };
+        match target {
+            "--map" => map = value.clone(),
+            "--zone" => zone = Some(PathBuf::from(value)),
+            _ => out = Some(PathBuf::from(value)),
+        }
+    }
+    let Some(game) = game else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let zone = match zone.map_or_else(|| map_walk::locate_zone(&game, &map), Ok) {
+        Ok(z) => z,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Relative label only: the report must not carry the install's absolute location.
+    let label = zone
+        .strip_prefix(&game)
+        .unwrap_or(&zone)
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    let image = match asset_transport::open_zone(&zone) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("could not open {label}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let file_bytes = std::fs::metadata(&zone).map(|m| m.len()).unwrap_or(0);
+    let report = match map_walk::walk(&image.bytes, &map, &label, file_bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("walking {label}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    print!("{}", map_walk::render_text(&report));
+
+    let out = out.unwrap_or_else(|| PathBuf::from(format!("out/map_{map}.json")));
+    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty())
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        eprintln!("could not create {}: {e}", dir.display());
+        return ExitCode::FAILURE;
+    }
+    let written = serde_json::to_string_pretty(&report)
+        .map_err(|e| e.to_string())
+        .and_then(|json| std::fs::write(&out, json).map_err(|e| e.to_string()));
+    match written {
+        Ok(()) => {
+            println!("\nReport written to {}", out.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("could not write {}: {e}", out.display());
             ExitCode::FAILURE
         }
     }
 }
 
-fn run(args: &[String]) -> Result<(), String> {
-    let (cmd, rest) = args.split_first().ok_or_else(|| USAGE.to_owned())?;
-    if cmd != "inventory" {
-        return Err(USAGE.to_owned());
-    }
-    let mut game: Option<PathBuf> = None;
-    let mut map = String::from("mp_rust");
-    let mut out = PathBuf::from("out");
-    let mut zone: Option<PathBuf> = None;
-    let mut it = rest.iter();
-    while let Some(flag) = it.next() {
-        let mut value = || {
-            it.next()
-                .cloned()
-                .ok_or_else(|| format!("{flag} needs a value"))
-        };
-        match flag.as_str() {
-            "--game" => game = Some(PathBuf::from(value()?)),
-            "--map" => map = value()?,
-            "--out" => out = PathBuf::from(value()?),
-            "--zone" => zone = Some(PathBuf::from(value()?)),
-            "-h" | "--help" => return Err(USAGE.to_owned()),
-            other => return Err(format!("unknown flag {other}\n{USAGE}")),
+fn run_texture(args: &[String]) -> ExitCode {
+    let mut input: Option<PathBuf> = None;
+    let mut role = gx_texture::Role::World;
+    let mut out = PathBuf::from("out/textures");
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--role" => match it.next().and_then(|r| gx_texture::Role::parse(r)) {
+                Some(r) => role = r,
+                None => {
+                    eprintln!("--role needs one of the roles below\n{USAGE}");
+                    return ExitCode::from(2);
+                }
+            },
+            "--out" => match it.next() {
+                Some(p) => out = PathBuf::from(p),
+                None => {
+                    eprintln!("--out needs a folder\n{USAGE}");
+                    return ExitCode::from(2);
+                }
+            },
+            _ if input.is_none() => input = Some(PathBuf::from(a)),
+            _ => {
+                eprintln!("unexpected argument `{a}`\n{USAGE}");
+                return ExitCode::from(2);
+            }
         }
     }
-    let game = game.ok_or_else(|| format!("--game is required\n{USAGE}"))?;
-
-    let layout = layout::scan(&game)?;
-    print!("{}", layout.render());
-
-    let zone_path = match zone {
-        Some(path) => path,
-        None => layout::locate_zone(&game, &map)?,
+    let Some(input) = input else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
     };
-    println!("\n== Zone {map} ==");
-    println!("Inventorying: {}", zone_path.display());
-
-    let t0 = std::time::Instant::now();
-    let image = asset_transport::open_zone(&zone_path).map_err(|e| e.to_string())?;
-    let inflate_ms = t0.elapsed().as_millis();
-    let t1 = std::time::Instant::now();
-    let inv = inventory::take(&image.bytes).map_err(|e| format!("walking {map}: {e}"))?;
-    let walk_ms = t1.elapsed().as_millis();
-
-    let file_len = std::fs::metadata(&zone_path).map(|m| m.len()).unwrap_or(0);
-    print!("{}", inv.render_summary(file_len, inflate_ms, walk_ms));
-
-    let dir = out.join("spike_d");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let tsv = dir.join(format!("{map}.tsv"));
-    std::fs::write(&tsv, inv.render_tsv()).map_err(|e| format!("{}: {e}", tsv.display()))?;
-    println!(
-        "\nPer-asset table: {} (git-ignored; never commit it)",
-        tsv.display()
-    );
-    Ok(())
+    match texture::convert_file(&input, role, &out) {
+        Ok((summary, gxt, preview)) => {
+            println!("{} as {}:", input.display(), role.name());
+            println!("{}", texture::describe(&summary));
+            println!("wrote {}\nwrote {}", gxt.display(), preview.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::FAILURE
+        }
+    }
 }

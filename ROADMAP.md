@@ -44,9 +44,10 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
 - [x] Workspace, pinned IW4L git deps, CI (asset guard, fmt/clippy/tests, PPC32 build, qemu 750CL tests, `.dol` build artifact)
 - [ ] **Spike A, toolchain:** Rust `no_std` `.dol` (self-tests + GX scene on the GameCube pad). *Builds in CI, awaiting a hardware run.*
 - [ ] **Spike C, memory:** usable MEM1/MEM2 after IOS + libogc + Rust runtime (Spike A prints them). Write `docs/budgets.md`.
-- [x] **Spike D, data:** converter reads the user's IW4x install via IW4L and lists one small map's assets with sizes. Check the IW4x zone layout.
-      *Done 2026-11-13 on `mp_rust` (`docs/spikes/results.md`). IW4x moves the retail x86 zones to `zone/iw4x/x86/` and
-      rewrites `zone/english` as x64. IW4L reads both.*
+- [x] **Spike D, data:** converter reads the user's IW4x install via IW4L: `mwf-convert inventory` lists every zone's
+      sizes and asset counts (double-click `inventory.bat`), and `mwf-convert map` walks one map's assets with sizes.
+      *Done 2026-11-13 on the user's install and `mp_rust` (`docs/spikes/results.md`). IW4x moves the retail x86 zones
+      to `zone/iw4x/x86/` and rewrites `zone/english` as x64. IW4L reads both.*
 - [x] **Spike E, portability:** IW4L crates build for the Wii. Movement trace is bit-identical x86 vs PPC 750CL (qemu).
       *Remaining: same hash on a real Wii (shown on the Spike A screen).*
 - [ ] **Spike F, scripts:** IR size + heap for `war` (TDM) on one map (ADR 0002 budget: ≤ 3 MB MEM1).
@@ -54,7 +55,8 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
 
 ## Phase 1: Converter MVP
 - [ ] Pack format in `shared/` (zero-copy, big-endian, versioned, hashed).
-- [ ] Textures → CMPR/I4/RGB5A3; materials → TEV recipe table; world → cell-chunked display lists + lightmaps;
+- [x] Texture encoders (`shared/gx_texture`): all GX formats incl. CMPR, mips, per-role size/format policy, `mwf-convert texture`.
+- [ ] Wire textures from zones (GfxImage) through the encoders; materials → TEV recipe table; world → cell-chunked display lists + lightmaps;
       clipmap → Wii collision layout; spawns/entities; weapon defs (lossless); GSC IR.
 - [ ] `out/report.json` budget report. The build fails when over budget. Deterministic output.
 - **Exit:** one small map's pack fits its budget and loads into a Wii viewer.
