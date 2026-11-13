@@ -13,6 +13,9 @@
 //!       Converts every texture (GfxImage) of one map zone to Wii `.gxt` files, taking pixels from the zone or
 //!       from main/*.iwd, and writes a content-free report.json beside them. Default folder: out/textures/<zone>.
 //!       --verbose prints one line per texture (with its name) to the console only.
+//!   mwf-convert pack <game folder> [--map <zone>] [--zone <file.ff>] [--out <file.wpk>]
+//!       Builds the Wii pack of one map: its textures (as `textures` does), lightmaps, materials, world geometry as
+//!       display lists, skybox and spawns. Default output: out/packs/<zone>.wpk (+ a content-free .json report).
 //!   mwf-convert texture <image.png> [--role <role>] [--out <folder>]
 //!       Converts one PNG to a Wii texture (`.gxt`) plus a `_preview.png` of what the Wii shows,
 //!       and prints the chosen format, size and quality. Default output folder: out/textures.
@@ -23,6 +26,7 @@ use std::process::ExitCode;
 mod inventory;
 mod map_walk;
 mod material_links;
+mod pack;
 mod pixel_decode;
 mod texture;
 mod zone_textures;
@@ -35,12 +39,32 @@ const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <repor
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
      mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask|minimap] [--out <folder>]";
 
+/// IW4L's `ZoneStream` keeps the latest record of every asset type inline, so walking a zone needs far more stack than
+/// Windows gives the main thread (1 MB). The commands run on a worker thread with room to spare.
+const WORKER_STACK: usize = 256 << 20;
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    std::thread::Builder::new()
+        .name("mwf-convert".into())
+        .stack_size(WORKER_STACK)
+        .spawn(move || run(&args))
+        .and_then(|t| {
+            t.join()
+                .map_err(|_| std::io::Error::other("converter thread panicked"))
+        })
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            ExitCode::FAILURE
+        })
+}
+
+fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         Some("inventory") => run_inventory(&args[1..]),
         Some("map") => run_map(&args[1..]),
         Some("textures") => run_textures(&args[1..]),
+        Some("pack") => run_pack(&args[1..]),
         Some("texture") => run_texture(&args[1..]),
         Some("-h" | "--help") | None => {
             println!("{USAGE}");
@@ -250,6 +274,51 @@ fn run_textures(args: &[String]) -> ExitCode {
         Ok(x) => x,
         Err(code) => return code,
     };
+    let out_dir = a
+        .out
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(format!("out/textures/{}", a.map)));
+    match convert_textures(&a, &image, &label, &out_dir, verbose) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(code) => code,
+    }
+}
+
+/// The shared string tables (calling cards, emblems, icon tables) in code_post_gfx_mp: materials they name are looked
+/// up by name at run time, so they go in the `catalog` group.
+fn shared_tables(a: &MapArgs) -> std::collections::HashSet<String> {
+    if a.map == SHARED_TABLES_ZONE {
+        return Default::default();
+    }
+    let Ok(path) = map_walk::locate_zone(&a.game, SHARED_TABLES_ZONE) else {
+        return Default::default();
+    };
+    match asset_transport::open_zone(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|z| zone_textures::table_strings(&z.bytes))
+    {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("warning: could not read {SHARED_TABLES_ZONE} string tables ({e})");
+            Default::default()
+        }
+    }
+}
+
+/// Convert a zone's textures into `out_dir` (`.gxt`, `index.json`, `report.json`).
+fn convert_textures(
+    a: &MapArgs,
+    image: &[u8],
+    label: &str,
+    out_dir: &std::path::Path,
+    verbose: bool,
+) -> Result<
+    (
+        Vec<zone_textures::IndexEntry>,
+        std::collections::HashSet<String>,
+    ),
+    ExitCode,
+> {
     // Streamed images live in main/*.iwd; without it only in-zone images convert.
     let iwds = match zone_textures::main_dir(&a.game).map(|m| asset_transport::IwdIndex::open(&m)) {
         Some(Ok(index)) => Some(index),
@@ -259,46 +328,94 @@ fn run_textures(args: &[String]) -> ExitCode {
         }
         None => None,
     };
-    let out_dir = a
-        .out
-        .clone()
-        .unwrap_or_else(|| PathBuf::from(format!("out/textures/{}", a.map)));
-    // Shared string tables (calling cards, emblems, icon tables) live in code_post_gfx_mp; materials they name are
-    // looked up by name at run time, so they go in the `catalog` group.
-    let mut tables = std::collections::HashSet::new();
-    if a.map != SHARED_TABLES_ZONE
-        && let Ok(path) = map_walk::locate_zone(&a.game, SHARED_TABLES_ZONE)
-    {
-        match asset_transport::open_zone(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|z| zone_textures::table_strings(&z.bytes))
-        {
-            Ok(t) => tables = t,
-            Err(e) => eprintln!("warning: could not read {SHARED_TABLES_ZONE} string tables ({e})"),
-        }
-    }
+    let tables = shared_tables(a);
     let (report, index) = match zone_textures::convert_zone(
-        &image,
+        image,
         &a.map,
-        &label,
+        label,
         iwds.as_deref(),
-        &out_dir,
+        out_dir,
         verbose,
         &tables,
     ) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("converting textures of {label}: {e}");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
     print!("{}", zone_textures::render_text(&report));
-    println!("\nWii textures (.gxt) written to {}", out_dir.display());
+    println!(
+        "
+Wii textures (.gxt) written to {}",
+        out_dir.display()
+    );
     // The index names textures and weapons, so it is converted data like the .gxt files (git-ignored under out/).
-    if write_json(&out_dir.join("index.json"), &index) != ExitCode::SUCCESS {
+    if write_json(&out_dir.join("index.json"), &index) != ExitCode::SUCCESS
+        || write_json(&out_dir.join("report.json"), &report) != ExitCode::SUCCESS
+    {
+        return Err(ExitCode::FAILURE);
+    }
+    Ok((index, tables))
+}
+
+fn run_pack(args: &[String]) -> ExitCode {
+    let a = match parse_map_args(args) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    let (image, label, _) = match open_map_zone(&a) {
+        Ok(x) => x,
+        Err(code) => return code,
+    };
+    let tex_dir = PathBuf::from(format!("out/textures/{}", a.map));
+    let (index, tables) = match convert_textures(&a, &image, &label, &tex_dir, false) {
+        Ok(x) => x,
+        Err(code) => return code,
+    };
+    let walked = zone_textures::walk_with(&image, &tables, pack::read_world);
+    let (collector, world) = match walked {
+        Ok((c, Ok(w))) => (c, w),
+        Ok((_, Err(e))) | Err(e) => {
+            eprintln!("reading the world of {label}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let (bytes, report) = match pack::build(
+        &a.map,
+        &world,
+        &collector.links,
+        &collector.images,
+        &index,
+        &tex_dir,
+    ) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("building the pack of {label}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let out = a
+        .out
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(format!("out/packs/{}.wpk", a.map)));
+    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty())
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        eprintln!("could not create {}: {e}", dir.display());
         return ExitCode::FAILURE;
     }
-    write_json(&out_dir.join("report.json"), &report)
+    if let Err(e) = std::fs::write(&out, &bytes) {
+        eprintln!("could not write {}: {e}", out.display());
+        return ExitCode::FAILURE;
+    }
+    print!(
+        "
+{}",
+        pack::render_text(&report)
+    );
+    println!("Pack written to {}", out.display());
+    write_json(&out.with_extension("json"), &report)
 }
 
 fn run_texture(args: &[String]) -> ExitCode {

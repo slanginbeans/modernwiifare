@@ -54,7 +54,9 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
 - **Exit:** A, C, D, E, F pass or have an accepted fallback; budgets drafted.
 
 ## Phase 1: Converter MVP
-- [ ] Pack format in `shared/` (zero-copy, big-endian, versioned, hashed).
+- [x] Pack format in `shared/wpk` (zero-copy, big-endian, versioned, hashed, 32-byte aligned sections) and
+      `mwf-convert pack`: textures, lightmaps, materials, world display lists, skybox, spawns. See `docs/pack.md`.
+      *`mp_rust`: 14.5 MiB, 193k triangles in 171 batches.*
 - [x] Texture encoders (`shared/gx_texture`): all GX formats incl. CMPR, mips, per-role size/format policy, `mwf-convert texture`.
 - [x] Zone textures through the encoders: `mwf-convert textures` (in-zone + IWI sources, skips normal/spec maps).
       *`mp_rust`: 608 images, 0 failures. See `docs/textures.md`.*
@@ -73,7 +75,8 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
       *`mp_rust`: 512 → 256 KiB, 29.6 → 38.2 dB; the map is 6.5 MiB.*
 - [x] Sky cube maps → six 2D faces (sky role, no mips) for a skybox; other cubes (reflections) skipped.
       *`mp_rust`: 768 KiB sky; the map is 7.2 MiB. The renderer draws the skybox from the six faces.*
-- [ ] Materials → TEV recipe table; world → cell-chunked display lists + lightmaps;
+- [x] Materials → TEV recipe table; world → cell-chunked display lists + lightmaps (first version, `docs/pack.md`).
+- [ ] Fixed-point vertices, visibility cells, static models;
       clipmap → Wii collision layout; spawns/entities; weapon defs (lossless); GSC IR.
 - [ ] `out/report.json` budget report. The build fails when over budget. Deterministic output.
 - **Exit:** one small map's pack fits its budget and loads into a Wii viewer.

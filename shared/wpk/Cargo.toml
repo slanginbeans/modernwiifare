@@ -1,0 +1,9 @@
+[package]
+name = "wpk"
+version = "0.1.0"
+description = "Modern Wiifare pack format (.wpk): big-endian, 32-byte aligned sections, zero-copy reader. no_std + alloc."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

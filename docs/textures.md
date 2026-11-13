@@ -168,6 +168,14 @@ content-free `report.json` holds the bytes per group, per weapon, and "match + t
 Worst case in a match: **match + 8 heaviest weapons = 12.5 MiB** (from 46.9 resident), plus the few calling cards on
 screen. `mp_rust`: match 6.4 MiB, catalog 0.35 MiB.
 
+## All 16 base maps (2026-11-13)
+Every retail MP base map converts with 0 failures, about 15 s each: 7.2–18.1 MiB of Wii texture memory per map
+(median 15.5), nearly all in the `match` group, 0.75 MiB of it the skybox. Two fixes came out of the batch:
+- Water simulation images (`watersetup*`, IW4 image category 5) and other run-time images (categories 1, 6, 7) have no
+  data to convert; they are skipped as such.
+- `gx_texture` judges a texture's alpha after resizing it: crisp painted text becomes soft when shrunk, and a 1-bit cut
+  ate the strokes (21 dB). Such textures now get the CMPR + I4 split; the worst score over all maps is 27.4 dB.
+
 ## Findings to act on
 1. ~~Cut-out foliage suffers at the prop size cap.~~ Fixed: cut-outs get at least 256 and keep their coverage (above).
 2. ~~Smooth alpha is over a third of the memory.~~ Fixed: split into CMPR + I4 (above). Needs the two-texture TEV

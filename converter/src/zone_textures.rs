@@ -61,6 +61,11 @@ pub struct IndexEntry {
     /// Weapon names, for the `weapon` group.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub weapons: Vec<String>,
+    /// The zone's images (load order) this texture stands for: the converted one and identical duplicates.
+    pub images: Vec<usize>,
+    /// Cube face (`px`..`nz`) for sky faces, empty otherwise.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub face: &'static str,
 }
 
 /// Alpha-tested textures: how well the 1-bit alpha keeps the full-size coverage at level 0.
@@ -109,10 +114,11 @@ pub struct ZoneImage {
     pub used_by_material: bool,
 }
 
+/// The images and material links of a walked zone.
 #[derive(Default)]
-struct Collector {
-    images: Vec<ZoneImage>,
-    links: Links,
+pub struct Collector {
+    pub images: Vec<ZoneImage>,
+    pub links: Links,
 }
 
 impl AssetLinkSink for Collector {
@@ -227,13 +233,24 @@ pub struct LinkStats {
 
 /// Walk a zone and keep its links (shared by `collect` and `table_strings`).
 fn walk(image: &[u8], tables: &HashSet<String>) -> Result<Collector, String> {
+    Ok(walk_with(image, tables, |_, _| ())?.0)
+}
+
+/// Walk a zone, then call `after` with the stream (its blocks still loaded) and the collected links, e.g. to read the
+/// GfxWorld. Returns the image list and links, plus what `after` returns.
+pub fn walk_with<T>(
+    image: &[u8],
+    tables: &HashSet<String>,
+    after: impl FnOnce(&ZoneStream<'_>, &Links) -> T,
+) -> Result<(Collector, T), String> {
     let header = parse_zone_header(image).map_err(|e| format!("{e:?}"))?;
     let mut memory = ZoneMemory::for_header(&header);
     let mut stream = memory.stream(image).map_err(|e| format!("{e:?}"))?;
     let mut driver = Driver(Collector::default());
     driver.0.links.add_table_strings(tables.iter().cloned());
     load_zone(&mut stream, &mut driver).map_err(|e| format!("{e:?}"))?;
-    Ok(driver.0)
+    let t = after(&stream, &driver.0.links);
+    Ok((driver.0, t))
 }
 
 /// Every string-table cell of a zone (lower case). Used to know, while converting another zone, which materials the
@@ -511,10 +528,11 @@ pub fn convert_zone(
     let mut index: Vec<IndexEntry> = Vec::new();
     // (weapons that need it, bytes) per weapon-group texture.
     let mut weapon_textures: Vec<(BTreeSet<usize>, u64)> = Vec::new();
-    let mut seen: HashMap<(u64, &'static str, Option<AlphaUse>), ()> = HashMap::new();
+    // Source hash -> index entries already made from it (one per cube face).
+    let mut seen: HashMap<(u64, &'static str, Option<AlphaUse>), Vec<usize>> = HashMap::new();
     let mut used_stems: HashMap<String, usize> = HashMap::new();
 
-    for img in &images {
+    for (image_index, img) in images.iter().enumerate() {
         *report.semantic_counts.entry(img.semantic).or_default() += 1;
         *report.map_type_counts.entry(img.map_type).or_default() += 1;
         *report.category_counts.entry(img.category).or_default() += 1;
@@ -545,10 +563,14 @@ pub fn convert_zone(
                 continue;
             }
         };
-        if seen.insert((hash, role.name(), alpha), ()).is_some() {
+        if let Some(entries) = seen.get(&(hash, role.name(), alpha)) {
+            for &e in entries {
+                index[e].images.push(image_index);
+            }
             report.duplicates += 1;
             continue;
         }
+        let first_entry = index.len();
         for (face, mut pixels) in faces {
             // Alpha-tested textures keep their smooth alpha: the encoder cuts it per mip level, keeping coverage.
             let cutout = match alpha {
@@ -638,6 +660,8 @@ pub fn convert_zone(
                 bytes,
                 group: group.label(),
                 weapons,
+                images: vec![image_index],
+                face,
             });
             if verbose {
                 // Console only, for tuning: names never go into the report.
@@ -683,6 +707,10 @@ pub fn convert_zone(
                 None => {}
             }
         }
+        seen.insert(
+            (hash, role.name(), alpha),
+            (first_entry..index.len()).collect(),
+        );
     }
     for (role, (sum, n)) in psnr_sums {
         if let Some(t) = report.by_role.get_mut(role) {

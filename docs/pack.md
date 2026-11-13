@@ -1,0 +1,36 @@
+# The Wii pack (`.wpk`)
+
+`mwf-convert pack <game folder> --map <zone>` writes `out/packs/<zone>.wpk` (git-ignored; it holds the user's converted
+game data) and a content-free `out/packs/<zone>.json`. The format lives in `shared/wpk` (`no_std`), shared by the
+converter (writer) and the Wii runtime (zero-copy reader).
+
+## Container
+Big-endian. A 64-byte header (magic `MWFP`, version, section count, FNV-1a content hash over everything after the
+header, file length, map name), a table of 16-byte section entries `{ tag, offset, length, record count }`, then the
+sections, **each 32-byte aligned**, so GX can use texture data and display lists where they lie once the file is in
+MEM2 (after `DCFlushRange`).
+
+## Sections (version 1)
+| Tag | Records | Content |
+|---|---|---|
+| `TEXT` | `TextureRecord` (32 B) | GX format, levels, alpha-plane flag, wrap, size, offsets into `TXDA` |
+| `TXDA` | – | GX-tiled texture data and I4 alpha planes, 32-byte aligned |
+| `MATL` | `MaterialRecord` (16 B) | TEV recipe, blend (opaque / alpha test / blend / additive / multiply), alpha ref, cull, colour texture, sort key |
+| `WVTX` | `WorldVertex` (28 B) | interleaved: position f32×3, RGBA8, UV f32×2, lightmap UV u16×2 (frac 15) |
+| `WBAT` | `BatchRecord` (48 B) | vertex base, vertex count, material, lightmap texture, display-list range in `WDLS`, triangles, bounds |
+| `WDLS` | – | GX display lists: `0x90` (triangles, VTXFMT0), u16 count, per vertex u16 indices for POS/CLR0/TEX0/TEX1 (all the same, relative to the batch's vertex base), NOP-padded to 32 |
+| `SKYB` | `Skybox` (16 B) | six sky face textures, D3D cube order |
+| `SPWN` | `SpawnRecord` (24 B) | origin, yaw, kind (TDM / DM), team, initial flag |
+
+## How the world is built (`converter/src/pack.rs`)
+- Surfaces are batched by vertex group (consecutive surfaces spanning under 65,536 vertices, so u16 indices reach
+  them), 1024-unit grid cell (for frustum culling), material and lightmap. Sky-material surfaces are dropped; the
+  skybox replaces them.
+- Lightmaps: IW4 lights by `(page0 + page1)²` in linear space; in gamma space that is `page0 + page1`, stored halved
+  (TEV ×2). The pages come from the zone images IW4 names `*lightmap<i>_secondary` (BGRA, two pages stacked).
+- Spawns: `mp_tdm_spawn*` and `mp_dm_spawn*` entities from the map's entity string.
+
+## `mp_rust` (first pack, 2026-11-13)
+14.5 MiB: textures 3.8, display lists 4.4, vertices 6.3. 235,386 vertices, 193,276 triangles in 171 batches, 75
+materials, 3 lightmaps, skybox, 51 spawns. Next: fixed-point positions and UVs (smaller vertices), visibility cells,
+static models, collision.

@@ -21,10 +21,12 @@ pub enum Role {
     /// The HUD minimap: a top-down picture of the whole map, shown zoomed in about 1:1 at 480p, so it keeps 512
     /// and no mips like UI, but is a picture (not text or icon edges), so smooth alpha is split into CMPR + I4.
     Minimap,
+    /// World lightmaps (light in gamma space, half range: the TEV scales by 2). 512 with mips; no alpha.
+    Lightmap,
 }
 
 impl Role {
-    pub const ALL: [Role; 9] = [
+    pub const ALL: [Role; 10] = [
         Role::World,
         Role::Prop,
         Role::Character,
@@ -34,6 +36,7 @@ impl Role {
         Role::Ui,
         Role::Mask,
         Role::Minimap,
+        Role::Lightmap,
     ];
 
     /// Longest side after conversion.
@@ -41,7 +44,7 @@ impl Role {
         match self {
             Role::World | Role::Character => 256,
             Role::Prop | Role::Effect | Role::Mask => 128,
-            Role::Viewmodel | Role::Sky | Role::Ui | Role::Minimap => 512,
+            Role::Viewmodel | Role::Sky | Role::Ui | Role::Minimap | Role::Lightmap => 512,
         }
     }
 
@@ -74,6 +77,7 @@ impl Role {
             Role::Ui => "ui",
             Role::Mask => "mask",
             Role::Minimap => "minimap",
+            Role::Lightmap => "lightmap",
         }
     }
 }

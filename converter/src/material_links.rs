@@ -76,9 +76,27 @@ pub struct MaterialInfo {
     pub sort_key: u8,
     pub techset: Option<String>,
     pub alpha: AlphaUse,
+    /// Framebuffer blend of the material's colour passes.
+    pub blend: BlendMode,
+    /// Faces culled: 0 none, 1 back, 2 front (IW4 state bits).
+    pub cull: u8,
     /// (semantic, image slot) per texture.
     textures: Vec<(u8, Ptr)>,
     pub users: BTreeSet<Owner>,
+}
+
+/// How a material's colour passes write the framebuffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlendMode {
+    Opaque,
+    /// Alpha test at this threshold.
+    AlphaTest(u8),
+    /// src·a + dst·(1−a).
+    Blend,
+    /// src + dst (or src·a + dst).
+    Additive,
+    /// src·dst.
+    Multiply,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -249,6 +267,15 @@ impl Links {
             sort_key: g.sort_key,
             techset,
             alpha: alpha_use(&rows),
+            blend: blend_mode(&rows),
+            cull: rows.first().map_or(
+                0,
+                |&r| match asset_iw4::state_bits::cull_face_from_state_bits(r) {
+                    asset_iw4::state_bits::Gfxs0CullFace::None => 0,
+                    asset_iw4::state_bits::Gfxs0CullFace::Back => 1,
+                    asset_iw4::state_bits::Gfxs0CullFace::Front => 2,
+                },
+            ),
             textures,
             users: BTreeSet::new(),
         });
@@ -321,6 +348,20 @@ impl Links {
                 self.weapon_world_names.entry(n).or_default().insert(index);
             }
         }
+    }
+
+    /// The material a zone pointer slot (e.g. `GfxSurface.material`) refers to.
+    pub fn resolve_material(&self, slot: Ptr) -> Option<usize> {
+        self.materials.resolve(slot)
+    }
+
+    /// The image (load index) a material samples as colour: its first texture with a colour semantic.
+    pub fn colour_image(&self, material: usize) -> Option<usize> {
+        let m = self.material_info.get(material)?;
+        m.textures
+            .iter()
+            .filter(|(semantic, _)| COLOUR_SEMANTICS.contains(semantic))
+            .find_map(|&(_, slot)| self.images.resolve(slot))
     }
 
     /// Hook for `AssetLinkSink::capture_raw_file`: a map's script names its HUD minimap material in
@@ -494,6 +535,29 @@ impl Links {
     }
 }
 
+/// The framebuffer blend of a material, from its state-bit rows: the first row that blends decides; otherwise alpha
+/// test if any row tests; otherwise opaque. D3D blend factors: 1 ZERO, 2 ONE, 3 SRCCOLOR, 4 INVSRCCOLOR, 5 SRCALPHA,
+/// 6 INVSRCALPHA, 9 DESTCOLOR.
+pub fn blend_mode(rows: &[[u32; 2]]) -> BlendMode {
+    for &row in rows {
+        let w = row[0];
+        if (w >> 8) & 7 == 0 {
+            continue;
+        }
+        let (src, dst) = (w & 0xf, (w >> 4) & 0xf);
+        return match (src, dst) {
+            (1, 3) | (9, 1) => BlendMode::Multiply,
+            (2 | 5, 2) => BlendMode::Additive,
+            (2, 1) => BlendMode::Opaque,
+            _ => BlendMode::Blend,
+        };
+    }
+    match alpha_use(rows) {
+        AlphaUse::Cutout { threshold } => BlendMode::AlphaTest(threshold),
+        _ => BlendMode::Opaque,
+    }
+}
+
 /// How the material's state bits use alpha: any alpha blend wins, then any alpha test, else unused.
 pub fn alpha_use(rows: &[[u32; 2]]) -> AlphaUse {
     let mut test: Option<u8> = None;
@@ -647,6 +711,7 @@ fn rank(role: Role) -> (u32, u8) {
         Role::Effect => 1,
         Role::Mask => 0,
         Role::Minimap => 8,
+        Role::Lightmap => 0,
     };
     (role.max_dim(), order)
 }
@@ -761,6 +826,8 @@ mod tests {
     fn material(techset: &str, camera_region: u8, users: &[Owner]) -> MaterialInfo {
         MaterialInfo {
             name: None,
+            blend: BlendMode::Opaque,
+            cull: 0,
             camera_region,
             sort_key: 0,
             techset: Some(techset.into()),
@@ -898,6 +965,18 @@ mod tests {
         assert_eq!(material_role(&m, &[], &minimaps).0, Role::Minimap);
         m.name = Some("hud_other".into());
         assert_eq!(material_role(&m, &[], &minimaps).0, Role::Ui);
+    }
+
+    #[test]
+    fn blend_modes_from_state_bits() {
+        let row = |src: u32, dst: u32| [(1 << 8) | (dst << 4) | src | 0x800, 0];
+        assert_eq!(blend_mode(&[row(5, 6)]), BlendMode::Blend);
+        assert_eq!(blend_mode(&[row(2, 2)]), BlendMode::Additive);
+        assert_eq!(blend_mode(&[row(5, 2)]), BlendMode::Additive);
+        assert_eq!(blend_mode(&[row(9, 1)]), BlendMode::Multiply);
+        assert_eq!(blend_mode(&[row(1, 3)]), BlendMode::Multiply);
+        assert_eq!(blend_mode(&[[0x800, 0]]), BlendMode::Opaque);
+        assert_eq!(blend_mode(&[[0x3000, 0]]), BlendMode::AlphaTest(128));
     }
 
     #[test]

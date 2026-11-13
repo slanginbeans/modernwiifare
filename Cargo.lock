@@ -717,6 +717,7 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "wpk",
 ]
 
 [[package]]
@@ -1215,6 +1216,10 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
 ]
+
+[[package]]
+name = "wpk"
+version = "0.1.0"
 
 [[package]]
 name = "zip"
