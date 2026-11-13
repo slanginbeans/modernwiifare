@@ -21,6 +21,8 @@ packs/
 
 # --- Build output ---
 build/
+dist/
+.toolchain/
 *.dol
 *.elf
 *.o

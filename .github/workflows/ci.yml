@@ -40,19 +40,21 @@ jobs:
     container: devkitpro/devkitppc:latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust
+      # The same script build.bat / build.sh run inside this image, so their Docker path is tested on every push.
+      - name: Build .dol files (tools/docker-build.sh)
         run: |
           if ! command -v curl >/dev/null; then apt-get update && apt-get install -y --no-install-recommends curl ca-certificates; fi
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - name: Build .dol files
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
-          make -C wii hbc BUILD_ID=$(echo "$GITHUB_SHA" | cut -c1-8)
+          BUILD_ID=$(echo "$GITHUB_SHA" | cut -c1-8) sh tools/docker-build.sh package
+      # Same dist/apps folder build.bat makes: copy "apps" to the SD card root.
       - uses: actions/upload-artifact@v4
         with:
-          name: modernwiifare-spikes-${{ github.sha }}
+          name: modernwiifare-sd-card
+          path: dist/apps/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: modernwiifare-debug-${{ github.sha }}
           path: |
-            wii/build/hbc/
+            dist/debug/
             wii/build/*.elf.map
           if-no-files-found: error

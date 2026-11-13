@@ -1,7 +1,8 @@
 # Builds the Phase 0 spike .dol files.
 #   Needs devkitPro (devkitPPC + libogc) and the Rust toolchain from rust-toolchain.toml.
 #   make            -> build/spike_a_gx.dol, build/spike_b_net.dol
-#   make hbc        -> build/hbc/apps/<spike>/{boot.dol,meta.xml}  (copy to SD:/apps/)
+#   make package    -> ../dist/apps/<app>/{boot.dol,meta.xml}  (copy dist/apps to the SD card root)
+#   make hbc        -> same layout under build/hbc/apps (used by CI)
 #   make run-a|run-b WIILOAD=tcp:<wii-ip>   -> send over the network with wiiload
 
 ifeq ($(strip $(DEVKITPRO)),)
@@ -27,7 +28,7 @@ BUILD  := build
 COMMON := $(BUILD)/shim_common.o $(BUILD)/shim_gx.o $(BUILD)/shim_net.o
 SPIKES := spike_a_gx spike_b_net
 
-.PHONY: all hbc clean rustlib run-a run-b
+.PHONY: all hbc package clean rustlib run-a run-b
 all: $(SPIKES:%=$(BUILD)/%.dol)
 
 # Cargo tracks its own dependencies; always ask it.
@@ -58,10 +59,21 @@ hbc: all
 	done
 	@echo "Copy $(BUILD)/hbc/apps/* to SD:/apps/"
 
+# What build.bat / build.sh produce: dist/apps at the repo root, ready for the SD card.
+DIST := ../dist
+package: all
+	@for s in $(SPIKES); do \
+	  mkdir -p $(DIST)/apps/mwf_$$s $(DIST)/debug; \
+	  cp $(BUILD)/$$s.dol $(DIST)/apps/mwf_$$s/boot.dol; \
+	  sed "s/@BUILD_ID@/$(BUILD_ID)/" hbc/$$s/meta.xml > $(DIST)/apps/mwf_$$s/meta.xml; \
+	  cp $(BUILD)/$$s.elf $(DIST)/debug/$$s.elf; \
+	done
+	@echo "Copy dist/apps to the root of the SD card."
+
 run-a: $(BUILD)/spike_a_gx.dol
 	$(WIILOAD_BIN) $<
 run-b: $(BUILD)/spike_b_net.dol
 	$(WIILOAD_BIN) $<
 
 clean:
-	rm -rf $(BUILD)
+	rm -rf $(BUILD) $(DIST)
