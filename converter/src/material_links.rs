@@ -25,6 +25,12 @@ const COLOUR_SEMANTICS: [u8; 3] = [0, 1, 2];
 /// `MaterialTextureDef.semantic` value for water (its image sits inside a water struct).
 const TS_WATER_MAP: u8 = 11;
 
+/// Technique types whose state bits decide how a material looks: the colour band from unlit (4) up, first present
+/// wins, as IW4L's renderer reads it (`asset_iw4::color_pass_agreement`). The later "lit" slots (37–39) are additive
+/// per-light passes, not the base look.
+const COLOUR_TECHNIQUES: core::ops::Range<usize> =
+    asset_iw4::material::TECHNIQUE_COLOR_BAND_FIRST..asset_iw4::size::TECHNIQUE_SLOT_COUNT;
+
 /// Bones that only a human skeleton has (body or head).
 const HUMAN_BONES: [&str; 4] = ["j_spinelower", "j_spineupper", "j_head", "j_neck"];
 
@@ -188,6 +194,8 @@ pub struct Links {
     materials: SlotMap,
     techsets: SlotMap,
     techset_names: Vec<Option<String>>,
+    /// Technique slot mask of each technique set (bit n: technique type n exists).
+    techset_slots: Vec<u64>,
     pub material_info: Vec<MaterialInfo>,
     xmodels: SlotMap,
     pub models: Vec<ModelInfo>,
@@ -252,10 +260,25 @@ impl Links {
                     .collect()
             })
             .unwrap_or_default();
-        let techset = g
-            .technique_set
-            .and_then(|slot| self.techsets.resolve(slot))
-            .and_then(|i| self.techset_names.get(i).cloned().flatten());
+        let techset_index = g.technique_set.and_then(|slot| self.techsets.resolve(slot));
+        let techset = techset_index.and_then(|i| self.techset_names.get(i).cloned().flatten());
+        // A material carries state bits for every technique (depth prepass, shadow, lit, ...). Blending and alpha
+        // test come from the colour pass: the first lit technique, else unlit/emissive (IW4L's colour band).
+        let slots = techset_index.and_then(|i| self.techset_slots.get(i).copied());
+        let colour_row = slots.and_then(|slots| {
+            COLOUR_TECHNIQUES.clone().find_map(|tech| {
+                asset_iw4::material::color_pass_row_for_tech_type(
+                    g.state_bits_entry.as_ref(),
+                    &rows,
+                    slots,
+                    tech,
+                )
+            })
+        });
+        let pass_rows: &[[u32; 2]] = match &colour_row {
+            Some(r) => core::slice::from_ref(r),
+            None => &rows,
+        };
         let name = g
             .name
             .and_then(|p| s.cstr(s.resolve_alias(p)).ok())
@@ -266,16 +289,15 @@ impl Links {
             camera_region: g.camera_region,
             sort_key: g.sort_key,
             techset,
-            alpha: alpha_use(&rows),
-            blend: blend_mode(&rows),
-            cull: rows.first().map_or(
-                0,
-                |&r| match asset_iw4::state_bits::cull_face_from_state_bits(r) {
+            alpha: alpha_use(pass_rows),
+            blend: blend_mode(pass_rows),
+            cull: pass_rows.first().map_or(0, |&r| {
+                match asset_iw4::state_bits::cull_face_from_state_bits(r) {
                     asset_iw4::state_bits::Gfxs0CullFace::None => 0,
                     asset_iw4::state_bits::Gfxs0CullFace::Back => 1,
                     asset_iw4::state_bits::Gfxs0CullFace::Front => 2,
-                },
-            ),
+                }
+            }),
             textures,
             users: BTreeSet::new(),
         });
@@ -448,6 +470,8 @@ impl Links {
                     .map(str::to_owned);
                 let i = self.techset_names.len();
                 self.techset_names.push(name);
+                self.techset_slots
+                    .push(s.latest_technique_set().map_or(0, |g| g.technique_slots));
                 self.techsets.loaded(slot, insert_slot, i);
             }
             AssetType::XModel => self.xmodel_loaded(s, slot, insert_slot),

@@ -16,6 +16,9 @@
 //!   mwf-convert pack <game folder> [--map <zone>] [--zone <file.ff>] [--out <file.wpk>]
 //!       Builds the Wii pack of one map: its textures (as `textures` does), lightmaps, materials, world geometry as
 //!       display lists, skybox and spawns. Default output: out/packs/<zone>.wpk (+ a content-free .json report).
+//!   mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw <deg> --pitch <deg>] [--out <file.png>]
+//!       Software reference render of a pack from a spawn point (or a given view), reading only the pack the way the
+//!       Wii does. 640x480, horizontal FOV 65. Default output: out/preview/<pack name>_<spawn>.png.
 //!   mwf-convert texture <image.png> [--role <role>] [--out <folder>]
 //!       Converts one PNG to a Wii texture (`.gxt`) plus a `_preview.png` of what the Wii shows,
 //!       and prints the chosen format, size and quality. Default output folder: out/textures.
@@ -28,6 +31,7 @@ mod map_walk;
 mod material_links;
 mod pack;
 mod pixel_decode;
+mod preview;
 mod texture;
 mod zone_textures;
 
@@ -37,6 +41,8 @@ const SHARED_TABLES_ZONE: &str = "code_post_gfx_mp";
 const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <report.json>]\n  \
      mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]\n  \
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
+     mwf-convert pack <game folder> [--map <zone>] [--zone <file.ff>] [--out <file.wpk>]\n  \
+     mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n  \
      mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask|minimap] [--out <folder>]";
 
 /// IW4L's `ZoneStream` keeps the latest record of every asset type inline, so walking a zone needs far more stack than
@@ -65,6 +71,7 @@ fn run(args: &[String]) -> ExitCode {
         Some("map") => run_map(&args[1..]),
         Some("textures") => run_textures(&args[1..]),
         Some("pack") => run_pack(&args[1..]),
+        Some("preview") => run_preview(&args[1..]),
         Some("texture") => run_texture(&args[1..]),
         Some("-h" | "--help") | None => {
             println!("{USAGE}");
@@ -462,4 +469,101 @@ fn run_texture(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_preview(args: &[String]) -> ExitCode {
+    let mut file: Option<PathBuf> = None;
+    let (mut spawn, mut pos, mut yaw, mut pitch, mut out) = (0usize, None, None, 0.0f32, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut value = || it.next().cloned().unwrap_or_default();
+        match a.as_str() {
+            "--spawn" => spawn = value().parse().unwrap_or(0),
+            "--pos" => {
+                let v: Vec<f32> = value()
+                    .split(',')
+                    .filter_map(|t| t.trim().parse().ok())
+                    .collect();
+                pos = (v.len() == 3).then(|| [v[0], v[1], v[2]]);
+            }
+            "--yaw" => yaw = value().parse().ok(),
+            "--pitch" => pitch = value().parse().unwrap_or(0.0),
+            "--out" => out = Some(PathBuf::from(value())),
+            _ if file.is_none() => file = Some(PathBuf::from(a)),
+            _ => {
+                eprintln!("unexpected argument `{a}`\n{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let Some(file) = file else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let bytes = match std::fs::read(&file) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("{}: {e}", file.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let (eye, view_yaw) = match pos {
+        Some(p) => (p, yaw.unwrap_or(0.0)),
+        None => match preview::spawns(&bytes).map(|s| s.get(spawn).copied()) {
+            Ok(Some(s)) => (
+                [s.origin[0], s.origin[1], s.origin[2] + 60.0],
+                yaw.unwrap_or(s.yaw),
+            ),
+            Ok(None) => {
+                eprintln!("the pack has no spawn {spawn}; use --pos");
+                return ExitCode::FAILURE;
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let view = preview::View {
+        eye,
+        yaw: view_yaw,
+        pitch,
+        width: 640,
+        height: 480,
+        hfov_deg: 65.0,
+    };
+    let t = std::time::Instant::now();
+    let (img, stats) = match preview::render(&bytes, &view) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let stem = file
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let out = out.unwrap_or_else(|| PathBuf::from(format!("out/preview/{stem}_{spawn}.png")));
+    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = preview::write_png(&out, &img) {
+        eprintln!("{e}");
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "{} from ({:.0}, {:.0}, {:.0}) yaw {:.0}: {} batches drawn, {} culled, {} triangles, {} pixels, {} ms",
+        out.display(),
+        eye[0],
+        eye[1],
+        eye[2],
+        view_yaw,
+        stats.batches_drawn,
+        stats.batches_culled,
+        stats.triangles,
+        stats.pixels_drawn,
+        t.elapsed().as_millis()
+    );
+    ExitCode::SUCCESS
 }

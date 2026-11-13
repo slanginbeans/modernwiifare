@@ -51,7 +51,8 @@ DSTALPHA blending needs the `GX_PF_RGBA6_Z24` EFB format.
 GX is right-handed, looks down −Z, +Y up (OpenGL style); `Mtx` is a row-major 3×4 times column vectors. IW4 is Z-up
 (X forward, Y left), also right-handed: use `guLookAt(eye, up = (0,0,1), eye + forward)`, or map engine view space to
 GX view as `x_gx = −y, y_gx = z, z_gx = −x`. Check `GX_SetCullMode(GX_CULL_BACK)` winding with a test triangle
-(uncertain which way GX treats front faces).
+(uncertain which way GX treats front faces). IW4 front faces are counter-clockwise on screen (positive area with y down), found by the
+reference renderer (`docs/pack.md`).
 
 ## Frame, video, memory
 - EFB max 640×528: render 640×480. `GX_CopyDisp` to one of two XFBs, then `VIDEO_SetNextFramebuffer/Flush/WaitVSync`.
