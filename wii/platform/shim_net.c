@@ -1,5 +1,6 @@
 #include <gccore.h>
 #include <network.h>
+#include <poll.h> /* POLLIN: libogc network_wii.c takes it from here too */
 #include <string.h>
 
 #include "shim.h"
