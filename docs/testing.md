@@ -26,7 +26,7 @@ Also say per round: did it crash (the log then has no summary line), did sound p
 ## What the log records (`game_core::telemetry`)
 - Header: build, map, bots, class, free MEM1 / MEM2 at start; then the load time and memory after loading.
 - Every second: fps, average / worst frame, CPU and GPU-wait time, and the CPU split: input, player movement, gun,
-  bots, world draw submit, bot bodies, viewmodel, HUD; triangles and draws; free memory (every 5 s).
+  bots, world draw submit, other players' bodies (characters: pose, CPU skinning and draw submit; or the placeholder boxes), viewmodel, HUD; triangles and draws; free memory (every 5 s).
 - Every frame over 33 ms (up to 20 a minute): its full breakdown.
 - Events: hits and kills involving you, map load, load failures (with the file error), pause, class change, weapon
   switch, log writes (with their own time), panics (with the message), match end.

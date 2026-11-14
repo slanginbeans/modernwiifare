@@ -1695,7 +1695,8 @@ fn run_map(
         }
         sections[section::BOTS] = lap(&mut mark);
         let stats = world.draw(gfx, &cam, scratch);
-        // The other players' bodies.
+        sections[section::WORLD] = lap(&mut mark);
+        // The other players' bodies (timed with the placeholder boxes as `bod`).
         if let (Some(ch), Some(a)) = (characters.as_mut(), arena.as_ref()) {
             poses.clear();
             for (i, f) in a
@@ -1722,7 +1723,6 @@ fn run_map(
             }
             ch.draw(gfx, &cam.view(), &poses, now);
         }
-        sections[section::WORLD] = lap(&mut mark);
         // Bots: placeholder bodies, one shaded box per hit volume, until the character models are converted.
         if let Some(a) = arena.as_ref() {
             boxes.clear();
