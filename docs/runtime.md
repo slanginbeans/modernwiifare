@@ -25,6 +25,12 @@ By hand:
    `sd:/apps/`, and start **Modern Wiifare** from the Homebrew Channel. GameCube controller in port 1.
 
 ## Menus
+The menus use MW2's own look, converted from your copy into `common.wpk` (`converter/src/ui_bake.rs`): its fonts
+(glyph tables over their atlases), and its multiplayer main menu (`main_text`): background, soldier art, logo,
+gradients, the button column's position, font and text placement, and the selection bar. Every list (main menu, map
+and class choice, Create-a-Class, pause, scoreboard) is drawn in that style for now; each screen's own MW2 layout
+comes next. `mwf-convert menu-preview <common.wpk>` renders the main menu to `out/preview/menu_main.png` to check it
+on the PC. Without menu data in `common.wpk` the menus fall back to the block font.
 Every menu is a list: D-pad or main stick up / down, **A** chooses, **B** goes back.
 - **Main menu**: Play, Create a Class, Quit.
 - **Play** → choose a map → choose a class (your five custom classes, then MW2's five default classes) → the match.

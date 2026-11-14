@@ -25,6 +25,7 @@ pub mod quant;
 pub mod records;
 pub mod sound;
 pub mod strips;
+pub mod ui;
 pub mod view;
 pub mod vis;
 pub mod weapon;
@@ -96,6 +97,8 @@ pub mod tag {
     pub const WEAPON_SOUNDS: Tag = *b"WSND";
     /// Create-a-Class catalog and default classes (one blob, [`crate::classes::Catalog`]).
     pub const CLASSES: Tag = *b"CLSS";
+    /// Menu fonts and baked screens ([`crate::ui::UiPack`]); their textures are in `TEXT` / `TXDA`.
+    pub const UI: Tag = *b"UIPK";
     /// Weapons (`weapon::WeaponRecord`): combat numbers of every weapon (in `common.wpk`).
     pub const WEAPONS: Tag = *b"WEAP";
     /// World visibility (`vis::Vis`): cell BSP, cells, portals.

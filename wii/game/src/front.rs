@@ -83,6 +83,11 @@ pub fn list(
             other => return other,
         }
         unsafe { ffi::mwf_frame_begin(&cam.view(), cam.fovy, 4.0, 100.0, 0x1a1e24ff) };
+        if let Some(u) = crate::ui::get() {
+            draw_mw2(u, title, lines, *selected, footer);
+            gfx.frame_end();
+            continue;
+        }
         rects.clear();
         hud::text(&mut rects, 48, 40, 5, title);
         gfx.hud_rects(&rects, TITLE);
@@ -111,6 +116,59 @@ pub fn list(
         gfx.hud_rects(&rects, 0x808890ff);
         gfx.frame_end();
     }
+}
+
+/// A list in MW2's main-menu style: its background images, its button rects and font, the selection bar on the
+/// focused line (from the user's own `main_text` menu, baked by the converter).
+fn draw_mw2(u: &mut crate::ui::Ui, title: &str, lines: &[Line], selected: usize, footer: &str) {
+    u.screen("main");
+    let style = u.pack.screen("main").and_then(|s| s.buttons);
+    let Some(b) = style else {
+        return;
+    };
+    let big = u.font("fonts/bigfont");
+    let small = u.font("fonts/smallfont");
+    let font = usize::from(b.font);
+    // Title above the first button (MW2's menus put the page name there).
+    // Inside MW2's 0.85 safe area (640 × 0.075).
+    u.text(big, title, 48.0, b.y - 14.0, 0.5, 0xffffffff);
+    let rows = (((440.0 - b.y) / b.step) as usize).max(1);
+    let text_h = b.text_scale * game_core::ui_text::TEXT_EM;
+    for (row, i) in menu::window(selected, lines.len(), rows).enumerate() {
+        let l = &lines[i];
+        let y = b.y + row as f32 * b.step;
+        if i == selected && b.bar != wpk::ui::NONE {
+            u.draw(&[wpk::ui::Quad {
+                x: b.x,
+                y,
+                w: b.w,
+                h: b.h,
+                uv: [0.0, 0.0, 1.0, 1.0],
+                rgba: b.bar_rgba,
+                texture: b.bar,
+            }]);
+        }
+        let colour = if i == selected {
+            b.focus_rgba
+        } else if l.enabled {
+            b.rgba
+        } else {
+            (b.rgba & 0xffff_ff00) | 0x60
+        };
+        // IW4 text placement (`hud_iw4::item_text_origin`): right-aligned buttons sit text_x from the rect's right edge;
+        // the baseline is one text height below the rect's top.
+        let w = u.text_width(font, &l.text, b.text_scale);
+        let x = match b.align {
+            1 => b.x + (b.w - w) * 0.5 + b.text_x,
+            2 => b.x + b.w - w + b.text_x,
+            _ => b.x + b.text_x,
+        };
+        u.text(font, &l.text, x, y + text_h, b.text_scale, colour);
+        if let Some(v) = &l.value {
+            u.text(small, v, b.x + b.w + 12.0, y + text_h, 0.3, colour);
+        }
+    }
+    u.text(small, footer, 48.0, 456.0, 0.3, 0xc0c8d0ff);
 }
 
 pub enum Main {

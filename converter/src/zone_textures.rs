@@ -237,6 +237,52 @@ impl AssetLinkSink for Collector {
         Ok(())
     }
 
+    fn linked_asset_name(&self, slot: Ptr) -> Option<&str> {
+        self.links.material_name(slot)
+    }
+
+    fn capture_font(&mut self, rec: &fastfile_iw4::FontCapture<'_>) -> fastfile_iw4::Result<()> {
+        self.links.ui.font(rec);
+        Ok(())
+    }
+
+    fn capture_menu_def(
+        &mut self,
+        rec: &fastfile_iw4::MenuDefCapture<'_>,
+    ) -> fastfile_iw4::Result<()> {
+        self.links.ui.menu_def(rec);
+        Ok(())
+    }
+
+    fn capture_menu_item_layout(
+        &mut self,
+        rec: &fastfile_iw4::MenuItemLayout<'_>,
+    ) -> fastfile_iw4::Result<()> {
+        self.links.ui.item(rec);
+        Ok(())
+    }
+
+    fn capture_item_visible_exp(
+        &mut self,
+        menu: &str,
+        item: &str,
+        dump: &str,
+    ) -> fastfile_iw4::Result<()> {
+        self.links.ui.visible(menu, item, dump);
+        Ok(())
+    }
+
+    fn capture_menu_script(
+        &mut self,
+        menu: &str,
+        item: &str,
+        kind: fastfile_iw4::MenuScriptKind,
+        script: &str,
+    ) -> fastfile_iw4::Result<()> {
+        self.links.ui.script(menu, item, kind, script);
+        Ok(())
+    }
+
     fn capture_string_table(
         &mut self,
         s: &ZoneStream<'_>,

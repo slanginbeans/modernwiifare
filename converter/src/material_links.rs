@@ -242,6 +242,8 @@ pub struct Links {
     pub localize: HashMap<String, String>,
     /// MW2's per-hit-location damage table (`info/mp_lochit_dmgtable`), when the zone has it.
     pub lochit: Option<[f32; weapon_iw4::HITLOC_COUNT]>,
+    /// Fonts and menus of the zone.
+    pub ui: crate::ui_capture::UiCapture,
     /// Sound aliases and loaded sounds of the zone.
     pub sounds: crate::sounds::Capture,
     /// Every XAnim loaded, by name, read again after the walk (`viewmodel.rs`).
@@ -505,6 +507,12 @@ impl Links {
                 self.weapon_world_names.entry(n).or_default().insert(index);
             }
         }
+    }
+
+    /// The name of the material loaded or aliased into `slot` (menus name their background materials this way).
+    pub fn material_name(&self, slot: Ptr) -> Option<&str> {
+        let i = self.materials.resolve(slot)?;
+        self.material_info.get(i)?.name.as_deref()
     }
 
     /// The material a zone pointer slot (e.g. `GfxSurface.material`) refers to.

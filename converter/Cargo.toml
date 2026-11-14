@@ -30,3 +30,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 gx_texture = { path = "../shared/gx_texture" }
 png = "0.17"
+hud_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }

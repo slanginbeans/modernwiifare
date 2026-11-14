@@ -131,7 +131,7 @@ pub struct Stats {
     pub pixels_drawn: u64,
 }
 
-fn decode_texture(rec: &TextureRecord, txda: &[u8]) -> Option<Image> {
+pub(crate) fn decode_texture(rec: &TextureRecord, txda: &[u8]) -> Option<Image> {
     let format = TexFormat::from_gx_id(rec.format)?;
     let data = txda.get(rec.data_off as usize..(rec.data_off + rec.data_len) as usize)?;
     let alpha_plane = if rec.flags & texture_flags::ALPHA_PLANE != 0 {

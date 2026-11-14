@@ -16,6 +16,7 @@ mod ffi;
 mod front;
 mod rt;
 mod sound;
+mod ui;
 mod view;
 
 use alloc::vec::Vec;
@@ -631,6 +632,10 @@ fn run_map(
         .as_ref()
         .and_then(|p| p.section(wpk::tag::WEAPON_AIM))
         .map_or(&[][..], |s| s.data);
+    // The map load reset every texture: the menu textures again (the pause menu uses them), below the arsenal's mark.
+    if let Some(u) = ui::get() {
+        u.create_textures(gfx);
+    }
     let mut arsenal = arsenal::Arsenal::new();
     // A class change applies at the next spawn, as in MW2.
     let mut class = loadouts.class;
@@ -1194,6 +1199,8 @@ pub extern "C" fn mwf_game_main() -> i32 {
     let scratch: &'static mut WalkScratch = unsafe { &mut *core::ptr::addr_of_mut!(WALK_SCRATCH) };
     // Weapons, classes and other shared data (optional): <app folder>/common.wpk, in MEM2 for the whole run.
     let common = load_common();
+    // MW2's menu fonts and screens (from common.wpk), when the pack has them.
+    ui::init(common, &mut gfx);
     let catalog = wpk::Pack::parse(common, false)
         .ok()
         .and_then(|p| p.section(wpk::tag::CLASSES))

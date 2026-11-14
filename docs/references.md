@@ -27,6 +27,8 @@ Record **every** project we read, borrow from, or test against, with its license
 | `wii/game_core/src/player.rs` (`WeaponMove`, context) | `crates/sim/src/step.rs` (`pmove_context`, the per-player order) | Weapon facts into the pmove context |
 | `wii/game_core/src/gun.rs` (`sync_player`, pellets) | `crates/sim/src/combat.rs` (`advance_weapon_command`: hand state back into the player state; pellet emission) | Same fields and order |
 | `wii/game_core/src/nav.rs` (`Navigator`) | `crates/bots/src/nav.rs` (`nearest_within`) | Grid index and stamped A* scratch are ours |
+| `converter/src/ui_capture.rs`, `converter/src/ui_bake.rs` | `crates/asset_game/src/menu_catalog.rs` (zones, font / menu capture through the same `fastfile_iw4` hooks); `hud_iw4::ScreenPlacement`, `hud_iw4::font` used as a crate | Baking screens to quads is ours |
+| `wii/game_core/src/ui_text.rs` | `crates/hud_iw4/src/font.rs` (`R_TEXT_EM`, `normalized_text_scale`, `next_letter`, `item_text_origin`) | Glyph placement ported |
 | `wii/game_core/src/look.rs` | `crates/net/src/client/pad_aim.rs` (`pad_look_frame`, aim assist constants), `crates/console/src/gamepad.rs` (radial dead zone, look curve), `crates/frame/src/settings.rs` (defaults); `hud_iw4::fov` used as a crate | Ported; the learned stick range is ours |
 | `wii/game_core/src/damage.rs` | `crates/sim/src/bullet.rs` (`bullet_damage_at_distance`), `crates/weapon_iw4/src/fire_weapon.rs` (location scale) | Range falloff ported; hit volumes are our own approximation |
 | `converter/src/weapons.rs` (location table) | `crates/asset_game/src/lochit.rs` (`parse_lochit_info_string`), `crates/asset_game/src/weapon_catalog/combat.rs` (`bake_location_damage`) | `mp_lochit_dmgtable` parsed and baked into each weapon |

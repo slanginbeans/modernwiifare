@@ -278,7 +278,7 @@ int32_t mwf_tex_create(const mwf_tex_desc *d) {
 
 /* ---- frame --------------------------------------------------------------------------------------------------- */
 
-enum { MODE_NONE, MODE_SKY, MODE_WORLD, MODE_HUD, MODE_VIEW };
+enum { MODE_NONE, MODE_SKY, MODE_WORLD, MODE_HUD, MODE_VIEW, MODE_UI };
 
 extern GXRModeObj *mwf_rmode;
 /* Depth range split: the first-person model gets [0, VIEW_DEPTH], the world [VIEW_DEPTH, 1]. */
@@ -585,6 +585,67 @@ static void hud_mode(void) {
     GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
     GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
     GX_SetCullMode(GX_CULL_NONE);
+}
+
+/* Textured 2D quads on the 640x480 screen (menus, MW2 text): texture x vertex colour, alpha blended. */
+static void ui_mode(void) {
+    if (mode == MODE_UI) return;
+    mode = MODE_UI;
+    world_base = NULL;
+    Mtx44 ortho;
+    guOrtho(ortho, 0, 480, 0, 640, -1, 1);
+    GX_LoadProjectionMtx(ortho, GX_ORTHOGRAPHIC);
+    Mtx id;
+    guMtxIdentity(id);
+    GX_LoadPosMtxImm(id, GX_PNMTX2);
+    GX_SetCurrentMtx(GX_PNMTX2);
+    GX_ClearVtxDesc();
+    GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
+    GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+    GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+    GX_SetVtxAttrFmt(GX_VTXFMT2, GX_VA_POS, GX_POS_XY, GX_F32, 0);
+    GX_SetVtxAttrFmt(GX_VTXFMT2, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+    GX_SetVtxAttrFmt(GX_VTXFMT2, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+    GX_SetNumChans(1);
+    GX_SetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
+    GX_SetNumTexGens(1);
+    GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
+    GX_SetNumTevStages(1);
+    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
+    GX_SetTevOp(GX_TEVSTAGE0, GX_MODULATE);
+    GX_SetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_CLEAR);
+    GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+    GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+    GX_SetCullMode(GX_CULL_NONE);
+}
+
+void mwf_ui_quads(int32_t tex, const mwf_ui_quad *q, uint32_t count) {
+    if (count == 0 || tex < 0 || tex >= tex_count) return;
+    ui_mode();
+    GX_LoadTexObj(&tex_obj[tex], GX_TEXMAP0);
+    while (count > 0) {
+        uint32_t n = count > 16383 ? 16383 : count;
+        GX_Begin(GX_QUADS, GX_VTXFMT2, (u16)(n * 4));
+        for (uint32_t i = 0; i < n; i++) {
+            const mwf_ui_quad *a = &q[i];
+            u8 r = (u8)(a->rgba >> 24), g = (u8)(a->rgba >> 16), b = (u8)(a->rgba >> 8), al = (u8)a->rgba;
+            GX_Position2f32(a->x, a->y);
+            GX_Color4u8(r, g, b, al);
+            GX_TexCoord2f32(a->s0, a->t0);
+            GX_Position2f32(a->x + a->w, a->y);
+            GX_Color4u8(r, g, b, al);
+            GX_TexCoord2f32(a->s1, a->t0);
+            GX_Position2f32(a->x + a->w, a->y + a->h);
+            GX_Color4u8(r, g, b, al);
+            GX_TexCoord2f32(a->s1, a->t1);
+            GX_Position2f32(a->x, a->y + a->h);
+            GX_Color4u8(r, g, b, al);
+            GX_TexCoord2f32(a->s0, a->t1);
+        }
+        GX_End();
+        q += n;
+        count -= n;
+    }
 }
 
 void mwf_hud_rects(const int16_t (*r)[4], uint32_t count, uint32_t rgba) {

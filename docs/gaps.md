@@ -49,7 +49,13 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
 5. Weapon-file loads only at map start (today a class change loads at the next spawn: a hitch).
 6. Finer telemetry: per-bot, trace counts, A* expansions, world draw stages, the end-of-frame split, GPU metrics.
 
-## Menus like MW2's (plan)
+## Menus like MW2's
+Done (2026-11-14): fonts and the main menu screen baked (`wpk::ui`, `UIPK`), drawn on the Wii as textured quads;
+every list uses the main menu's style. Not yet: the cloud layer (its material has no colour texture in the UI zones),
+the other screens' own layouts (class select `changeclass`, Create-a-Class `menu_cac_assault` and the `popup_cac_*`
+choosers, pause `class`, scoreboard), MW2's menu text (localized button names), animations, 16:9 layouts.
+
+### Plan
 IW4L reads the real menu assets (`fastfile_iw4` hooks: `capture_menu_def`, `capture_menu_item_layout`, `capture_font`
 …; zones `code_post_gfx_mp`, `localized_code_post_gfx_mp`, `localized_ui_mp`, `common_mp`, `patch_mp`) and runs them
 with a script/expression engine on Bevy. For the Wii: **bake the screens at convert time**, keep a small runtime.

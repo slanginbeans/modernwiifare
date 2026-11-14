@@ -32,6 +32,7 @@ mod inventory;
 mod light_grid;
 mod map_walk;
 mod material_links;
+mod menu_preview;
 mod pack;
 mod pixel_decode;
 mod preview;
@@ -40,6 +41,8 @@ mod sounds;
 mod stamp;
 mod static_models;
 mod texture;
+mod ui_bake;
+mod ui_capture;
 mod ui_tables;
 mod viewmodel;
 mod visibility;
@@ -84,6 +87,30 @@ fn run(args: &[String]) -> ExitCode {
         Some("textures") => run_textures(&args[1..]),
         Some("pack") => run_pack(&args[1..]),
         Some("common") => run_common(&args[1..]),
+        Some("menu-preview") => {
+            let Some(path) = args.get(1) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let out = PathBuf::from("out/preview/menu_main.png");
+            let result = std::fs::read(path)
+                .map_err(|e| format!("{path}: {e}"))
+                .and_then(|b| menu_preview::render(&b))
+                .and_then(|img| {
+                    std::fs::create_dir_all("out/preview").map_err(|e| e.to_string())?;
+                    preview::write_png(&out, &img)
+                });
+            match result {
+                Ok(()) => {
+                    println!("menu preview -> {}", out.display());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("report") => match report::run(&args[1..]) {
             Ok(text) => {
                 print!("{text}");
@@ -484,6 +511,67 @@ fn walk_zone(a: &MapArgs, zone: &str) -> Option<material_links::Links> {
 }
 
 /// The data every map shares, from `common_mp`: weapons (combat numbers) for now. â†’ `out/packs/common.wpk`.
+/// MW2's menu fonts and screens from the UI zones (`ui_capture::UI_ZONES`), their textures added to `tex`.
+fn build_ui(
+    a: &MapArgs,
+    tex: &mut pack::Textures,
+) -> Option<(wpk::ui::UiPack, ui_bake::BakeReport)> {
+    struct Zone {
+        links: material_links::Links,
+        dir: PathBuf,
+        files_by_image: HashMap<usize, String>,
+    }
+    let mut zones = Vec::new();
+    let mut ui = ui_capture::UiCapture::default();
+    for z in ui_capture::UI_ZONES {
+        let args = MapArgs {
+            map: z.to_owned(),
+            zone: None,
+            ..a.clone()
+        };
+        let Ok((image, label, _)) = open_map_zone(&args) else {
+            continue;
+        };
+        let dir = PathBuf::from(format!("out/textures/{z}"));
+        let Ok((index, tables)) = convert_textures(&args, &image, &label, &dir, false) else {
+            continue;
+        };
+        let Ok((c, ())) = zone_textures::walk_with(&image, &tables, |_, _| ()) else {
+            continue;
+        };
+        let mut files_by_image = HashMap::new();
+        for e in &index {
+            for &i in &e.images {
+                files_by_image.entry(i).or_insert_with(|| e.file.clone());
+            }
+        }
+        let mut links = c.links;
+        ui.absorb(std::mem::take(&mut links.ui));
+        zones.push(Zone {
+            links,
+            dir,
+            files_by_image,
+        });
+    }
+    if ui.menus.is_empty() && ui.fonts.is_empty() {
+        return None;
+    }
+    // A material's colour texture, from the first zone that has the material.
+    let lookup = |name: &str, tex: &mut pack::Textures| -> Option<u16> {
+        zones.iter().find_map(|z| {
+            let m = z.links.material_info.iter().position(|m| {
+                m.name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(name))
+            })?;
+            let img = z.links.colour_image(m)?;
+            let file = z.files_by_image.get(&img)?;
+            tex.add_file(&z.dir, file, wpk::records::Wrap::Clamp).ok()
+        })
+    };
+    Some(ui_bake::bake(&ui, |name| lookup(name, tex)))
+}
+
 fn run_common(args: &[String]) -> ExitCode {
     let mut a = match parse_map_args(args) {
         Ok(a) => a,
@@ -499,6 +587,7 @@ fn run_common(args: &[String]) -> ExitCode {
         .map_or_else(|| PathBuf::from("views"), |d| d.join("views"));
     let mut zones = vec!["common_mp", SOUND_ZONE];
     zones.extend(CLASS_ZONES);
+    zones.extend(ui_capture::UI_ZONES);
     let st = stamp_of(&a, &zones);
     let views_there = std::fs::read_dir(&view_dir).is_ok_and(|mut d| d.next().is_some());
     if !a.force && views_there && st.up_to_date(&out) {
@@ -662,6 +751,29 @@ fn run_common(args: &[String]) -> ExitCode {
         wpk::records::encode(&aims),
     );
     b.section(wpk::tag::CLASSES, 0, catalog.encode());
+    // Menus: MW2's fonts and baked screens, with their textures.
+    let mut ui_tex = pack::Textures::default();
+    match build_ui(&a, &mut ui_tex) {
+        Some((ui, r)) => {
+            println!(
+                "menus: {} fonts ({} glyphs), {} screens ({} images), {} textures, {} materials without a texture",
+                r.fonts,
+                r.glyphs,
+                r.screens,
+                r.quads,
+                ui_tex.records.len(),
+                r.missing_textures
+            );
+            b.section(
+                wpk::tag::TEXTURES,
+                ui_tex.records.len() as u32,
+                wpk::records::encode(&ui_tex.records),
+            );
+            b.section(wpk::tag::TEXTURE_DATA, 0, std::mem::take(&mut ui_tex.data));
+            b.section(wpk::tag::UI, 0, ui.encode());
+        }
+        None => eprintln!("warning: no menu data (UI zones unreadable)"),
+    }
     let bytes = b.finish();
     if !write_file(&out, &bytes) {
         return ExitCode::FAILURE;

@@ -742,6 +742,7 @@ dependencies = [
  "fastfile_t6",
  "game_core",
  "gx_texture",
+ "hud_iw4",
  "lighting_iw4",
  "png",
  "serde",

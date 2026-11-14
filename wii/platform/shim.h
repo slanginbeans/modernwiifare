@@ -149,6 +149,14 @@ void mwf_sky_face(const float view_rot[3][4], const float corners[4][5], int32_t
 /* Write back CPU-written data GX will read (skinned positions). */
 void mwf_flush(const void *p, uint32_t len);
 
+/* Menus and MW2 text: textured quads on the 640x480 screen, texture x colour, alpha blended. */
+typedef struct {
+    float x, y, w, h;
+    float s0, t0, s1, t1;
+    uint32_t rgba;
+} mwf_ui_quad;
+void mwf_ui_quads(int32_t tex, const mwf_ui_quad *q, uint32_t count);
+
 /* Solid shaded boxes in world space (placeholder bodies), depth tested: mins b[i][0..3], maxs b[i][3..6]. */
 void mwf_draw_boxes(const float view[3][4], const float (*b)[6], const uint32_t *rgba, uint32_t count);
 

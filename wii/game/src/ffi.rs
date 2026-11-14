@@ -14,6 +14,21 @@ pub const BTN_B: u16 = 0x0200;
 pub const BTN_Y: u16 = 0x0800;
 pub const BTN_START: u16 = 0x1000;
 
+/// `mwf_ui_quad` (shim.h).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct UiQuad {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub s0: f32,
+    pub t0: f32,
+    pub s1: f32,
+    pub t1: f32,
+    pub rgba: u32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Pad {
@@ -80,6 +95,7 @@ unsafe extern "C" {
     pub fn mwf_app_dir() -> *const c_char;
     pub fn mwf_mem2_alloc(size: u32, align: u32) -> *mut u8;
     pub fn mwf_flush(p: *const u8, len: u32);
+    pub fn mwf_ui_quads(tex: i32, q: *const UiQuad, count: u32);
     pub fn mwf_draw_boxes(
         view: &[[f32; 4]; 3],
         boxes: *const [f32; 6],
