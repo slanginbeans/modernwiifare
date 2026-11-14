@@ -319,6 +319,31 @@ impl AssetLinkSink for Collector {
                 .to_owned();
             self.links.scripts.insert(name.to_owned(), text);
         }
+        // The bullet penetration depths (IW4L `asset_game::penetration`: `BULLET_PEN_TABLE` then `key\value`).
+        if name == "info/bullet_penetration_mp" {
+            let bytes = if zlib_compressed {
+                asset_transport::inflate_zlib(data).unwrap_or_default()
+            } else {
+                data.to_vec()
+            };
+            let text = String::from_utf8_lossy(&bytes);
+            if let Some(rest) = text
+                .trim()
+                .trim_end_matches('\0')
+                .strip_prefix("BULLET_PEN_TABLE")
+            {
+                let mut t = [[0.0f32; 31]; 4];
+                let mut parts = rest.split('\\').filter(|p| !p.is_empty());
+                while let (Some(k), Some(v)) = (parts.next(), parts.next()) {
+                    if let (Some((ty, s)), Ok(v)) =
+                        (weapon_iw4::split_pen_key(k), v.trim().parse::<f32>())
+                    {
+                        t[ty][s] = v;
+                    }
+                }
+                self.links.pen_table = Some(t);
+            }
+        }
         if name == crate::weapons::LOCHIT_RAWFILE {
             self.links.lochit = crate::weapons::parse_lochit(data, zlib_compressed);
         }

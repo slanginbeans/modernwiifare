@@ -22,6 +22,19 @@ pub struct WeaponTables<'a> {
     pub aims: &'a [u8],
     /// Thrown weapons' numbers (`WEQP`; empty with an older pack).
     pub equips: &'a [u8],
+    /// Bullet penetration per weapon (`WPEN`) and the depth table (`PENT`; None with an older pack).
+    pub pens: &'a [u8],
+    pub pen_table: Option<weapon_iw4::PenetrationDepthTable>,
+}
+
+/// Weapon `index`'s bullet penetration, when it has any and the table is there.
+pub fn penetration(t: &WeaponTables<'_>, index: u32) -> Option<game_core::gun::Penetration> {
+    let r = wpk::records::get::<wpk::weapon::PenRecord>(t.pens, index as usize)?;
+    Some(game_core::gun::Penetration {
+        kind: r.kind,
+        multiplier: r.multiplier,
+        table: t.pen_table?,
+    })
 }
 
 /// The weapon fallback classes throw (MW2's frag).
@@ -171,6 +184,7 @@ impl Arsenal {
                 ));
                 g.set_moves(wpk::records::get(t.moves, index as usize));
                 g.set_aim(wpk::records::get(t.aims, index as usize));
+                g.set_penetration(penetration(t, index));
                 Some(g)
             });
         }

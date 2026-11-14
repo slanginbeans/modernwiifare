@@ -98,6 +98,10 @@ pub mod tag {
     pub const WEAPON_BLOCKERS: Tag = *b"WSMK";
     /// Footstep sounds by gait, listener and surface (`sound::step_index`; u16 aliases in the world bank).
     pub const FOOTSTEPS: Tag = *b"STEP";
+    /// Bullet penetration per weapon (`weapon::PenRecord`, parallel to `WEAP`).
+    pub const WEAPON_PEN: Tag = *b"WPEN";
+    /// The penetration depth table (`info/bullet_penetration_mp`): 4 types × 31 surfaces, f32.
+    pub const PEN_TABLE: Tag = *b"PENT";
     /// Sound alias lists ([`crate::sound::AliasRecord`]).
     pub const SOUND_ALIASES: Tag = *b"SNDA";
     /// Sound variants ([`crate::sound::VariantRecord`]).

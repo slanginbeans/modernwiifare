@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 /// 13: flashbang and stun durations, their shock files. 14: sound distances, thrown weapons' world sounds.
 /// 15: thrown weapons' impact damage. 16: blast cones, claymore and explosives rules.
 /// 17: smoke's sight blockers (`WSMK`). 18: shocks' look control.
-/// 19: footsteps (`STEP`).
-pub const REVISION: u32 = 19;
+/// 19: footsteps (`STEP`). 20: bullet penetration (`WPEN`, `PENT`).
+pub const REVISION: u32 = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

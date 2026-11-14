@@ -897,6 +897,34 @@ fn run_common(args: &[String]) -> ExitCode {
         steps.len() as u32,
         steps.iter().flat_map(|v| v.to_be_bytes()).collect(),
     );
+    // Bullet penetration: each weapon's type and multiplier (first weapon of each name), and the depth table.
+    let pens: Vec<wpk::weapon::PenRecord> = weapons
+        .iter()
+        .map(|w| {
+            links
+                .weapons
+                .iter()
+                .position(|n| n == w.name())
+                .and_then(|i| links.weapon_pen.get(i).copied())
+                .unwrap_or_default()
+        })
+        .collect();
+    b.section(
+        wpk::tag::WEAPON_PEN,
+        pens.len() as u32,
+        wpk::records::encode(&pens),
+    );
+    match links.pen_table {
+        Some(t) => {
+            b.section(
+                wpk::tag::PEN_TABLE,
+                (4 * 31) as u32,
+                t.iter().flatten().flat_map(|v| v.to_be_bytes()).collect(),
+            );
+            println!("bullet penetration table: found");
+        }
+        None => println!("bullet penetration table: not found (bullets stop at walls)"),
+    }
     b.section(wpk::tag::CLASSES, 0, catalog.encode());
     // Menus: MW2's fonts and baked screens, with their textures.
     let mut ui_tex = pack::Textures::default();

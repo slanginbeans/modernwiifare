@@ -40,6 +40,35 @@ pub struct Shot {
     pub end: [f32; 3],
     pub hit: bool,
     pub normal: [f32; 3],
+    /// Where it finally stopped after going through walls (`end` when it went through none).
+    pub pen_end: [f32; 3],
+    /// Past each wall: the distance from `start` where the bullet came out and its damage scale after it (IW4L
+    /// `fire_penetrate`'s segment `damage_mult`).
+    pub layers: [(f32, f32); MAX_LAYERS],
+    pub layer_count: u8,
+}
+
+/// IW4L `MAX_PENETRATE_STEPS`.
+pub const MAX_LAYERS: usize = 5;
+
+impl Shot {
+    /// The damage scale at `dist` along the shot (1 before any wall).
+    pub fn scale_at(&self, dist: f32) -> f32 {
+        self.layers[..usize::from(self.layer_count)]
+            .iter()
+            .rev()
+            .find(|(d, _)| *d <= dist)
+            .map_or(1.0, |(_, m)| *m)
+    }
+}
+
+/// A weapon's bullet penetration (IW4 `penetrateType` 0 none, 1 small, 2 medium, 3 large; `penetrateMultiplier`)
+/// and the depth table by type and surface (`info/bullet_penetration_mp`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Penetration {
+    pub kind: i32,
+    pub multiplier: f32,
+    pub table: weapon_iw4::PenetrationDepthTable,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -58,6 +87,13 @@ pub struct GunInput {
     /// The weapon the player wants out instead of this one (IW4 `usercmd.weapon`): this one drops, then that one
     /// raises ([`Gun::take_switch`]).
     pub switch_to: Option<SwitchTarget>,
+    /// The melee lunge's target this command (IW4 `usercmd.meleeChargeYaw` / `meleeChargeDist`; from
+    /// [`crate::arena::Arena::melee_charge_target`]).
+    pub melee_charge: Option<(f32, u8)>,
+    /// The player's charge state (`ps.meleeChargeYaw` / `Dist` / `Time`), its type and whether it is in the air.
+    pub charge_state: (f32, i32, i32),
+    pub pm_type: i32,
+    pub in_air: bool,
 }
 
 /// The weapon being switched to, with the raise times IW4L's weapon change reads from it (`WeaponCmd`).
@@ -107,6 +143,8 @@ pub struct Gun {
     ads_frac: f32,
     /// Recoil numbers, when the pack has them.
     kick: Option<KickRecord>,
+    /// Bullet penetration (None: bullets stop at the first wall).
+    penetration: Option<Penetration>,
     /// ADS zoom and aim-assist ranges (`WAIM`; none when the pack has none).
     aim: AimRecord,
     /// Pellets after the first of the last shot (shotguns).
@@ -115,6 +153,8 @@ pub struct Gun {
     moves: MoveRecord,
     /// `pm_flags` after the last weapon step (the weapon clears and sets some, IW4L `advance_weapon_command`).
     pm_flags_out: Option<u32>,
+    /// The charge state the weapon step left (copied to the player state).
+    charge_out: Option<weapon_iw4::MeleeChargeState>,
     /// Camera kick springs (pitch, yaw, roll) and their angles in degrees; gun (viewmodel) kick.
     camera: [RecoilAxis; 3],
     pub kick_angles: [f32; 3],
@@ -152,10 +192,12 @@ impl Gun {
             rng: 0x1234_5678 ^ index,
             ads_frac: 0.0,
             kick: None,
+            penetration: None,
             moves: MoveRecord::default(),
             aim: AimRecord::default(),
             extra_pellets: alloc::vec::Vec::with_capacity(MAX_PELLETS),
             pm_flags_out: None,
+            charge_out: None,
             camera: Default::default(),
             kick_angles: [0.0; 3],
             gun_recoil: GunRecoilPlacementState::default(),
@@ -318,6 +360,11 @@ impl Gun {
     }
 
     /// ADS zoom and aim-assist ranges for this weapon (`WAIM` record).
+    /// The weapon's bullet penetration.
+    pub fn set_penetration(&mut self, p: Option<Penetration>) {
+        self.penetration = p;
+    }
+
     pub fn set_aim(&mut self, a: Option<AimRecord>) {
         self.aim = a.unwrap_or_default();
     }
@@ -375,6 +422,11 @@ impl Gun {
         ps.weapon_restrict_kick_time = self.hand.weapon_restrict_kick_time;
         if let Some(f) = self.pm_flags_out {
             ps.pm_flags = f;
+        }
+        if let Some(m) = self.charge_out {
+            ps.melee_charge_yaw = m.melee_charge_yaw;
+            ps.melee_charge_dist = m.melee_charge_dist;
+            ps.melee_charge_time = m.melee_charge_time;
         }
     }
 
@@ -583,6 +635,19 @@ impl Gun {
             perks0: input.perks[0],
             perks1: input.perks[1],
             offhand: self.offhand,
+            melee_charge_yaw: input.melee_charge.map_or(0.0, |c| c.0),
+            melee_charge_dist: input.melee_charge.map_or(0, |c| c.1),
+            player_melee_range: movement_iw4::MELEE_CHARGE_PLAYER_MELEE_RANGE_DEFAULT,
+            is_in_air: input.in_air,
+            pm_type: input.pm_type,
+            melee_charge: weapon_iw4::MeleeChargeState {
+                pm_flags: input.pm_flags,
+                pm_type: input.pm_type,
+                e_flags: 0,
+                melee_charge_yaw: input.charge_state.0,
+                melee_charge_dist: input.charge_state.1,
+                melee_charge_time: input.charge_state.2,
+            },
             ..WeaponCmd::default()
         };
         self.old_buttons = btn;
@@ -598,6 +663,7 @@ impl Gun {
         self.swung = cmd.melee_started.is_some();
         self.offhand = cmd.offhand;
         self.pm_flags_out = Some(cmd.pm_flags);
+        self.charge_out = Some(cmd.melee_charge);
         self.extra_pellets.clear();
         let shot = match event {
             Some(WeaponTickEvent::ShotAccepted { ammo_used }) => {
@@ -649,16 +715,113 @@ impl Gun {
         ];
         let t: Trace = clip.trace(eye, end, [0.0; 3], [0.0; 3], MASK_SHOT);
         let f = t.fraction.clamp(0.0, 1.0);
-        Shot {
+        let first = [
+            eye[0] + (end[0] - eye[0]) * f,
+            eye[1] + (end[1] - eye[1]) * f,
+            eye[2] + (end[2] - eye[2]) * f,
+        ];
+        let mut shot = Shot {
             start: eye,
-            end: [
-                eye[0] + (end[0] - eye[0]) * f,
-                eye[1] + (end[1] - eye[1]) * f,
-                eye[2] + (end[2] - eye[2]) * f,
-            ],
+            end: first,
             hit: t.fraction < 1.0,
             normal: t.normal,
+            pen_end: first,
+            layers: [(0.0, 0.0); MAX_LAYERS],
+            layer_count: 0,
+        };
+        if shot.hit
+            && let Some(pen) = self.penetration
+            && pen.kind != 0
+        {
+            penetrate(clip, &mut shot, &t, dir, end, &pen);
         }
+        shot
+    }
+}
+
+/// Go on through walls from the first hit (IW4L `fire_penetrate`, world surfaces): each wall's depth limit is the
+/// table's for the weapon's type and the entry (and exit) surface times the weapon's multiplier; the wall's
+/// thickness (entry to the exit found by tracing back from the far side) takes `thickness / depth` off the bullet's
+/// damage scale; it stops when that runs out, at an unpenetrable surface, or after five walls.
+fn penetrate(
+    clip: &MapClip<'_>,
+    shot: &mut Shot,
+    first: &Trace,
+    dir: [f32; 3],
+    end: [f32; 3],
+    pen: &Penetration,
+) {
+    use weapon_iw4::{
+        ADVANCE_TRACE_FWD, ADVANCE_TRACE_REV, PEN_THICKNESS_FLOOR, REV_END_EPS, advance_trace,
+        depth_surface_type,
+    };
+    let dist = |a: [f32; 3], b: [f32; 3]| {
+        libm::sqrtf((0..3).map(|k| (a[k] - b[k]) * (a[k] - b[k])).sum::<f32>())
+    };
+    let mut multiplier = 1.0f32;
+    let mut entry = shot.end;
+    let mut normal = first.normal;
+    let mut last_surf = depth_surface_type(first.surface_flags, 0);
+    for _ in 0..MAX_LAYERS {
+        let mut max_depth = pen.table.depth(pen.kind, last_surf) * pen.multiplier;
+        if max_depth <= 0.0 {
+            return;
+        }
+        let Some(next) = advance_trace(entry, normal, dir, true, ADVANCE_TRACE_FWD) else {
+            return;
+        };
+        let fwd = clip.trace(next, end, [0.0; 3], [0.0; 3], MASK_SHOT);
+        if fwd.startsolid != 0 && fwd.allsolid != 0 {
+            // Still inside the wall all the way: it doesn't come out.
+            return;
+        }
+        let fwd_hit = fwd.fraction < 1.0;
+        let fwd_pos: [f32; 3] =
+            core::array::from_fn(|k| next[k] + (end[k] - next[k]) * fwd.fraction);
+        // Back from the far side to the wall's exit face.
+        let mut rev_start = if fwd_hit { fwd_pos } else { end };
+        if fwd_hit
+            && let Some(n) = advance_trace(
+                fwd_pos,
+                fwd.normal.map(|v| -v),
+                dir.map(|v| -v),
+                true,
+                ADVANCE_TRACE_REV,
+            )
+        {
+            rev_start = n;
+        }
+        let rev_end: [f32; 3] = core::array::from_fn(|k| entry[k] - dir[k] * REV_END_EPS);
+        let rev = clip.trace(rev_start, rev_end, [0.0; 3], [0.0; 3], MASK_SHOT);
+        if rev.fraction >= 1.0 {
+            return;
+        }
+        let exit: [f32; 3] =
+            core::array::from_fn(|k| rev_start[k] + (rev_end[k] - rev_start[k]) * rev.fraction);
+        let thickness = dist(entry, exit).max(PEN_THICKNESS_FLOOR);
+        let exit_depth = pen
+            .table
+            .depth(pen.kind, depth_surface_type(rev.surface_flags, 0))
+            * pen.multiplier;
+        max_depth = max_depth.min(exit_depth);
+        if max_depth <= 0.0 {
+            return;
+        }
+        multiplier -= thickness / max_depth;
+        if multiplier <= 0.0 {
+            return;
+        }
+        let k = usize::from(shot.layer_count);
+        shot.layers[k] = (dist(shot.start, exit), multiplier);
+        shot.layer_count += 1;
+        if !fwd_hit {
+            shot.pen_end = end;
+            return;
+        }
+        shot.pen_end = fwd_pos;
+        entry = fwd_pos;
+        normal = fwd.normal;
+        last_surf = depth_surface_type(fwd.surface_flags, last_surf);
     }
 }
 
@@ -1148,5 +1311,56 @@ mod tests {
         let (clip_after, stock_after) = g.ammo();
         assert_eq!(clip_after, 30);
         assert_eq!(stock_after, stock_before - (30 - clip_before));
+    }
+    #[test]
+    fn bullets_go_through_thin_walls_losing_damage() {
+        // A 20-thick wall at x 500..520 faced with concrete (surface type 5).
+        let (min, max) = ([500.0, -1000.0, -1000.0], [520.0, 1000.0, 1000.0]);
+        let mut c = Clip::default();
+        c.push_brush(
+            &[
+                [1.0, 0.0, 0.0, max[0]],
+                [-1.0, 0.0, 0.0, -min[0]],
+                [0.0, 1.0, 0.0, max[1]],
+                [0.0, -1.0, 0.0, -min[1]],
+                [0.0, 0.0, 1.0, max[2]],
+                [0.0, 0.0, -1.0, -min[2]],
+            ],
+            &[5 << 20; 6],
+            1,
+            0,
+        );
+        let mc = MapClip::new(&c);
+        let mut g = Gun::new(&rifle()).unwrap();
+        let shoot = |g: &Gun| g.trace_bullet(&mc, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        // No penetration: stops at the wall.
+        let s = shoot(&g);
+        assert!(s.hit && (s.end[0] - 500.0).abs() < 1.0 && s.layer_count == 0);
+        // Medium penetration through 40 units of concrete: 20 of it leaves half.
+        let mut depths = [[0.0; 31]; 4];
+        depths[2][5] = 40.0;
+        g.set_penetration(Some(Penetration {
+            kind: 2,
+            multiplier: 1.0,
+            table: weapon_iw4::PenetrationDepthTable::from_depths(depths),
+        }));
+        let s = shoot(&g);
+        assert_eq!(s.layer_count, 1, "{s:?}");
+        let (at, m) = s.layers[0];
+        assert!(
+            (at - 520.0).abs() < 1.0 && (m - 0.5).abs() < 0.02,
+            "{at} {m}"
+        );
+        assert!(s.pen_end[0] > 1000.0, "flew on: {:?}", s.pen_end);
+        assert_eq!(s.scale_at(400.0), 1.0);
+        assert!((s.scale_at(800.0) - 0.5).abs() < 0.02);
+        // A thicker wall than the depth stops it.
+        depths[2][5] = 15.0;
+        g.set_penetration(Some(Penetration {
+            kind: 2,
+            multiplier: 1.0,
+            table: weapon_iw4::PenetrationDepthTable::from_depths(depths),
+        }));
+        assert_eq!(shoot(&g).layer_count, 0);
     }
 }

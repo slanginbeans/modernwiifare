@@ -329,6 +329,10 @@ pub struct Links {
     last_fx_name: Option<String>,
     /// Each weapon's IW4 impact type (parallel to `weapons`).
     pub weapon_impact_types: Vec<i32>,
+    /// Each weapon's bullet penetration (parallel to `weapons`).
+    pub weapon_pen: Vec<wpk::weapon::PenRecord>,
+    /// The penetration depth table (`info/bullet_penetration_mp`), by type and surface.
+    pub pen_table: Option<[[f32; 31]; 4]>,
     /// Each weapon's explosion effect's sight blockers (parallel to `weapons`).
     pub weapon_blockers: Vec<Vec<FxBlocker>>,
     /// First-person models and animations of each weapon (parallel to `weapons`).
@@ -579,6 +583,10 @@ impl Links {
             .and_then(|slot| self.fx_slots.get(&slot))
             .and_then(|n| self.fx_sound(n, FX_DEPTH));
         self.weapon_impact_types.push(w.impact_type);
+        self.weapon_pen.push(wpk::weapon::PenRecord {
+            kind: w.penetrate_type,
+            multiplier: w.penetrate_multiplier,
+        });
         // Its explosion effect's sight blockers (smoke).
         let mut blockers = Vec::new();
         if let Some(n) = w.explosion_slot.and_then(|slot| self.fx_slots.get(&slot)) {

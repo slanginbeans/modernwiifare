@@ -39,7 +39,7 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
    `clipmap_iw4::transformed_temp_capsule_trace` (bullets and sight still see the world only).
 5. ~~Health regeneration~~ done: MW2's `_healthoverlay.gsc` loop step by step (`life::Life::regen`), the numbers
    read from the user's scripts (`RULE`).
-6. **Bullet penetration** (`weapon_iw4::penetration`; needs surface types and the depth table from the converter).
+6. ~~Bullet penetration~~ done: IW4L `fire_penetrate` through world walls (the user's `info/bullet_penetration_mp` depths by type and surface, each weapon's type and multiplier; thickness from a trace back from the far side; up to five walls; damage scaled by what is left). Not yet: through players (collateral), glass panes, impact marks on exits.
 7. **Hit volumes**: turn the boxes with the body's yaw now; the character models' hit boxes later.
 8. **FFA rules**: points (a kill, the headshot bonus), score and time limits from the user's `dm.gsc`, ties to fewer
    deaths: done. Spawns follow MW2's free-for-all weighting (`_spawnlogic.gsc`: distance to everyone, enemies in

@@ -552,7 +552,7 @@ impl Arena {
                 continue;
             }
             let boxes = damage::boxes(f.player.ps.origin, f.player.hull_height());
-            if let Some((t, loc)) = damage::first_hit(shot.start, shot.end, &boxes)
+            if let Some((t, loc)) = damage::first_hit(shot.start, shot.pen_end, &boxes)
                 && best.is_none_or(|b| t < b.0)
             {
                 best = Some((t, i, loc));
@@ -561,9 +561,14 @@ impl Arena {
         let Some((t, victim, loc)) = best else {
             return;
         };
-        let length = libm::sqrtf(dist2(shot.start, shot.end));
+        let length = libm::sqrtf(dist2(shot.start, shot.pen_end));
         let d = damage::bullet(facts, &facts.location_damage, t * length, loc);
-        let d = (d as f32 * self.fighters[from].bullet_scale) as i32;
+        // Through walls the bullet keeps what penetration left it (IW4L's segment damage scale).
+        let scale = shot.scale_at(t * length);
+        let d = (d as f32 * self.fighters[from].bullet_scale * scale) as i32;
+        if d <= 0 {
+            return;
+        }
         let dir = [
             shot.end[0] - shot.start[0],
             shot.end[1] - shot.start[1],
@@ -994,6 +999,75 @@ impl Arena {
         best.map(|(_, i)| i)
     }
 
+    /// The melee lunge target of fighter `me` (IW4L client `melee_charge_target`): the enemy within reach (128, or
+    /// 192 with Commando) nearest the crosshair inside the melee window, in clear sight, farther than plain melee
+    /// range; its yaw and distance. None when prone or there is none.
+    pub fn melee_charge_target(&self, clip: &MapClip<'_>, me: usize) -> Option<(f32, u8)> {
+        const AIM_AUTOMELEE_RANGE: f32 = 128.0;
+        const TAN_X: f32 = 0.849 * 0.5;
+        const TAN_Y: f32 = 0.478 * 0.5;
+        let ps = &self.fighters[me].player.ps;
+        if ps.pm_flags & playerstate_iw4::pm_flags::PRONE != 0 {
+            return None;
+        }
+        let range = if ps.perks[1] & playerstate_iw4::PERK1_EXTENDEDMELEE != 0 {
+            playerstate_iw4::EXTENDED_MELEE_TARGET_RANGE
+        } else {
+            AIM_AUTOMELEE_RANGE
+        };
+        let eye = [
+            ps.origin[0],
+            ps.origin[1],
+            ps.origin[2] + ps.view_height_current,
+        ];
+        let (forward, right, up) = math_iw4::angle_vectors(ps.viewangles);
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let mut best: Option<(f32, [f32; 3])> = None;
+        for (i, o) in self.fighters.iter().enumerate() {
+            if !self.enemies(me, i) || !o.life.alive() || (i == 0 && !self.human_present) {
+                continue;
+            }
+            let p = o.player.ps.origin;
+            let delta = [
+                p[0] - ps.origin[0],
+                p[1] - ps.origin[1],
+                p[2] - ps.origin[2],
+            ];
+            if dot(delta, delta) > range * range {
+                continue;
+            }
+            let center = [p[0], p[1], p[2] + 36.0];
+            let to = [center[0] - eye[0], center[1] - eye[1], center[2] - eye[2]];
+            let depth = dot(to, forward);
+            if depth <= 1.0 {
+                continue;
+            }
+            let x = dot(to, right) / depth;
+            let y = dot(to, up) / depth;
+            if libm::fabsf(x) - 15.0 / depth > TAN_X || libm::fabsf(y) - 36.0 / depth > TAN_Y {
+                continue;
+            }
+            let crosshair = x * x + y * y;
+            if best.is_some_and(|(b, _)| b <= crosshair) {
+                continue;
+            }
+            if clip
+                .trace(eye, center, [0.0; 3], [0.0; 3], MASK_SHOT)
+                .fraction
+                < 1.0
+            {
+                continue;
+            }
+            best = Some((crosshair, delta));
+        }
+        let (_, delta) = best?;
+        let dist = libm::sqrtf(dot(delta, delta));
+        if dist <= movement_iw4::MELEE_CHARGE_PLAYER_MELEE_RANGE_DEFAULT {
+            return None;
+        }
+        Some((math_iw4::vec_to_yaw(delta[0], delta[1]), dist as u8))
+    }
+
     /// Footsteps since the last call: a fighter on the ground whose bob cycle wrapped (IW4L `bob_cycle_wrapped`)
     /// steps, by its gait (prone, sprinting, walking or crouched, else running) on the surface under its feet.
     pub fn footsteps(&mut self, clip: &MapClip<'_>, out: &mut Vec<Event>) {
@@ -1175,6 +1249,12 @@ impl Arena {
                     f.act = brain.think(nav.as_deref_mut(), &senses);
                 }
             }
+            // A melee swing lunges at the enemy in reach (IW4L's charge target).
+            let charge = if self.fighters[i].act.melee {
+                self.melee_charge_target(clip, i)
+            } else {
+                None
+            };
             clip.set_bodies(self.bodies_except(i));
             let slowed = self.shock_slows(i, now);
             let f = &mut self.fighters[i];
@@ -1235,6 +1315,14 @@ impl Arena {
                     frag: act.frag,
                     pm_flags: p.ps.pm_flags,
                     perks: p.ps.perks,
+                    melee_charge: charge,
+                    charge_state: (
+                        p.ps.melee_charge_yaw,
+                        p.ps.melee_charge_dist,
+                        p.ps.melee_charge_time,
+                    ),
+                    pm_type: p.ps.pm_type,
+                    in_air: !p.on_ground(),
                     ..GunInput::default()
                 },
                 cam.eye,
@@ -1351,13 +1439,39 @@ mod tests {
         let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
         let mut a = Arena::new(&mc, &spawns, 1, human, Rules::default(), |_| Some(rifle()));
         let bot_at = a.fighters[1].player.ps.origin;
+        let end = [bot_at[0] + 500.0, bot_at[1], 64.0];
         let shot = Shot {
             start: [bot_at[0] - 300.0, bot_at[1], 64.0],
-            end: [bot_at[0] + 500.0, bot_at[1], 64.0],
+            end,
             hit: true,
             normal: [0.0; 3],
+            pen_end: end,
+            layers: [(0.0, 0.0); crate::gun::MAX_LAYERS],
+            layer_count: 0,
+        };
+        // Through a wall, half the damage is left.
+        let through = Shot {
+            layers: [(100.0, 0.5); crate::gun::MAX_LAYERS],
+            layer_count: 1,
+            ..shot
         };
         let facts = *rifle().facts();
+        let mut ev = Vec::new();
+        let mut b = Arena::new(
+            &mc,
+            &spawns,
+            1,
+            a.fighters[0].player.clone(),
+            Rules::default(),
+            |_| Some(rifle()),
+        );
+        b.bullet(0, &through, &facts, 1000, &mut ev);
+        assert!(
+            matches!(ev[0], Event::Hit { damage: 20, .. }),
+            "{:?}",
+            ev[0]
+        );
+        ev.clear();
         let mut ev = Vec::new();
         a.bullet(0, &shot, &facts, 1000, &mut ev);
         assert!(matches!(
@@ -1423,6 +1537,30 @@ mod tests {
         );
         assert_eq!(a.fighters[0].kills, 1);
         assert!(a.grenades.is_empty());
+    }
+
+    #[test]
+    fn melee_lunges_at_an_enemy_ahead_in_reach() {
+        let clip = boxes(&[([-4000.0, -4000.0, -64.0], [4000.0, 4000.0, 0.0])]);
+        let mc = MapClip::new(&clip);
+        let spawns = [([0.0, 0.0, 0.0], 0.0), ([100.0, 0.0, 0.0], 180.0)];
+        let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+        let mut a = Arena::new(&mc, &spawns, 1, human, Rules::default(), |_| Some(rifle()));
+        let at = |a: &mut Arena, x: f32, y: f32| {
+            a.fighters[1].player.ps.origin = [x, y, 0.0];
+            a.melee_charge_target(&mc, 0)
+        };
+        let (yaw, dist) = at(&mut a, 100.0, 0.0).expect("in reach");
+        assert!(
+            yaw.abs() < 1.0 && (99..=101).contains(&dist),
+            "{yaw} {dist}"
+        );
+        assert!(
+            at(&mut a, 50.0, 0.0).is_none(),
+            "plain melee range: no lunge"
+        );
+        assert!(at(&mut a, 200.0, 0.0).is_none(), "out of reach");
+        assert!(at(&mut a, 0.0, 100.0).is_none(), "beside, not ahead");
     }
 
     #[test]

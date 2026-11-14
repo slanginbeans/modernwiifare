@@ -638,6 +638,28 @@ impl crate::records::Record for BlockerRecord {
     }
 }
 
+/// A weapon's bullet penetration (`WPEN`, parallel to `WEAP`): IW4 `penetrateType` (0 none, 1 small, 2 medium,
+/// 3 large) and `penetrateMultiplier`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PenRecord {
+    pub kind: i32,
+    pub multiplier: f32,
+}
+
+impl crate::records::Record for PenRecord {
+    const LEN: usize = 8;
+    fn write(&self, o: &mut Vec<u8>) {
+        o.u32(self.kind as u32);
+        o.f32(self.multiplier);
+    }
+    fn read(b: &[u8]) -> Self {
+        PenRecord {
+            kind: be::u32(b, 0) as i32,
+            multiplier: be::f32(b, 4),
+        }
+    }
+}
+
 /// The record named `name` in a `WEAP` section, with its index.
 pub fn find_indexed(section: &[u8], name: &str) -> Option<(u32, WeaponRecord)> {
     section.chunks_exact(LEN).enumerate().find_map(|(i, r)| {

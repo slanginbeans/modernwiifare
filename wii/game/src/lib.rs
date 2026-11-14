@@ -672,6 +672,28 @@ fn run_map(
         .ok()
         .and_then(|p| p.section(wpk::tag::WEAPON_EQUIP))
         .map_or(&[][..], |s| s.data);
+    // Bullet penetration (empty / None with an older pack).
+    let pens = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::WEAPON_PEN))
+        .map_or(&[][..], |s| s.data);
+    let pen_table = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::PEN_TABLE))
+        .filter(|s| s.data.len() >= 4 * 31 * 4)
+        .map(|s| {
+            let f = |k: usize| {
+                f32::from_be_bytes([
+                    s.data[k * 4],
+                    s.data[k * 4 + 1],
+                    s.data[k * 4 + 2],
+                    s.data[k * 4 + 3],
+                ])
+            };
+            weapon_iw4::PenetrationDepthTable::from_depths(core::array::from_fn(|t| {
+                core::array::from_fn(|s| f(t * 31 + s))
+            }))
+        });
     // Smoke's sight-blocking elements (empty with an older pack).
     let blockers = wpk::Pack::parse(common, false)
         .ok()
@@ -823,6 +845,8 @@ fn run_map(
                 moves,
                 aims,
                 equips,
+                pens,
+                pen_table,
             },
             loadouts.catalog,
             l,
@@ -879,7 +903,10 @@ fn run_map(
                 moves,
                 aims,
                 equips,
+                pens,
+                pen_table,
             };
+            g.set_penetration(arsenal::penetration(&tables, index));
             if let Some(row) = arsenal::offhand_row(&tables, "frag_grenade_mp") {
                 g.set_offhands(&[row], arsenal::OFFHAND_CLASS_FRAG, 2);
             }
@@ -1293,6 +1320,11 @@ fn run_map(
                     sections[section::PLAYER] += lap(&mut mark);
                     let a = arsenal.active;
                     let switch_to = arsenal.switch_target();
+                    // Melee lunges at the enemy in reach (IW4L's charge target, sent with the melee press).
+                    let melee_charge = match (arena.as_ref(), pad.held & ffi::BTN_RIGHT != 0) {
+                        (Some(ar), true) => ar.melee_charge_target(c, 0),
+                        _ => None,
+                    };
                     if let (Some(g), true) = (arsenal.guns[a].as_mut(), life.alive()) {
                         g.update_spread(
                             tick_ms,
@@ -1318,6 +1350,14 @@ fn run_map(
                                 pm_flags: p.ps.pm_flags,
                                 perks: p.ps.perks,
                                 switch_to,
+                                melee_charge,
+                                charge_state: (
+                                    p.ps.melee_charge_yaw,
+                                    p.ps.melee_charge_dist,
+                                    p.ps.melee_charge_time,
+                                ),
+                                pm_type: p.ps.pm_type,
+                                in_air: !p.on_ground(),
                             },
                             cam.eye,
                             cam.forward(),
