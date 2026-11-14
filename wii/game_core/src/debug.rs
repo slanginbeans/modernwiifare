@@ -89,9 +89,8 @@ pub enum Item {
     ResetDefaults,
 }
 
-pub const ITEMS: [Item; 17] = [
-    Item::Bots,
-    Item::BotSkill,
+/// The debug page's lines (the bot count and difficulty are in Game Setup).
+pub const ITEMS: [Item; 15] = [
     Item::BotsPassive,
     Item::BotsFrozen,
     Item::GodMode,

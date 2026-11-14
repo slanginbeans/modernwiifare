@@ -186,6 +186,7 @@ fn draw_mw2(
 pub enum Main {
     Play,
     CreateAClass,
+    Options,
     Debug,
     Quit,
 }
@@ -199,6 +200,7 @@ pub fn main_menu(
     let mut lines = [
         Line::new("PLAY"),
         Line::new("CREATE A CLASS"),
+        Line::new("OPTIONS"),
         Line::new("DEBUG"),
         Line::new("QUIT"),
     ];
@@ -210,7 +212,8 @@ pub fn main_menu(
         match list(gfx, input, "MODERN WIIFARE", &lines, selected, "A SELECT") {
             Step::Accept(0) => return Main::Play,
             Step::Accept(1) => return Main::CreateAClass,
-            Step::Accept(2) => return Main::Debug,
+            Step::Accept(2) => return Main::Options,
+            Step::Accept(3) => return Main::Debug,
             Step::Accept(_) => return Main::Quit,
             // B on the main menu does nothing (QUIT is a line); RESET still quits.
             _ if ffi::should_exit() => return Main::Quit,
@@ -246,15 +249,17 @@ pub fn pick_map(
 }
 
 /// MW2's private-match game setup: the game type, score limit and time limit (each starts at the user's scripts'
-/// value for the mode; A cycles through the choices), then START. False on B.
+/// value for the mode; A cycles through the choices), the bots and their difficulty, then START. False on B.
 pub fn game_setup(
     gfx: &mut Shim,
     input: &mut Input,
     rules: &wpk::rules::Rules,
     mode: &mut Mode,
     limits: &mut Limits,
+    match_settings: &mut game_core::debug::DebugSettings,
 ) -> bool {
-    let mut sel = 3usize;
+    use game_core::debug::Item;
+    let mut sel = 5usize;
     loop {
         let score = if limits.score_limit == 0 {
             String::from("UNLIMITED")
@@ -282,6 +287,18 @@ pub fn game_setup(
             ),
             value("SCORE LIMIT", score),
             value("TIME LIMIT", time),
+            value(
+                "BOTS",
+                match_settings
+                    .value(Item::Bots, |_| None)
+                    .unwrap_or_default(),
+            ),
+            value(
+                "BOT DIFFICULTY",
+                match_settings
+                    .value(Item::BotSkill, |_| None)
+                    .unwrap_or_default(),
+            ),
             Line::new("START MATCH"),
         ];
         match list(
@@ -333,6 +350,8 @@ pub fn game_setup(
                     .unwrap_or(0);
                 limits.time_limit_ms = options[(at + 1) % options.len()];
             }
+            Step::Accept(3) => match_settings.cycle(Item::Bots, 0),
+            Step::Accept(4) => match_settings.cycle(Item::BotSkill, 0),
             Step::Accept(_) => return true,
             _ => return false,
         }
@@ -485,6 +504,7 @@ pub fn save_classes(cat: &Catalog, classes: &[Loadout]) -> bool {
 pub enum Pause {
     Resume,
     ChangeClass(usize),
+    Options,
     Debug,
     EndGame,
 }
@@ -513,6 +533,7 @@ pub fn pause(
         let mut lines = [
             Line::new("RESUME"),
             Line::new("CHANGE CLASS"),
+            Line::new("OPTIONS"),
             Line::new("DEBUG"),
             Line::new("END GAME"),
         ];
@@ -533,8 +554,9 @@ pub fn pause(
                     return Pause::ChangeClass(i);
                 }
             }
-            Step::Accept(2) => return Pause::Debug,
-            Step::Accept(3) => return Pause::EndGame,
+            Step::Accept(2) => return Pause::Options,
+            Step::Accept(3) => return Pause::Debug,
+            Step::Accept(4) => return Pause::EndGame,
             _ => return Pause::Resume,
         }
     }
@@ -613,6 +635,58 @@ pub fn load_debug() -> game_core::debug::DebugSettings {
 pub fn save_debug(s: &game_core::debug::DebugSettings) -> bool {
     let bytes = s.encode();
     let Some(path) = AppPath::new("debug.dat") else {
+        return false;
+    };
+    unsafe {
+        ffi::mwf_file_write(path.as_ptr(), bytes.as_ptr(), bytes.len() as u32) == bytes.len() as i32
+    }
+}
+
+/// MW2's Options > Controls: sensitivity, inversion, target assist, button and stick layouts (A changes a line),
+/// until B. The caller saves them.
+pub fn options_menu(gfx: &mut Shim, input: &mut Input, o: &mut game_core::options::Options) {
+    use game_core::options::ITEMS;
+    let mut sel = 0usize;
+    loop {
+        let lines: Vec<Line> = ITEMS
+            .iter()
+            .map(|&it| Line {
+                text: String::from(it.label()),
+                value: o.value(it),
+                enabled: true,
+            })
+            .collect();
+        match list(
+            gfx,
+            input,
+            "CONTROLS",
+            &lines,
+            &mut sel,
+            "A CHANGE   B BACK",
+        ) {
+            Step::Accept(i) => o.cycle(ITEMS[i]),
+            _ => return,
+        }
+    }
+}
+
+/// The options in `options.dat` (the defaults when it isn't there).
+pub fn load_options() -> game_core::options::Options {
+    let Some(path) = AppPath::new("options.dat") else {
+        return Default::default();
+    };
+    let mut buf = [0u8; 32];
+    let n = unsafe { ffi::mwf_file_read(path.as_ptr(), 0, buf.len() as u32, buf.as_mut_ptr()) };
+    if n <= 0 {
+        return Default::default();
+    }
+    game_core::options::Options::decode(&buf[..n as usize]).unwrap_or_default()
+}
+
+/// Save the options to `options.dat`; false when the write failed.
+pub fn save_options(o: &game_core::options::Options) -> bool {
+    let bytes = o.encode();
+    let Some(path) = AppPath::new("options.dat") else {
         return false;
     };
     unsafe {

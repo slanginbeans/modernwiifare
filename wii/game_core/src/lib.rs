@@ -37,6 +37,7 @@ pub mod look;
 pub mod menu;
 pub mod minimap;
 pub mod nav;
+pub mod options;
 pub mod perks;
 pub mod player;
 pub mod sky;

@@ -701,6 +701,7 @@ fn run_map(
     setup: (arena::Mode, arena::Limits),
     input: &mut front::Input,
     debug: &mut game_core::debug::DebugSettings,
+    options: &mut game_core::options::Options,
 ) -> Exit {
     let bots = usize::from(debug.bots);
     let weapons = weapon_section(common);
@@ -1063,7 +1064,15 @@ fn run_map(
     // Gamepad look (IW4L): the sticks' learned range, the look's state between steps, settings.
     let mut sticks = look::StickRange::default();
     let mut look_state = look::LookState::default();
-    let look_settings = look::LookSettings::default();
+    let mut look_settings = options.look();
+    // The button layout: Tactical swaps the stance button (B) and melee (D-pad right).
+    let tactical =
+        |o: &game_core::options::Options| o.layout == game_core::options::layout::TACTICAL;
+    let (mut stance_btn, mut melee_btn) = if tactical(options) {
+        (ffi::BTN_RIGHT, ffi::BTN_B)
+    } else {
+        (ffi::BTN_B, ffi::BTN_RIGHT)
+    };
     let mut aim_targets: Vec<look::AimTarget> = Vec::with_capacity(bots);
     // The current field of view over the hip one (look speed and aim assist scale with the zoom).
     let mut hip_fov_scale = 1.0f32;
@@ -1160,6 +1169,16 @@ fn run_map(
                 front::Pause::ChangeClass(c) => {
                     devlog::event(now, "class_change", format_args!("class={c}"));
                     class = Some(c);
+                }
+                front::Pause::Options => {
+                    front::options_menu(gfx, input, options);
+                    front::save_options(options);
+                    look_settings = options.look();
+                    (stance_btn, melee_btn) = if tactical(options) {
+                        (ffi::BTN_RIGHT, ffi::BTN_B)
+                    } else {
+                        (ffi::BTN_B, ffi::BTN_RIGHT)
+                    };
                 }
                 front::Pause::Debug => {
                     use game_core::debug::Action;
@@ -1321,8 +1340,14 @@ fn run_map(
         tick_acc3 -= player_ticks * 50;
         tick_acc3 = tick_acc3.min(50);
         // Sticks: learned range, IW4L's radial dead zone; the main stick as IW4 move amounts.
-        let main_stick = sticks.normalize(0, pad.sx, pad.sy);
-        let c_stick = sticks.normalize(1, pad.cx, pad.cy);
+        let (main_stick, c_stick) = {
+            let (m, c) = (
+                sticks.normalize(0, pad.sx, pad.sy),
+                sticks.normalize(1, pad.cx, pad.cy),
+            );
+            // Southpaw: move with the C-stick, look with the main stick.
+            if options.southpaw { (c, m) } else { (m, c) }
+        };
         let (forward, right) = look::to_move(main_stick);
         let ads_held = pad.held & ffi::BTN_L != 0 || pad.l > 128;
         // A thrown knife in reach: X (MW2's use / reload button) picks it up instead of reloading.
@@ -1480,7 +1505,7 @@ fn run_map(
                             jump: pad.held & ffi::BTN_A != 0,
                             // B: tap to crouch, hold to go prone (MW2's console stance button).
                             stance: stance_button.update(
-                                pad.held & ffi::BTN_B != 0,
+                                pad.held & stance_btn != 0,
                                 !p.on_ground(),
                                 now as i32,
                             ),
@@ -1518,7 +1543,7 @@ fn run_map(
                     let a = arsenal.active;
                     let switch_to = arsenal.switch_target();
                     // Melee lunges at the enemy in reach (IW4L's charge target, sent with the melee press).
-                    let melee_charge = match (arena.as_ref(), pad.held & ffi::BTN_RIGHT != 0) {
+                    let melee_charge = match (arena.as_ref(), pad.held & melee_btn != 0) {
                         (Some(ar), true) => ar.melee_charge_target(c, 0),
                         _ => None,
                     };
@@ -1540,7 +1565,7 @@ fn run_map(
                                 fire: pad.held & ffi::BTN_R != 0 || pad.r > 100,
                                 reload: reload_held,
                                 // D-pad right: melee (MW2's console melee is a stick click; the pad has none).
-                                melee: pad.held & ffi::BTN_RIGHT != 0,
+                                melee: pad.held & melee_btn != 0,
                                 // D-pad up: lethal grenade, D-pad down: tactical (held to cook, as the button).
                                 frag: pad.held & ffi::BTN_UP != 0 && pad.held & ffi::BTN_Z == 0,
                                 smoke: pad.held & ffi::BTN_DOWN != 0 && pad.held & ffi::BTN_Z == 0,
@@ -2175,9 +2200,15 @@ pub extern "C" fn mwf_game_main() -> i32 {
     let mut debug = front::load_debug();
     sound::MUTED.store(!debug.sound, core::sync::atomic::Ordering::Relaxed);
     let mut debug_sel = 0usize;
+    // The player's options (`options.dat`).
+    let mut options = front::load_options();
     loop {
         match front::main_menu(&mut gfx, &mut input, &mut main_sel, catalog.is_some()) {
             front::Main::Quit => return 0,
+            front::Main::Options => {
+                front::options_menu(&mut gfx, &mut input, &mut options);
+                front::save_options(&options);
+            }
             front::Main::Debug => {
                 let cat = catalog.as_ref();
                 let weapon_name = |i: u8| {
@@ -2219,7 +2250,14 @@ pub extern "C" fn mwf_game_main() -> i32 {
                 let maps = list_maps(&mut names);
                 while let Some(i) = front::pick_map(&mut gfx, &mut input, &maps, &mut map_sel) {
                     // MW2's private-match setup: game type and limits.
-                    if !front::game_setup(&mut gfx, &mut input, &rules, &mut mode, &mut limits) {
+                    if !front::game_setup(
+                        &mut gfx,
+                        &mut input,
+                        &rules,
+                        &mut mode,
+                        &mut limits,
+                        &mut debug,
+                    ) {
                         continue;
                     }
                     // Custom classes first, then MW2's defaults.
@@ -2257,6 +2295,7 @@ pub extern "C" fn mwf_game_main() -> i32 {
                         (mode, limits),
                         &mut input,
                         &mut debug,
+                        &mut options,
                     );
                     unsafe { ffi::mwf_snd_stop_all() };
                     unsafe { ffi::mwf_mem2_release(mark) };
