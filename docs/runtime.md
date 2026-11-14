@@ -58,7 +58,8 @@ it (once fully pushed, full forward reaches IW4's sprint threshold). ADS zooms t
 (IW4L `calc_fov`); the first-person gun doesn't move to its sights yet.
 
 Controls in a match (IW4L movement and the map's collision): main stick move, C-stick look, **A** jump, **B** crouch
-(held), **Z** sprint, **L** ADS, **R** fire, **X** reload, **Y** switch weapon. **D-pad up** toggles free fly (main
+(held), **Z** sprint, **L** ADS, **R** fire, **X** reload, **Y** switch weapon (the gun drops, then the other raises,
+as in MW2), **D-pad right** melee. **D-pad up** toggles free fly (main
 stick, C-stick, L/R triggers down/up, B fast); leaving free fly drops the player where the camera is. **D-pad left**
 next spawn point (with the class's weapons), **D-pad down** toggles the performance overlay (fps, frame / CPU /
 GPU-wait ms, triangles (of which static models), draws, state changes, visible cells, models, position; see

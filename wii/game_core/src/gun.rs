@@ -8,10 +8,11 @@
 use playerstate_iw4::PlayerState;
 use playerstate_iw4::buttons;
 use trace_iw4::Trace;
+pub use weapon_iw4::WeaponTickEvent;
 use weapon_iw4::{
     AimSpreadMotion, AimSpreadState, SpreadOverrideState, WeaponCmd, WeaponCombatFacts,
-    WeaponHandState, WeaponTickEvent, add_aim_spread_fire, adjust_aim_spread_scale,
-    fire_weapon_spread_degrees, get_spread_for_weapon, spawn_weapon_hand, weapon_ordinary,
+    WeaponHandState, add_aim_spread_fire, adjust_aim_spread_scale, fire_weapon_spread_degrees,
+    get_spread_for_weapon, spawn_weapon_hand, weapon_hands,
 };
 use weapon_iw4::{
     CAMERA_LIMIT_DEGREES, CAMERA_PEAK_SECONDS, FireRecoilPsScales, GunKickRange,
@@ -45,8 +46,25 @@ pub struct Shot {
 pub struct GunInput {
     pub fire: bool,
     pub reload: bool,
+    /// The melee button (IW4 `BUTTON_MELEE`).
+    pub melee: bool,
     /// The player's `pm_flags` (sprinting blocks firing, as in IW4).
     pub pm_flags: u32,
+    /// The weapon the player wants out instead of this one (IW4 `usercmd.weapon`): this one drops, then that one
+    /// raises ([`Gun::take_switch`]).
+    pub switch_to: Option<SwitchTarget>,
+}
+
+/// The weapon being switched to, with the raise times IW4L's weapon change reads from it (`WeaponCmd`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SwitchTarget {
+    pub weapon: u32,
+    pub raise_ms: i32,
+    pub quick_raise_ms: i32,
+    /// 0 when the weapon was out before this life (no first raise).
+    pub first_raise_ms: i32,
+    /// A pistol comes out quick (IW4 `weapClass` 5).
+    pub pistol: bool,
 }
 
 /// What aim spread needs from the player each frame (IW4 `PM_UpdateAimDownSightFlag` / `BG_UpdateAimSpread` inputs).
@@ -61,12 +79,17 @@ pub struct SpreadInput<'a> {
 
 pub struct Gun {
     pub name: [u8; wpk::weapon::NAME_LEN],
+    /// The weapon's index in the weapon list (IW4 weapon number).
+    index: u32,
     facts: WeaponCombatFacts,
     hand: WeaponHandState,
     server_time: i32,
     old_buttons: u32,
     /// Shots fired since the gun was raised (for the HUD / tests).
     pub shots: u32,
+    /// The last step started a melee swing (IW4L `melee_started`: the swipe sound plays now, the hit lands at
+    /// `MeleeFired`).
+    pub swung: bool,
     /// IW4 aim spread scale (0..255) and override state.
     spread: AimSpreadState,
     /// Spread cone of the last frame, degrees (for the crosshair).
@@ -104,11 +127,13 @@ impl Gun {
         }
         Some(Gun {
             name: rec.name,
+            index,
             hand: spawn_weapon_hand(index, &facts, true),
             facts,
             server_time: 1000,
             old_buttons: 0,
             shots: 0,
+            swung: false,
             spread: AimSpreadState {
                 aim_spread_scale: 0.0,
                 spread_override: 0,
@@ -143,6 +168,60 @@ impl Gun {
         self.hand = spawn_weapon_hand(self.hand.weapon, &self.facts, false);
         self.hand.clip = clip;
         self.hand.stock = stock;
+    }
+
+    /// This weapon as a switch target (raised for the first time this life when `first`).
+    pub fn as_target(&self, first: bool) -> SwitchTarget {
+        SwitchTarget {
+            weapon: self.index,
+            raise_ms: self.facts.raise_time_ms,
+            quick_raise_ms: self.facts.quick_raise_time_ms,
+            first_raise_ms: if first {
+                self.facts.first_raise_time_ms.max(0)
+            } else {
+                0
+            },
+            pistol: self.facts.weap_class == 5,
+        }
+    }
+
+    /// After a step that finished dropping this weapon for another (IW4L's change sets the hand to the new
+    /// weapon, raising): the hand, for the new weapon's gun to take ([`Gun::adopt`]). This gun keeps its ammunition
+    /// and is put away ready.
+    pub fn take_switch(&mut self) -> Option<WeaponHandState> {
+        if self.hand.weapon == self.index {
+            return None;
+        }
+        let out = self.hand;
+        let (clip, stock) = (self.hand.clip, self.hand.stock);
+        self.hand = spawn_weapon_hand(self.index, &self.facts, false);
+        self.hand.weaponstate = weapon_iw4::WeaponState::Ready as i32;
+        self.hand.weapon_time = 0;
+        self.hand.clip = clip;
+        self.hand.stock = stock;
+        self.kick_angles = [0.0; 3];
+        Some(out)
+    }
+
+    /// Take over the hand of the weapon put away for this one: its state (raising) and timers, with this weapon's
+    /// own ammunition.
+    pub fn adopt(&mut self, from: &WeaponHandState) {
+        let (clip, stock) = (self.hand.clip, self.hand.stock);
+        self.hand = *from;
+        self.hand.weapon = self.index;
+        self.hand.clip = clip;
+        self.hand.stock = stock;
+        self.shots = 0;
+    }
+
+    /// Whether a switch would start now (IW4L `check_for_change_admits`: not mid-melee, reload interrupts, not
+    /// while a shot is still cycling).
+    pub fn can_switch(&self) -> bool {
+        weapon_iw4::check_for_change_admits(
+            self.hand.weaponstate,
+            self.hand.weapon_time,
+            self.hand.weapon_delay,
+        )
     }
 
     /// The weapon's combat numbers (damage, ranges, location multipliers ...).
@@ -410,20 +489,39 @@ impl Gun {
         if input.reload {
             btn |= buttons::RELOAD;
         }
+        if input.melee {
+            btn |= weapon_iw4::BUTTON_MELEE;
+        }
         self.server_time += msec;
+        let target = input.switch_to.unwrap_or(SwitchTarget {
+            weapon: self.hand.weapon,
+            ..SwitchTarget::default()
+        });
         let mut cmd = WeaponCmd {
             msec,
             server_time: self.server_time,
             buttons: btn,
             old_buttons: self.old_buttons,
-            cmd_weapon: self.hand.weapon as u16,
+            cmd_weapon: target.weapon as u16,
             cmd_weapon_owned: true,
+            cmd_weapon_pistol_quick: target.pistol,
+            switch_raise_time_ms: target.raise_ms,
+            switch_quick_raise_time_ms: target.quick_raise_ms,
+            switch_first_raise_time_ms: target.first_raise_ms,
             pm_flags: input.pm_flags,
             ..WeaponCmd::default()
         };
         self.old_buttons = btn;
         self.advance_recoil(msec as f32 / 1000.0);
-        let event = weapon_ordinary(&mut self.hand, &self.facts, &mut cmd);
+        // IW4L's hand driver (as `advance_weapon_command`): stun, melee start, then the hand's own step.
+        let event = weapon_hands(
+            core::slice::from_mut(&mut self.hand),
+            &self.facts,
+            &mut cmd,
+            0,
+        )[0]
+        .map(|(_, e)| e);
+        self.swung = cmd.melee_started.is_some();
         self.pm_flags_out = Some(cmd.pm_flags);
         self.extra_pellets.clear();
         let shot = match event {
@@ -546,6 +644,100 @@ mod tests {
         c
     }
 
+    /// IW4L's weapon change through the gun: the rifle drops (its drop time), hands over, the pistol raises (its
+    /// raise time), and only then fires.
+    #[test]
+    fn switching_drops_then_raises_the_other_gun() {
+        let clip = Clip::default();
+        let mc = MapClip::new(&clip);
+        let mut pistol_rec = rifle();
+        pistol_rec.combat.raise_time_ms = 400;
+        pistol_rec.combat.quick_raise_time_ms = 200;
+        pistol_rec.combat.first_raise_time_ms = 700;
+        pistol_rec.combat.weap_class = 0;
+        let mut r = Gun::with_index(&rifle(), 3).unwrap();
+        let mut p = Gun::with_index(&pistol_rec, 4).unwrap();
+        let eye = [0.0, 0.0, 60.0];
+        let x = [1.0, 0.0, 0.0];
+        // Let the rifle come up.
+        for _ in 0..60 {
+            r.update(&mc, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        assert!(r.can_switch());
+        let want = GunInput {
+            switch_to: Some(p.as_target(true)),
+            ..GunInput::default()
+        };
+        let mut t = 0;
+        let hand = loop {
+            r.update(&mc, 16, &want, eye, x, Y, Z);
+            t += 16;
+            if let Some(h) = r.take_switch() {
+                break h;
+            }
+            assert!(t < 2000, "the drop never finished");
+        };
+        assert!(
+            (280..=340).contains(&t),
+            "dropped in {t} ms (drop time 300)"
+        );
+        p.adopt(&hand);
+        assert_eq!(p.weapon_index(), 4);
+        let fire = GunInput {
+            fire: true,
+            ..GunInput::default()
+        };
+        let mut first_shot = None;
+        for k in 0..100 {
+            if let (_, Some(_)) = p.update(&mc, 16, &fire, eye, x, Y, Z) {
+                first_shot = Some((k + 1) * 16);
+                break;
+            }
+        }
+        let first = first_shot.expect("the pistol fired after raising");
+        assert!(
+            (680..=740).contains(&first),
+            "first raise 700 ms, fired at {first}"
+        );
+        assert_eq!(r.ammo().0, 30, "the rifle kept its magazine");
+    }
+
+    /// The melee button swings (IW4L `weapon_try_melee`): `MeleeFired` after the weapon's melee delay.
+    #[test]
+    fn melee_fires_after_its_delay() {
+        let clip = Clip::default();
+        let mc = MapClip::new(&clip);
+        let mut rec = rifle();
+        rec.combat.melee_damage = 135;
+        rec.combat.melee_time_ms = 600;
+        rec.combat.melee_delay_ms = 150;
+        let mut g = Gun::with_index(&rec, 2).unwrap();
+        let eye = [0.0, 0.0, 60.0];
+        let x = [1.0, 0.0, 0.0];
+        for _ in 0..60 {
+            g.update(&mc, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        let swing = GunInput {
+            melee: true,
+            ..GunInput::default()
+        };
+        let mut fired = None;
+        for k in 0..60 {
+            let (e, shot) = g.update(&mc, 16, &swing, eye, x, Y, Z);
+            assert!(shot.is_none(), "a swing is not a shot");
+            if e == Some(WeaponTickEvent::MeleeFired) {
+                fired = Some((k + 1) * 16);
+                break;
+            }
+        }
+        let at = fired.expect("the swing landed");
+        assert!(
+            (140..=200).contains(&at),
+            "melee delay 150 ms, fired at {at}"
+        );
+        assert!(!g.can_switch(), "no switching mid-swing");
+    }
+
     /// The M4A1 from a locally converted `out/packs/common.wpk` (never in git; skipped when absent).
     #[test]
     fn real_m4_fires_at_its_authored_rate() {
@@ -559,6 +751,13 @@ mod tests {
         let weap = pack.section(wpk::tag::WEAPONS).unwrap().data;
         let rec = wpk::weapon::find(weap, "m4_mp").expect("m4_mp in common.wpk");
         let c = rec.combat;
+        // MW2 melee: 135 damage (kills from full health) with its swing times.
+        assert!(
+            c.melee_damage >= 100 && c.melee_time_ms > 0,
+            "melee {} / {} ms",
+            c.melee_damage,
+            c.melee_time_ms
+        );
         // Its aim and movement records (when the pack has them).
         if let (Some(aims), Some((i, _))) = (
             pack.section(wpk::tag::WEAPON_AIM),

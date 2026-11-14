@@ -73,7 +73,13 @@ pub struct Act {
     pub steer: Steer,
     pub fire: bool,
     pub reload: bool,
+    /// Swing (an enemy within melee reach ahead).
+    pub melee: bool,
 }
+
+/// A bot swings instead of shooting inside this distance (feet to feet): IW4's 64-unit melee reach from the eye,
+/// less a little so the swing lands.
+const MELEE_DIST: f32 = 56.0;
 
 pub struct Brain {
     skill: Skill,
@@ -344,9 +350,14 @@ impl Brain {
             );
             self.pitch = (self.pitch + d).clamp(-PITCH_LIMIT, PITCH_LIMIT);
             self.pitch_vel = v;
-            if target.is_some() && now >= self.react_at_ms {
-                act.fire = libm::fabsf(angle_sub(dy, self.yaw)) <= FIRE_CONE_DEG
+            if let Some(t) = target.filter(|_| now >= self.react_at_ms) {
+                let on_target = libm::fabsf(angle_sub(dy, self.yaw)) <= FIRE_CONE_DEG
                     && libm::fabsf(dp - self.pitch) <= FIRE_CONE_DEG;
+                if dist2(t.feet, s.feet) < MELEE_DIST * MELEE_DIST {
+                    act.melee = on_target;
+                } else {
+                    act.fire = on_target;
+                }
             }
         } else {
             self.yaw_vel = 0.0;

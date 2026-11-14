@@ -112,6 +112,7 @@ pub fn feet_and_aim(p: &Player) -> ([f32; 3], [f32; 3]) {
 pub struct Arena {
     pub fighters: Vec<Fighter>,
     pub rules: Rules,
+    rng: u32,
     /// Whether the human (slot 0) is in the match (not free-flying): bots ignore and can't hit it otherwise.
     pub human_present: bool,
     spawn_count: usize,
@@ -152,6 +153,7 @@ impl Arena {
         let mut a = Arena {
             fighters: Vec::with_capacity(bots + 1),
             rules,
+            rng: 0x2545_f491,
             human_present: true,
             spawn_count: 0,
         };
@@ -260,14 +262,83 @@ impl Arena {
         };
         let length = libm::sqrtf(dist2(shot.start, shot.end));
         let d = damage::bullet(facts, &facts.location_damage, t * length, loc);
-        let v = &mut self.fighters[victim];
-        v.last_attacker = Some(from);
-        // The hit slows the victim for a moment (IW4L `update_damage_timer`: 100 ms a point, at most 750 ms).
         let dir = [
             shot.end[0] - shot.start[0],
             shot.end[1] - shot.start[1],
             shot.end[2] - shot.start[2],
         ];
+        self.hurt(from, victim, d, loc, dir, now, out);
+    }
+
+    /// A melee swing from fighter `from` at `eye` along the view axes (IW4L `fire_weapon_melee`): nine short traces
+    /// ahead (64 units, a 10-unit cross); the nearest player hit before a wall takes `melee_damage` plus 0..4.
+    /// Returns whether it hit someone.
+    #[allow(clippy::too_many_arguments)]
+    pub fn melee(
+        &mut self,
+        clip: &MapClip<'_>,
+        from: usize,
+        eye: [f32; 3],
+        axes: [[f32; 3]; 3],
+        melee_damage: i32,
+        now: u32,
+        out: &mut Vec<Event>,
+    ) -> bool {
+        if melee_damage <= 0 {
+            return false;
+        }
+        let [forward, right, up] = axes;
+        let (range, width, height) = (
+            weapon_iw4::PLAYER_MELEE_RANGE_DEFAULT,
+            weapon_iw4::PLAYER_MELEE_WIDTH_DEFAULT,
+            weapon_iw4::PLAYER_MELEE_HEIGHT_DEFAULT,
+        );
+        let mut best: Option<(f32, usize)> = None;
+        let n = weapon_iw4::melee_trace_count(width, height);
+        for offset in weapon_iw4::MELEE_TRACE_OFFSETS.iter().take(n) {
+            let end =
+                weapon_iw4::melee_trace_end(eye, forward, right, up, range, width, height, *offset);
+            let wall = clip.trace(eye, end, [0.0; 3], [0.0; 3], MASK_SHOT).fraction;
+            for (i, f) in self.fighters.iter().enumerate() {
+                if i == from || !f.life.alive() || (i == 0 && !self.human_present) {
+                    continue;
+                }
+                let boxes = damage::boxes(f.player.ps.origin, f.player.crouched());
+                if let Some((t, _)) = damage::first_hit(eye, end, &boxes)
+                    && t < wall
+                    && best.is_none_or(|b| t < b.0)
+                {
+                    best = Some((t, i));
+                }
+            }
+        }
+        let Some((_, victim)) = best else {
+            return false;
+        };
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 17;
+        self.rng ^= self.rng << 5;
+        let d = melee_damage + (self.rng % 5) as i32;
+        self.hurt(from, victim, d, damage::hitloc::NONE, forward, now, out);
+        true
+    }
+
+    /// `victim` takes `d` from `from` at hit location `loc` along `dir`: the damage timer, the events, and the kill's
+    /// points.
+    #[allow(clippy::too_many_arguments)]
+    fn hurt(
+        &mut self,
+        from: usize,
+        victim: usize,
+        d: i32,
+        loc: u8,
+        dir: [f32; 3],
+        now: u32,
+        out: &mut Vec<Event>,
+    ) {
+        let v = &mut self.fighters[victim];
+        v.last_attacker = Some(from);
+        // The hit slows the victim for a moment (IW4L `update_damage_timer`: 100 ms a point, at most 750 ms).
         movement_iw4::update_damage_timer(&mut v.player.ps, d, Some(dir));
         out.push(Event::Hit {
             attacker: from,
@@ -427,7 +498,9 @@ impl Arena {
                 &GunInput {
                     fire: act.fire,
                     reload: act.reload,
+                    melee: act.melee,
                     pm_flags: p.ps.pm_flags,
+                    ..GunInput::default()
                 },
                 cam.eye,
                 cam.forward(),
@@ -439,6 +512,13 @@ impl Arena {
                 f.last_fire_ms = Some(now);
                 out.push(Event::BotFired { bot: i });
             }
+            let swing = (ev == Some(WeaponTickEvent::MeleeFired)).then(|| {
+                (
+                    cam.eye,
+                    [cam.forward(), cam.right(), cam.up()],
+                    g.facts().melee_damage,
+                )
+            });
             if let Some(s) = shot {
                 let facts = *g.facts();
                 let extra: Vec<Shot> = g.extra_pellets().to_vec();
@@ -446,6 +526,9 @@ impl Arena {
                 for p in &extra {
                     self.bullet(i, p, &facts, now, out);
                 }
+            }
+            if let Some((eye, axes, melee_damage)) = swing {
+                self.melee(clip, i, eye, axes, melee_damage, now, out);
             }
         }
     }
@@ -535,6 +618,32 @@ mod tests {
             attacker: 0,
             victim: 1
         }));
+    }
+
+    #[test]
+    fn a_knife_kills_up_close_and_misses_beyond_reach() {
+        let clip = boxes(&[([-2000.0, -2000.0, -64.0], [2000.0, 2000.0, 0.0])]);
+        let mc = MapClip::new(&clip);
+        let spawns = [([0.0, 0.0, 0.0], 0.0), ([48.0, 0.0, 0.0], 180.0)];
+        let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+        let mut a = Arena::new(&mc, &spawns, 1, human, Rules::default(), |_| Some(rifle()));
+        let bot = a.fighters[1].player.ps.origin;
+        let eye = [bot[0] - 40.0, bot[1], 50.0];
+        let axes = [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]];
+        let mut ev = Vec::new();
+        // Out of reach (64 units): nothing.
+        let far = [bot[0] - 120.0, bot[1], 50.0];
+        assert!(!a.melee(&mc, 0, far, axes, 135, 1000, &mut ev));
+        assert!(a.melee(&mc, 0, eye, axes, 135, 1000, &mut ev));
+        assert!(
+            !a.fighters[1].life.alive(),
+            "MW2's knife (135) kills from full health"
+        );
+        assert_eq!(
+            a.fighters[0].score,
+            Rules::default().kill_score,
+            "no headshot bonus"
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use core::ffi::c_char;
 
 pub const BTN_LEFT: u16 = 0x0001;
+pub const BTN_RIGHT: u16 = 0x0002;
 pub const BTN_DOWN: u16 = 0x0004;
 pub const BTN_UP: u16 = 0x0008;
 pub const BTN_Z: u16 = 0x0010;

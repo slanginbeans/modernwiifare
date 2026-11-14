@@ -836,7 +836,11 @@ fn run_map(
         }
         // Y: the other weapon (MW2's console layout).
         if pad.down & ffi::BTN_Y != 0 && !flying && life.alive() && arsenal.switch() {
-            devlog::event(now, "switch", format_args!("to={}", arsenal.active));
+            devlog::event(
+                now,
+                "switch_request",
+                format_args!("from={}", arsenal.active),
+            );
         }
         // D-pad left: next spawn point (debug), with the class's weapons.
         if pad.down & ffi::BTN_LEFT != 0 {
@@ -973,6 +977,7 @@ fn run_map(
                     }
                     sections[section::PLAYER] += lap(&mut mark);
                     let a = arsenal.active;
+                    let switch_to = arsenal.switch_target();
                     if let (Some(g), true) = (arsenal.guns[a].as_mut(), life.alive()) {
                         g.update_spread(
                             tick_ms,
@@ -990,7 +995,10 @@ fn run_map(
                             &GunInput {
                                 fire: pad.held & ffi::BTN_R != 0 || pad.r > 100,
                                 reload: pad.held & ffi::BTN_X != 0,
+                                // D-pad right: melee (MW2's console melee is a stick click; the pad has none).
+                                melee: pad.held & ffi::BTN_RIGHT != 0,
                                 pm_flags: p.ps.pm_flags,
+                                switch_to,
                             },
                             cam.eye,
                             cam.forward(),
@@ -999,6 +1007,20 @@ fn run_map(
                         );
                         // The weapon's state goes into the player's (pmove reads it next step).
                         g.sync_player(&mut p.ps);
+                        if event == Some(game_core::gun::WeaponTickEvent::MeleeFired)
+                            && let Some(a) = arena.as_mut()
+                        {
+                            let hit = a.melee(
+                                c,
+                                0,
+                                cam.eye,
+                                [cam.forward(), cam.right(), cam.up()],
+                                g.facts().melee_damage,
+                                now,
+                                &mut events,
+                            );
+                            devlog::event(now, "melee", format_args!("hit={}", u8::from(hit)));
+                        }
                         if let Some(s) = shot.as_ref() {
                             last_shot_ms = Some(now);
                             if let Some(a) = arena.as_mut() {
@@ -1010,7 +1032,21 @@ fn run_map(
                                 }
                             }
                         }
-                        if let (Some(e), Some(v)) = (event.as_ref(), arsenal.views[a].as_mut())
+                        // A raise that ends a switch is the incoming weapon's (`finish_switch` plays it).
+                        let raise_of_other = switch_to.is_some()
+                            && event == Some(game_core::gun::WeaponTickEvent::RaiseStarted);
+                        if g.swung
+                            && let Some(v) = arsenal.views[a].as_mut()
+                            && let Some(&s) = v
+                                .sounds
+                                .events
+                                .get(wpk::sound::event::MELEE_SWIPE)
+                                .filter(|&&s| s != wpk::sound::NONE)
+                        {
+                            v.play(s);
+                        }
+                        if let (Some(e), Some(v), false) =
+                            (event.as_ref(), arsenal.views[a].as_mut(), raise_of_other)
                             && let Some(s) =
                                 game_core::weapon_sound::for_event(&v.sounds, e, g.ammo().0)
                         {
@@ -1020,6 +1056,12 @@ fn run_map(
                             impacts[next_impact] = (Some(s.end), now);
                             next_impact = (next_impact + 1) % impacts.len();
                         }
+                    }
+                    // A finished drop hands over to the other weapon, which raises.
+                    let before = arsenal.active;
+                    arsenal.finish_switch();
+                    if arsenal.active != before {
+                        devlog::event(now, "switch", format_args!("to={}", arsenal.active));
                     }
                     sections[section::GUN] += lap(&mut mark);
                 }

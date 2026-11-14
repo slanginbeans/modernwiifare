@@ -27,8 +27,12 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
 
 ## Next, gameplay (ranked)
 1. **Viewmodel ADS pose** (the gun moving to its sights) and confirm the stick range from the logs.
-2. **Weapon switching through IW4L** (`weapon_check_for_change`: drop, then raise; refused in blocking states).
-3. **Melee** (`weapon_iw4::melee`, the lunge in `movement_iw4::melee_charge_move`).
+2. ~~Weapon switching through IW4L~~ done: the gun asks for the other weapon (`usercmd.weapon`), IW4L drops it,
+   the other takes the hand and raises (first raise once a life); refused mid-melee, cancelled by asking again.
+3. **Melee**: done without the lunge. The melee button goes through IW4L's hand driver (`weapon_hands`:
+   `weapon_try_melee`, swing and hit times); the hit is IW4L `fire_weapon_melee`'s nine traces (64 units) against
+   the players' boxes, melee damage plus 0..4. Bots swing when you're within reach. Not yet: the lunge
+   (`melee_charge` target and `movement_iw4::melee_charge_move`).
 4. **Players block each other** (`clipmap_iw4::transformed_temp_capsule_trace` per fighter in pmove traces).
 5. ~~Health regeneration~~ done: MW2's `_healthoverlay.gsc` loop step by step (`life::Life::regen`), the numbers
    read from the user's scripts (`RULE`).

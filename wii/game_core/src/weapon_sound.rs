@@ -25,6 +25,7 @@ pub fn for_event(sounds: &WeaponSounds, ev: &WeaponTickEvent, clip_after: i32) -
         })
         .or_else(|| pick(event::RELOAD)),
         WeaponTickEvent::RaiseStarted => pick(event::RAISE),
+        WeaponTickEvent::PutawayStarted => pick(event::PUTAWAY),
         _ => None,
     }
 }

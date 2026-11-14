@@ -4,7 +4,7 @@
 //! The files load above a MEM2 and texture mark taken after the map, so a class with other weapons releases them
 //! and loads its own (the map's data below the marks stays).
 
-use game_core::gun::Gun;
+use game_core::gun::{Gun, SwitchTarget};
 use wpk::classes::{Catalog, Loadout, NONE};
 
 use crate::view::View;
@@ -27,6 +27,10 @@ pub struct Arsenal {
     pub views: [Option<View>; 2],
     /// 0 primary, 1 secondary.
     pub active: usize,
+    /// The weapon asked for (IW4 `usercmd.weapon`) while the active one drops.
+    pending: Option<usize>,
+    /// Which weapons were out this life (the first raise is the long one).
+    used: [bool; 2],
     /// Base weapon names whose files are loaded.
     loaded: [heapless_name::Name; 2],
     mem2_mark: u32,
@@ -64,6 +68,8 @@ impl Arsenal {
             guns: [None, None],
             views: [None, None],
             active: 0,
+            pending: None,
+            used: [true, false],
             loaded: [Name::default(); 2],
             mem2_mark: unsafe { ffi::mwf_mem2_mark() },
             tex_mark: unsafe { ffi::mwf_tex_mark() },
@@ -123,6 +129,8 @@ impl Arsenal {
             });
         }
         self.active = if self.guns[0].is_some() { 0 } else { 1 };
+        self.pending = None;
+        self.used = [self.active == 0, self.active == 1];
         let wanted = [slots[0].0, slots[1].0];
         if wanted != self.loaded {
             // Drop the old views before their MEM2 goes.
@@ -144,18 +152,42 @@ impl Arsenal {
         }
     }
 
-    /// Switch to the other weapon (it raises). False when there is none.
+    /// Ask for the other weapon (IW4L's change: this one drops, then that one raises; asking again while it drops
+    /// takes the request back). False when there is no other weapon.
     pub fn switch(&mut self) -> bool {
         let other = 1 - self.active;
-        let Some(g) = self.guns[other].as_mut() else {
+        if self.guns[other].is_none() {
             return false;
-        };
-        g.raise();
-        self.active = other;
-        if let Some(v) = self.views[other].as_mut() {
-            v.play_event_alias(wpk::sound::event::RAISE);
         }
+        self.pending = match self.pending {
+            Some(_) => None,
+            None => Some(other),
+        };
         true
+    }
+
+    /// What the active gun's next step is asked to switch to.
+    pub fn switch_target(&self) -> Option<SwitchTarget> {
+        let o = self.pending?;
+        self.guns[o].as_ref().map(|g| g.as_target(!self.used[o]))
+    }
+
+    /// After the active gun's step: when its drop finished, the other weapon takes the hand and raises.
+    pub fn finish_switch(&mut self) {
+        let a = self.active;
+        let Some(hand) = self.guns[a].as_mut().and_then(Gun::take_switch) else {
+            return;
+        };
+        let other = 1 - a;
+        if let Some(g) = self.guns[other].as_mut() {
+            g.adopt(&hand);
+            self.active = other;
+            self.used[other] = true;
+            if let Some(v) = self.views[other].as_mut() {
+                v.play_event_alias(wpk::sound::event::RAISE);
+            }
+        }
+        self.pending = None;
     }
 
     pub fn gun(&self) -> Option<&Gun> {
