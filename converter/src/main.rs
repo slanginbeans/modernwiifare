@@ -820,6 +820,39 @@ fn run_common(args: &[String]) -> ExitCode {
         equips.len() as u32,
         wpk::records::encode(&equips),
     );
+    // Smoke: the sight-blocking elements of each thrown weapon's explosion effect (the first weapon of each name, as
+    // the sorted list keeps).
+    let blockers: Vec<wpk::weapon::BlockerRecord> = weapons
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| equips.get(*k).is_some_and(|e| e.offhand_class != 0))
+        .flat_map(|(k, w)| {
+            let i = links.weapons.iter().position(|n| n == w.name());
+            i.and_then(|i| links.weapon_blockers.get(i))
+                .into_iter()
+                .flatten()
+                .map(move |b| wpk::weapon::BlockerRecord {
+                    weapon: k as u32,
+                    looping: b.looping,
+                    spawn_a: b.spawn_a,
+                    spawn_b: b.spawn_b,
+                    delay_ms: b.delay_ms,
+                    life_ms: b.life_ms,
+                    offset_radius: b.offset_radius,
+                    offset_height: b.offset_height,
+                    fade_in: b.fade_in,
+                    fade_out: b.fade_out,
+                    size: b.size,
+                    alpha: b.alpha,
+                })
+        })
+        .collect();
+    println!("smoke: {} sight-blocking elements", blockers.len());
+    b.section(
+        wpk::tag::WEAPON_BLOCKERS,
+        blockers.len() as u32,
+        wpk::records::encode(&blockers),
+    );
     println!(
         "world sounds: {} aliases, {} variants, {:.2} MiB",
         world_bank.aliases.len(),

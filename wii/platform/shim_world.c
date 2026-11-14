@@ -709,19 +709,38 @@ void mwf_draw_boxes(const float view[3][4], const float (*b)[6], const uint32_t 
     GX_SetNumTevStages(1);
     GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
     GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
-    GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
+    /* Alpha from the colour's low byte: opaque boxes first with depth writes, then see-through ones (smoke)
+       blended over them without. */
+    GX_SetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_CLEAR);
     GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
-    GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
     GX_SetCullMode(GX_CULL_NONE);
     /* Face shades: +z, -z, +x, -x, +y, -y. */
     static const u8 shade[6] = {255, 110, 200, 170, 185, 150};
+    const float (*b0)[6] = b;
+    const uint32_t *rgba0 = rgba;
+    uint32_t count0 = count;
+    for (int pass = 0; pass < 2; pass++) {
+    b = b0;
+    rgba = rgba0;
+    count = count0;
+    GX_SetZMode(GX_TRUE, GX_LEQUAL, pass == 0 ? GX_TRUE : GX_FALSE);
     while (count > 0) {
         uint32_t n = count > 2000 ? 2000 : count;
-        GX_Begin(GX_QUADS, GX_VTXFMT7, (u16)(n * 24));
+        uint32_t here = 0;
+        for (uint32_t i = 0; i < n; i++)
+            if (((rgba[i] & 0xff) == 0xff) == (pass == 0)) here++;
+        if (here == 0) {
+            b += n;
+            rgba += n;
+            count -= n;
+            continue;
+        }
+        GX_Begin(GX_QUADS, GX_VTXFMT7, (u16)(here * 24));
         for (uint32_t i = 0; i < n; i++) {
             const float *m = b[i];
             f32 x0 = m[0], y0 = m[1], z0 = m[2], x1 = m[3], y1 = m[4], z1 = m[5];
             u32 c = rgba[i];
+            if (((c & 0xff) == 0xff) != (pass == 0)) continue;
             f32 q[6][4][3] = {
                 {{x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}, {x0, y1, z1}},
                 {{x0, y0, z0}, {x0, y1, z0}, {x1, y1, z0}, {x1, y0, z0}},
@@ -736,7 +755,7 @@ void mwf_draw_boxes(const float view[3][4], const float (*b)[6], const uint32_t 
                 u8 bl = (u8)(((c >> 8) & 0xff) * shade[f] / 255);
                 for (int v = 0; v < 4; v++) {
                     GX_Position3f32(q[f][v][0], q[f][v][1], q[f][v][2]);
-                    GX_Color4u8(r, g, bl, 0xff);
+                    GX_Color4u8(r, g, bl, (u8)(c & 0xff));
                 }
             }
         }
@@ -745,6 +764,9 @@ void mwf_draw_boxes(const float view[3][4], const float (*b)[6], const uint32_t 
         rgba += n;
         count -= n;
     }
+    }
+    GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
+    GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
 }
 
 uint32_t mwf_frame_end(void) {

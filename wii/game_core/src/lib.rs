@@ -37,6 +37,7 @@ pub mod nav;
 pub mod perks;
 pub mod player;
 pub mod sky;
+pub mod smoke;
 pub mod telemetry;
 pub mod ui_page;
 pub mod ui_text;

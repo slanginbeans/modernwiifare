@@ -573,6 +573,71 @@ impl crate::records::Record for EquipRecord {
         }
     }
 }
+/// One sight-blocking element of a thrown weapon's explosion effect (`WSMK`; IW4L `fx_iw4` vis blockers): its
+/// particles, where they appear around the blast, how long they live, and their size (radius) and alpha over their
+/// life (at 0, ¼, ½, ¾, 1, mid random). A particle counts against a sight line only inside its distance fade.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BlockerRecord {
+    /// The weapon (index in `WEAP`).
+    pub weapon: u32,
+    /// Looping element (one particle batch every `spawn_a` ms) or one-shot (`spawn_a` + rand × `spawn_b`).
+    pub looping: bool,
+    pub spawn_a: i32,
+    pub spawn_b: i32,
+    pub delay_ms: [i32; 2],
+    pub life_ms: [i32; 2],
+    pub offset_radius: [f32; 2],
+    pub offset_height: [f32; 2],
+    /// Distance fade in / out (base, amplitude) from the viewer.
+    pub fade_in: [f32; 2],
+    pub fade_out: [f32; 2],
+    pub size: [f32; 5],
+    pub alpha: [u8; 5],
+}
+
+impl crate::records::Record for BlockerRecord {
+    const LEN: usize = 4 + 4 + 2 * 4 + 8 * 4 + 4 * 4 + 5 * 4 + 8;
+    fn write(&self, o: &mut Vec<u8>) {
+        o.u32(self.weapon);
+        o.u32(u32::from(self.looping));
+        o.u32(self.spawn_a as u32);
+        o.u32(self.spawn_b as u32);
+        for v in self.delay_ms.iter().chain(&self.life_ms) {
+            o.u32(*v as u32);
+        }
+        for v in self
+            .offset_radius
+            .iter()
+            .chain(&self.offset_height)
+            .chain(&self.fade_in)
+            .chain(&self.fade_out)
+            .chain(&self.size)
+        {
+            o.f32(*v);
+        }
+        o.extend_from_slice(&self.alpha);
+        o.extend_from_slice(&[0; 3]);
+    }
+    fn read(b: &[u8]) -> Self {
+        let u = |k: usize| be::u32(b, k * 4);
+        let f = |k: usize| be::f32(b, k * 4);
+        BlockerRecord {
+            weapon: u(0),
+            looping: u(1) != 0,
+            spawn_a: u(2) as i32,
+            spawn_b: u(3) as i32,
+            delay_ms: [u(4) as i32, u(5) as i32],
+            life_ms: [u(6) as i32, u(7) as i32],
+            offset_radius: [f(8), f(9)],
+            offset_height: [f(10), f(11)],
+            fade_in: [f(12), f(13)],
+            fade_out: [f(14), f(15)],
+            size: core::array::from_fn(|k| f(16 + k)),
+            alpha: core::array::from_fn(|k| b[84 + k]),
+        }
+    }
+}
+
 /// The record named `name` in a `WEAP` section, with its index.
 pub fn find_indexed(section: &[u8], name: &str) -> Option<(u32, WeaponRecord)> {
     section.chunks_exact(LEN).enumerate().find_map(|(i, r)| {

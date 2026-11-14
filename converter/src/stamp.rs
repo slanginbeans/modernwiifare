@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 /// 11: thrown weapons' numbers (`WEQP`). 12: team deathmatch rules, friendly compass icon.
 /// 13: flashbang and stun durations, their shock files. 14: sound distances, thrown weapons' world sounds.
 /// 15: thrown weapons' impact damage. 16: blast cones, claymore and explosives rules.
-pub const REVISION: u32 = 16;
+/// 17: smoke's sight blockers (`WSMK`).
+pub const REVISION: u32 = 17;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

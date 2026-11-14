@@ -51,9 +51,9 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
     the install (`mp_playlists_dlc2`'s playlist is empty), so Game Setup offers longer limits. Not yet: the other
     modes (Domination, Search and Destroy, Headquarters, Sabotage, Demolition, Capture the Flag), team start spawns
     for the first spawn, team killstreaks shared by the team (the UAV is yours alone).
-12. **Grenades**: frag, semtex, the throwing knife (its hit, stick and pickup), claymore (trip and cone) and C4 (double-tap detonation) (lethal), flashbang and stun (tactical) done (`game_core::grenade`, IW4L's throw /
+12. **Grenades**: frag, semtex, the throwing knife (its hit, stick and pickup), claymore (trip and cone) and C4 (double-tap detonation) (lethal), flashbang, stun and smoke (tactical; the smoke's sight blocking) done (`game_core::grenade`, IW4L's throw /
     bounce / fuse / blast and flashbang amounts, the scripts' flash and stun durations, the shock files' white-out
-    and slowdown; bots throw frags). Not yet: shooting charges to set them off, the C4 detonator in hand, the claymore's trip sound, Bomb Squad / Scavenger interplay, tactical insertion, blast shield, smoke;
+    and slowdown; bots throw frags). Not yet: shooting charges to set them off, the C4 detonator in hand, the claymore's trip sound, Bomb Squad / Scavenger interplay, tactical insertion, blast shield; smoke sprites and drift;
     the shock's look control, blur and tinnitus; the grenade and explosion models and effects (their sounds play); per-surface explosion sounds; the grenade
     danger indicator; Danger Close.
 11. **Minimap and killstreaks**: the HUD minimap (map pack `MINI`: MW2's `setupMiniMap` frame, the script's

@@ -94,6 +94,8 @@ pub mod tag {
     pub const WEAPON_FPV: Tag = *b"WFPV";
     /// Thrown / launched weapons' numbers (`weapon::EquipRecord`, parallel to `WEAP`).
     pub const WEAPON_EQUIP: Tag = *b"WEQP";
+    /// Sight-blocking effect elements of thrown weapons (`weapon::BlockerRecord`; smoke).
+    pub const WEAPON_BLOCKERS: Tag = *b"WSMK";
     /// Sound alias lists ([`crate::sound::AliasRecord`]).
     pub const SOUND_ALIASES: Tag = *b"SNDA";
     /// Sound variants ([`crate::sound::VariantRecord`]).

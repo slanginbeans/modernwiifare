@@ -161,7 +161,8 @@ void mwf_ui_quads(int32_t tex, const mwf_ui_quad *q, uint32_t count);
 typedef struct { float x, y, s, t; uint32_t rgba; } mwf_ui_vert;
 void mwf_ui_verts(int32_t tex, const mwf_ui_vert *v, uint32_t quads);
 
-/* Solid shaded boxes in world space (placeholder bodies), depth tested: mins b[i][0..3], maxs b[i][3..6]. */
+/* Shaded boxes in world space (placeholder bodies, smoke), depth tested: mins b[i][0..3], maxs b[i][3..6]; colour
+   0xRRGGBBAA, boxes with alpha under 255 blended over the rest without depth writes. */
 void mwf_draw_boxes(const float view[3][4], const float (*b)[6], const uint32_t *rgba, uint32_t count);
 
 /* Sound: ASND voices. `pcm`: mono 16-bit big-endian, 32-byte aligned, flushed, `bytes` a multiple of 32.

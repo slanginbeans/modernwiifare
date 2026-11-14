@@ -672,6 +672,11 @@ fn run_map(
         .ok()
         .and_then(|p| p.section(wpk::tag::WEAPON_EQUIP))
         .map_or(&[][..], |s| s.data);
+    // Smoke's sight-blocking elements (empty with an older pack).
+    let blockers = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::WEAPON_BLOCKERS))
+        .map_or(&[][..], |s| s.data);
     // How each first-person weapon moves (sway, bob ...; empty with an older pack).
     let fpvs = wpk::Pack::parse(common, false)
         .ok()
@@ -891,6 +896,7 @@ fn run_map(
     };
     if let Some(a) = arena.as_mut() {
         a.equips = equips;
+        a.blockers = blockers;
     }
     // Bots call in a UAV at its killstreakTable cost.
     if let (Some(a), Some(c)) = (arena.as_mut(), loadouts.catalog) {
@@ -1579,6 +1585,16 @@ fn run_map(
                         (false, true) => 0xd8b090ff,
                         (false, false) => 0x6a7050ff,
                     });
+                }
+            }
+            // Smoke: each particle a see-through grey box of its size and alpha (placeholder for MW2's smoke
+            // sprites; a third of the particle's alpha, as the boxes overlap heavily).
+            for p in &a.smoke.particles {
+                if let Some((r, alpha)) = p.state(now) {
+                    let o = p.origin;
+                    let h = r * 0.8;
+                    boxes.push([o[0] - h, o[1] - h, o[2], o[0] + h, o[1] + h, o[2] + 2.0 * h]);
+                    box_colours.push(0xa8a8a000 | u32::from(alpha / 3).min(254));
                 }
             }
             unsafe {

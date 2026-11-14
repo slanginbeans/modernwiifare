@@ -214,6 +214,10 @@ pub struct Arena {
     pub grenades: Vec<crate::grenade::Grenade>,
     /// The thrown weapons' numbers by weapon index (for grenades the bots throw).
     pub equips: &'static [u8],
+    /// Smoke's sight-blocking elements by weapon (`WSMK`).
+    pub blockers: &'static [u8],
+    /// The smoke in the air.
+    pub smoke: crate::smoke::Smoke,
     rng: u32,
     /// Whether the human (slot 0) is in the match (not free-flying): bots ignore and can't hit it otherwise.
     pub human_present: bool,
@@ -340,6 +344,8 @@ impl Arena {
             bot_uav_kills: 0,
             grenades: Vec::new(),
             equips: &[],
+            blockers: &[],
+            smoke: crate::smoke::Smoke::default(),
             rng: 0x2545_f491,
             human_present: true,
             spawn_count: 0,
@@ -669,6 +675,7 @@ impl Arena {
     /// Fly every grenade for `dt` seconds; those whose fuse is up explode, hurting everyone in reach (the thrower
     /// too) and crediting the thrower with the kills.
     pub fn update_grenades(&mut self, clip: &MapClip<'_>, dt: f32, now: u32, out: &mut Vec<Event>) {
+        self.smoke.update(now);
         let mut i = 0;
         while i < self.grenades.len() {
             if self.grenades[i].charge() == Some(crate::grenade::Charge::Claymore) {
@@ -691,11 +698,28 @@ impl Arena {
                 }
                 continue;
             }
+            // Smoke waits for the ground (IW4L `waits_for_ground`: a tick at a time).
+            if due
+                && !g.resting
+                && crate::grenade::effect(&g.facts) == crate::grenade::Effect::Smoke
+            {
+                self.grenades[i].detonate_at(now.wrapping_add(50));
+                i += 1;
+                continue;
+            }
             if !due {
                 i += 1;
                 continue;
             }
             let g = self.grenades.swap_remove(i);
+            if crate::grenade::effect(&g.facts) == crate::grenade::Effect::Smoke {
+                let w = g.weapon;
+                let recs: Vec<wpk::weapon::BlockerRecord> =
+                    wpk::records::iter::<wpk::weapon::BlockerRecord>(self.blockers)
+                        .filter(|b| b.weapon == w)
+                        .collect();
+                self.smoke.spawn(g.origin, &recs, now);
+            }
             out.push(Event::Explosion {
                 origin: g.origin,
                 weapon: g.weapon,
@@ -1007,11 +1031,14 @@ impl Arena {
                 off -= libm::floorf((off + 180.0) / 360.0) * 360.0;
                 let in_view = libm::fabsf(off) <= VIEW_HALF_DEG
                     && dist2(aim, eye) <= SIGHT_RANGE * SIGHT_RANGE;
-                // A flashed fighter sees nothing until it wears off.
-                let visible = in_view && !self.flashed(me, now) && {
-                    let t = clip.trace(eye, aim, [0.0; 3], [0.0; 3], MASK_SHOT);
-                    t.fraction >= 1.0
-                };
+                // A flashed fighter sees nothing until it wears off; smoke hides what is behind it.
+                let visible = in_view
+                    && !self.flashed(me, now)
+                    && {
+                        let t = clip.trace(eye, aim, [0.0; 3], [0.0; 3], MASK_SHOT);
+                        t.fraction >= 1.0
+                    }
+                    && !self.smoke.blocks(eye, aim, now);
                 // Under its UAV a bot knows where everyone is (as the radar shows them).
                 let uav = f
                     .uav_until

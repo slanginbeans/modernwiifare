@@ -205,10 +205,81 @@ impl SlotMap {
 struct FxSounds {
     sounds: Vec<String>,
     children: Vec<String>,
+    /// The effect's looping life (IW4 `msecLoopingLife`; 0: none).
+    looping_life_ms: i32,
+    /// Its sight-blocking elements (smoke).
+    blockers: Vec<FxBlocker>,
+}
+
+/// An effect element that blocks sight (IW4L `fx_iw4::FX_ELEM_FLAG_VIS_BLOCKER`): each particle is a sphere of its
+/// size that takes its alpha off the visibility of lines through it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FxBlocker {
+    /// Looping (spawns every `spawn_a` ms, `spawn_b` at once) or one-shot (`spawn_a` + rand × `spawn_b` particles).
+    pub looping: bool,
+    pub spawn_a: i32,
+    pub spawn_b: i32,
+    pub delay_ms: [i32; 2],
+    pub life_ms: [i32; 2],
+    /// Spawn offset from the effect's origin: radius and height (base, amplitude).
+    pub offset_radius: [f32; 2],
+    pub offset_height: [f32; 2],
+    /// Distance fade in / out from the viewer (base, amplitude).
+    pub fade_in: [f32; 2],
+    pub fade_out: [f32; 2],
+    /// Size (radius) and alpha at 0, 1/4, 1/2, 3/4 and the end of a particle's life (mid random).
+    pub size: [f32; 5],
+    pub alpha: [u8; 5],
 }
 
 /// How far down child effects are searched for a sound.
 const FX_DEPTH: u32 = 4;
+
+/// The element at `p` as a sight blocker, when it is one (IW4L `fx_iw4`: the element view, its visual samples).
+fn fx_blocker(s: &ZoneStream<'_>, p: Ptr, looping: bool) -> Option<FxBlocker> {
+    let x64 = s.wire_format() == fastfile_iw4::Iw4WireFormat::X64;
+    let raw = s
+        .slice_at(p, 0, s.layout(asset_iw4::size::FX_ELEM_DEF, 288))
+        .ok()?;
+    let v = if x64 {
+        fx_iw4::elem_def_view_x64(raw)?
+    } else {
+        fx_iw4::elem_def_view(raw)?
+    };
+    if v.flags & fx_iw4::FX_ELEM_FLAG_VIS_BLOCKER == 0 {
+        return None;
+    }
+    let count = usize::from(v.vis_state_interval_count) + 1;
+    let samples = match s.ptr_at(p, s.layout(0xb8, 192)) {
+        Ok(fastfile_iw4::ZonePtr::Offset(a)) => s
+            .slice_at(
+                s.resolve_alias(a),
+                0,
+                count * fx_iw4::FX_ELEM_VIS_STATE_SAMPLE_SIZE,
+            )
+            .ok()?,
+        _ => return None,
+    };
+    let at = |k: usize| k as f32 / 4.0;
+    let n = v.vis_state_interval_count;
+    Some(FxBlocker {
+        looping,
+        spawn_a: v.spawn_a,
+        spawn_b: v.spawn_b,
+        delay_ms: [v.spawn_delay_msec_base, v.spawn_delay_msec_amplitude],
+        life_ms: [v.life_span_msec_base, v.life_span_msec_amplitude],
+        offset_radius: [v.spawn_offset_radius_base, v.spawn_offset_radius_amplitude],
+        offset_height: [v.spawn_offset_height_base, v.spawn_offset_height_amplitude],
+        fade_in: v.fade_in_range,
+        fade_out: v.fade_out_range,
+        size: core::array::from_fn(|k| {
+            fx_iw4::evaluate_size0(samples, n, at(k), 0.5).unwrap_or(0.0)
+        }),
+        alpha: core::array::from_fn(|k| {
+            fx_iw4::evaluate_vis_alpha(samples, n, at(k), 0.5).unwrap_or(0)
+        }),
+    })
+}
 
 #[derive(Default)]
 pub struct Links {
@@ -258,6 +329,8 @@ pub struct Links {
     last_fx_name: Option<String>,
     /// Each weapon's IW4 impact type (parallel to `weapons`).
     pub weapon_impact_types: Vec<i32>,
+    /// Each weapon's explosion effect's sight blockers (parallel to `weapons`).
+    pub weapon_blockers: Vec<Vec<FxBlocker>>,
     /// First-person models and animations of each weapon (parallel to `weapons`).
     pub weapon_views: Vec<WeaponView>,
     /// Every string table of the zone, by name (lower case).
@@ -506,6 +579,13 @@ impl Links {
             .and_then(|slot| self.fx_slots.get(&slot))
             .and_then(|n| self.fx_sound(n, FX_DEPTH));
         self.weapon_impact_types.push(w.impact_type);
+        // Its explosion effect's sight blockers (smoke).
+        let mut blockers = Vec::new();
+        if let Some(n) = w.explosion_slot.and_then(|slot| self.fx_slots.get(&slot)) {
+            self.fx_blockers(n, FX_DEPTH, &mut blockers);
+        }
+        self.weapon_blockers
+            .push(blockers.into_iter().map(|(b, _)| b).collect());
         self.weapon_world_sounds.push([
             direct(w.proj_explosion_sound_name).or(effect_sound),
             bounce,
@@ -739,6 +819,9 @@ impl Links {
                 for field in [s.layout(216, 232), s.layout(220, 240), s.layout(224, 248)] {
                     fx.children.extend(name(p, field));
                 }
+                if let Some(b) = fx_blocker(s, p, i < g.looping_count.max(0) as usize) {
+                    fx.blockers.push(b);
+                }
                 let (Ok(ty), Ok(n)) = (s.u8_at(p, 176), s.u8_at(p, 177)) else {
                     continue;
                 };
@@ -764,8 +847,30 @@ impl Links {
         for c in &mut fx.children {
             c.make_ascii_lowercase();
         }
+        // msecLoopingLife (x64: IW4L reads it at 16; x86 through the header view).
+        fx.looping_life_ms = if s.wire_format() == fastfile_iw4::Iw4WireFormat::X64 {
+            s.i32_at(g.header, 16).unwrap_or(0)
+        } else {
+            s.slice_at(g.header, 0, fx_iw4::FX_EFFECT_DEF_SIZE)
+                .ok()
+                .and_then(fx_iw4::effect_def_view)
+                .map_or(0, |v| v.msec_looping_life)
+        };
         self.fx_defs.entry(own.clone()).or_insert(fx);
         self.last_fx_name = Some(own);
+    }
+
+    /// The sight blockers of effect `name` and its children, each with its effect's looping life.
+    pub fn fx_blockers(&self, name: &str, depth: u32, out: &mut Vec<(FxBlocker, i32)>) {
+        let Some(fx) = self.fx_defs.get(name) else {
+            return;
+        };
+        out.extend(fx.blockers.iter().map(|b| (*b, fx.looping_life_ms)));
+        if depth > 0 {
+            for c in &fx.children {
+                self.fx_blockers(c, depth - 1, out);
+            }
+        }
     }
 
     /// The first sound effect `name` plays, its own or a child effect's (depth-first, a few levels down).

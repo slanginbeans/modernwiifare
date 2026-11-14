@@ -441,6 +441,7 @@ version = "0.1.0"
 dependencies = [
  "clipmap_iw4",
  "dpvs_iw4",
+ "fx_iw4",
  "gamemode_iw4",
  "hud_iw4",
  "libm",
@@ -741,6 +742,7 @@ dependencies = [
  "fastfile_iw5",
  "fastfile_t5",
  "fastfile_t6",
+ "fx_iw4",
  "game_core",
  "gx_texture",
  "hud_iw4",
