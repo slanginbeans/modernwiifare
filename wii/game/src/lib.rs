@@ -11,6 +11,7 @@
 extern crate alloc;
 
 mod arsenal;
+mod devlog;
 mod ffi;
 mod front;
 mod rt;
@@ -29,6 +30,7 @@ use game_core::gun::{Gun, GunInput, SpreadInput};
 use game_core::hud::{self, Rect, heapless_str::Str};
 use game_core::life::{self, Life, MatchClock};
 use game_core::player::{MovePad, Player};
+use game_core::telemetry::{self, section};
 use game_core::world::World;
 use game_core::world::{FrameStats, VisData};
 
@@ -183,6 +185,14 @@ fn file_error_colour() -> u32 {
 
 /// Show a solid colour until START (back to the menu) or RESET (quit); no console while GX owns the screen.
 fn fail(colour: u32) -> Exit {
+    devlog::event(
+        ffi::ms(),
+        "load_fail",
+        format_args!("colour={colour:08x} file_error={}", unsafe {
+            ffi::mwf_file_error()
+        }),
+    );
+    devlog::end(ffi::ms());
     let cam = Camera::new([0.0; 3], 0.0, 0.0);
     loop {
         unsafe {
@@ -517,6 +527,22 @@ fn run_map(
         return fail(0xc02020ff);
     };
     unsafe { ffi::mwf_tex_reset() };
+    let load_start = ffi::ms();
+    devlog::start(
+        load_start,
+        format_args!(
+            "build={} map={name} bots={BOTS} class={} mem1_free={}k mem2_free={}k widescreen={}",
+            option_env!("MWF_BUILD_ID").unwrap_or("dev"),
+            loadouts
+                .class
+                .and_then(|c| loadouts.classes.get(c))
+                .map_or("none", |l| l.name.as_str())
+                .replace(' ', "_"),
+            unsafe { ffi::mwf_mem1_free_bytes() } / 1024,
+            unsafe { ffi::mwf_mem2_free_bytes() } / 1024,
+            unsafe { ffi::mwf_widescreen() } != 0,
+        ),
+    );
     let cpath = path.as_ptr();
     // Header and section table first, to plan the load.
     let mut head = [0u8; wpk::HEADER_LEN + 64 * wpk::SECTION_ENTRY_LEN];
@@ -567,6 +593,18 @@ fn run_map(
         Err(_) => return fail(0xc020c0ff),
     };
     let clip: Option<MapClip<'_>> = clip_data.as_ref().map(MapClip::new);
+    devlog::event(
+        ffi::ms(),
+        "loaded",
+        format_args!(
+            "ms={} mem1_free={}k mem2_free={}k collision={} nav_points={}",
+            ffi::ms().wrapping_sub(load_start),
+            unsafe { ffi::mwf_mem1_free_bytes() } / 1024,
+            unsafe { ffi::mwf_mem2_free_bytes() } / 1024,
+            clip.is_some(),
+            nav.as_ref().map_or(0, |n| n.nodes.len()),
+        ),
+    );
     let aspect = if unsafe { ffi::mwf_widescreen() } != 0 {
         16.0 / 9.0
     } else {
@@ -656,7 +694,16 @@ fn run_map(
     let mut timing = Timing::default();
     let mut rects: Vec<Rect> = Vec::with_capacity(4096);
     let mut frame_start = ffi::us();
+    let mut last_mem_s = u32::MAX;
+    let lap = |mark: &mut u32| {
+        let t = ffi::us();
+        let d = t.wrapping_sub(*mark);
+        *mark = t;
+        d
+    };
     loop {
+        let mut sections = [0u32; section::COUNT];
+        let mut mark = ffi::us();
         let now = ffi::ms();
         let msec = now.wrapping_sub(last).clamp(1, 100);
         last = now;
@@ -670,14 +717,23 @@ fn run_map(
         }
         if pad.down & ffi::BTN_START != 0 {
             unsafe { ffi::mwf_snd_stop_all() };
+            devlog::event(now, "pause", format_args!(""));
+            devlog::flush(now);
             match front::pause(
                 gfx,
                 input,
                 (!loadouts.classes.is_empty()).then_some(loadouts.classes),
                 loadouts.cursor,
             ) {
-                front::Pause::EndGame => return Exit::Menu,
-                front::Pause::ChangeClass(c) => class = Some(c),
+                front::Pause::EndGame => {
+                    devlog::event(ffi::ms(), "end_game", format_args!(""));
+                    devlog::end(ffi::ms());
+                    return Exit::Menu;
+                }
+                front::Pause::ChangeClass(c) => {
+                    devlog::event(now, "class_change", format_args!("class={c}"));
+                    class = Some(c);
+                }
                 front::Pause::Resume => {}
             }
             // The match was stopped: no time passed.
@@ -686,8 +742,8 @@ fn run_map(
             continue;
         }
         // Y: the other weapon (MW2's console layout).
-        if pad.down & ffi::BTN_Y != 0 && !flying && life.alive() {
-            arsenal.switch();
+        if pad.down & ffi::BTN_Y != 0 && !flying && life.alive() && arsenal.switch() {
+            devlog::event(now, "switch", format_args!("to={}", arsenal.active));
         }
         // D-pad left: next spawn point (debug), with the class's weapons.
         if pad.down & ffi::BTN_LEFT != 0 {
@@ -711,6 +767,7 @@ fn run_map(
                 }
             }
         }
+        sections[section::INPUT] = lap(&mut mark);
         match (&mut player, &clip) {
             (Some(p), Some(c)) if !flying && life.alive() => {
                 let fall = p.update(
@@ -743,6 +800,7 @@ fn run_map(
                     a.fighters[0].player = p.clone();
                     a.fighters[0].life = life;
                 }
+                sections[section::PLAYER] = lap(&mut mark);
                 let a = arsenal.active;
                 if let (Some(g), true) = (arsenal.guns[a].as_mut(), life.alive()) {
                     g.update_spread(
@@ -787,6 +845,7 @@ fn run_map(
                         next_impact = (next_impact + 1) % impacts.len();
                     }
                 }
+                sections[section::GUN] = lap(&mut mark);
             }
             (Some(_), Some(c)) if !flying => {
                 // Dead: the view stays where the player fell until the respawn.
@@ -820,6 +879,7 @@ fn run_map(
                 dt,
             ),
         }
+        let _ = lap(&mut mark);
         if let (Some(a), Some(c)) = (arena.as_mut(), clip.as_ref()) {
             a.human_present = !flying && player.is_some();
             a.fighters[0].life = life;
@@ -836,15 +896,38 @@ fn run_map(
         }
         for e in events.drain(..) {
             match e {
-                Event::Hit { attacker: 0, .. } => hitmarker_ms = Some(now),
+                Event::Hit {
+                    attacker,
+                    victim,
+                    damage,
+                    location,
+                } => {
+                    if attacker == 0 {
+                        hitmarker_ms = Some(now);
+                    }
+                    if attacker == 0 || victim == 0 {
+                        devlog::event(
+                            now,
+                            "hit",
+                            format_args!("by={attacker} on={victim} dmg={damage} loc={location}"),
+                        );
+                    }
+                }
                 Event::Kill { attacker, victim } => {
                     feed.rotate_right(1);
                     feed[0] = (Some((attacker, victim)), now);
+                    devlog::event(now, "kill", format_args!("by={attacker} on={victim}"));
+                    if victim == 0 {
+                        // A natural break: write the log while you wait to respawn.
+                        devlog::flush(now);
+                    }
                 }
                 _ => {}
             }
         }
+        sections[section::BOTS] = lap(&mut mark);
         let stats = world.draw(gfx, &cam, scratch);
+        sections[section::WORLD] = lap(&mut mark);
         // Bots: placeholder bodies, one shaded box per hit volume, until the character models are converted.
         if let Some(a) = arena.as_ref() {
             boxes.clear();
@@ -870,6 +953,7 @@ fn run_map(
                 )
             };
         }
+        sections[section::BODIES] = lap(&mut mark);
         if !flying
             && life.alive()
             && let (Some(v), Some(g)) = (
@@ -893,6 +977,7 @@ fn run_map(
                 gfx.hud_rects(&[[x - 8, y - 8, 16, 16]], 0xffff_e0d0);
             }
         }
+        sections[section::VIEW] = lap(&mut mark);
         if !flying {
             if let Some(g) = arsenal.gun().filter(|_| life.alive()) {
                 draw_gun_hud(gfx, &mut hud_rects, g, &cam, &impacts, now);
@@ -906,16 +991,49 @@ fn run_map(
             && (a.won() || clock.over(now))
         {
             unsafe { ffi::mwf_snd_stop_all() };
+            devlog::event(
+                now,
+                "match_end",
+                format_args!(
+                    "kills={} deaths={} leader={} leader_kills={}",
+                    a.fighters[0].kills,
+                    life.deaths,
+                    a.leader().0,
+                    a.leader().1
+                ),
+            );
+            devlog::end(now);
             scoreboard(gfx, input, a);
             return Exit::Menu;
         }
         if show_overlay {
             overlay(gfx, &mut rects, &timing, &stats, cam.eye);
         }
+        sections[section::HUD] = lap(&mut mark);
         let cpu_us = ffi::us().wrapping_sub(frame_start);
         gfx.frame_end();
         let end = ffi::us();
         timing.add(end, end.wrapping_sub(frame_start), cpu_us, gfx.gpu_wait_us);
+        // Memory every 5 s is enough (mallinfo walks the heap).
+        let (mem1_free, mem2_free) = if now / 5000 != last_mem_s {
+            last_mem_s = now / 5000;
+            unsafe { (ffi::mwf_mem1_free_bytes(), ffi::mwf_mem2_free_bytes()) }
+        } else {
+            (0, 0)
+        };
+        devlog::frame(
+            ffi::ms(),
+            &telemetry::Frame {
+                frame_us: end.wrapping_sub(frame_start),
+                cpu_us,
+                gpu_us: gfx.gpu_wait_us,
+                sections,
+                triangles: stats.triangles,
+                draws: stats.batches,
+                mem1_free,
+                mem2_free,
+            },
+        );
         frame_start = end;
     }
 }

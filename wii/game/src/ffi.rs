@@ -72,6 +72,10 @@ unsafe extern "C" {
     pub fn mwf_file_load_range(path: *const c_char, offset: u32, len: u32) -> *const u8;
     pub fn mwf_file_read(path: *const c_char, offset: u32, len: u32, dst: *mut u8) -> i32;
     pub fn mwf_file_write(path: *const c_char, data: *const u8, len: u32) -> i32;
+    pub fn mwf_file_append(path: *const c_char, data: *const u8, len: u32) -> i32;
+    pub fn mwf_mkdir(path: *const c_char) -> i32;
+    pub fn mwf_mem1_free_bytes() -> u32;
+    pub fn mwf_mem2_free_bytes() -> u32;
     pub fn mwf_file_error() -> i32;
     pub fn mwf_app_dir() -> *const c_char;
     pub fn mwf_mem2_alloc(size: u32, align: u32) -> *mut u8;

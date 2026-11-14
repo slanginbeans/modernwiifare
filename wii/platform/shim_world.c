@@ -7,6 +7,8 @@
  *   stage 2: alpha from the I4 alpha plane x vertex alpha (split textures)
  */
 #include <dirent.h>
+#include <malloc.h>
+#include <sys/stat.h>
 #include <fat.h>
 #include <strings.h>
 #include <asndlib.h>
@@ -122,6 +124,30 @@ static FILE *open_at(const char *path, uint32_t offset) {
         return NULL;
     }
     return f;
+}
+
+int32_t mwf_file_append(const char *path, const void *data, uint32_t len) {
+    file_error = 0;
+    FILE *f = fopen(path, "ab");
+    if (!f) {
+        file_error = 1;
+        return -1;
+    }
+    size_t put = fwrite(data, 1, len, f);
+    fclose(f);
+    if (put != len) file_error = 4;
+    return (int32_t)put;
+}
+
+int32_t mwf_mkdir(const char *path) {
+    return mkdir(path, 0777);
+}
+
+/* Free MEM1 for the heap: newlib's free blocks plus the arena it hasn't claimed yet. */
+uint32_t mwf_mem1_free_bytes(void) {
+    struct mallinfo mi = mallinfo();
+    uint32_t arena = (uint32_t)((uintptr_t)SYS_GetArena1Hi() - (uintptr_t)SYS_GetArena1Lo());
+    return arena + (uint32_t)mi.fordblks;
 }
 
 int32_t mwf_file_write(const char *path, const void *data, uint32_t len) {

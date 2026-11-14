@@ -35,6 +35,7 @@ mod material_links;
 mod pack;
 mod pixel_decode;
 mod preview;
+mod report;
 mod sounds;
 mod stamp;
 mod static_models;
@@ -52,6 +53,7 @@ const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <repor
      mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]\n  \
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
      mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force]\n  \
+     mwf-convert report <log file>...\n  \
      mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n  \
      mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask|minimap] [--out <folder>]";
 
@@ -82,6 +84,16 @@ fn run(args: &[String]) -> ExitCode {
         Some("textures") => run_textures(&args[1..]),
         Some("pack") => run_pack(&args[1..]),
         Some("common") => run_common(&args[1..]),
+        Some("report") => match report::run(&args[1..]) {
+            Ok(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        },
         Some("preview") => run_preview(&args[1..]),
         Some("texture") => run_texture(&args[1..]),
         Some("-h" | "--help") | None => {

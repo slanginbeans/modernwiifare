@@ -114,6 +114,12 @@ void *mwf_file_load_range(const char *path, uint32_t offset, uint32_t len);
 int32_t mwf_file_read(const char *path, uint32_t offset, uint32_t len, void *dst);
 /* Write a whole file (created or replaced). Returns the bytes written, or -1 (see mwf_file_error). */
 int32_t mwf_file_write(const char *path, const void *data, uint32_t len);
+/* Append to a file (created when missing). Returns the bytes written, or -1. */
+int32_t mwf_file_append(const char *path, const void *data, uint32_t len);
+/* Create a folder (0, or -1 when it exists or fails). */
+int32_t mwf_mkdir(const char *path);
+/* Free MEM1 heap (newlib free blocks + unclaimed arena), bytes. */
+uint32_t mwf_mem1_free_bytes(void);
 /* Why the last file call failed: 0 none, 1 no SD card, 2 no such file, 3 out of MEM2, 4 read error. */
 int32_t mwf_file_error(void);
 

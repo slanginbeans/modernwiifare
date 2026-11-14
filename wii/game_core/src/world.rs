@@ -173,6 +173,9 @@ pub struct World<'a> {
     model_surfaces: Vec<BatchRecord>,
     models: Vec<ModelRecord>,
     instances: Vec<InstanceRecord>,
+    /// Per instance, fixed for the map: world-space centre, bounding radius and placement scale (computed at load,
+    /// not every frame).
+    instance_bounds: Vec<([f32; 3], f32, f32)>,
     vis: Option<VisRuntime<'a>>,
     /// Cell of each batch / instance (`ALWAYS` when none); empty when the pack has no visibility.
     batch_cells: Vec<u16>,
@@ -383,6 +386,17 @@ impl<'a> World<'a> {
             surface_quant,
             model_draws: Vec::with_capacity(model_surfaces.len()),
             model_surfaces,
+            instance_bounds: instances
+                .iter()
+                .map(|inst| {
+                    let scale = max_scale(&inst.mtx);
+                    models
+                        .get(usize::from(inst.model))
+                        .map_or(([0.0; 3], 0.0, scale), |m| {
+                            (place(&inst.mtx, m.centre), m.radius * scale, scale)
+                        })
+                })
+                .collect(),
             models,
             instances,
             vis,
@@ -485,7 +499,7 @@ impl<'a> World<'a> {
                 continue;
             }
             let model = &self.models[usize::from(inst.model)];
-            let centre = place(&inst.mtx, model.centre);
+            let (centre, r, scale) = self.instance_bounds[ii];
             let d = sub(centre, cam.eye);
             if inst.cull_dist != 0 {
                 let far = f32::from(inst.cull_dist);
@@ -494,8 +508,6 @@ impl<'a> World<'a> {
                     continue;
                 }
             }
-            let scale = max_scale(&inst.mtx);
-            let r = model.radius * scale;
             // IW4 LOD choice: camera distance over placement scale against each LOD's switch distance; past the
             // last LOD the model is not drawn.
             let Some(lod) = model.lod_for(libm::sqrtf(dot(d, d)) * LOD_SCALE / scale.max(1e-6))

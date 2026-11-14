@@ -33,6 +33,7 @@ pub mod menu;
 pub mod nav;
 pub mod player;
 pub mod sky;
+pub mod telemetry;
 pub mod viewmodel;
 pub mod weapon_sound;
 pub mod world;
