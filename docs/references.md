@@ -5,6 +5,7 @@ Record **every** project we read, borrow from, or test against, with its license
 | Project | What it is | License | How we use it |
 |---|---|---|---|
 | [IW4L](https://github.com/vladtrc/iw4L) | From-scratch Rust runtime that reads the user's MW2 MP install: FastFile readers, sim, GSC runtime, netcode | Apache-2.0 | **Code base.** Pinned `no_std` crates called from `wii/game_core` (ADR 0001, ADR 0007). Audited at `acc57a5` |
+| [meshoptimizer](https://github.com/zeux/meshoptimizer) (via the `meshopt` crate) | Mesh optimisation library | MIT | **Converter dependency.** Optional world mesh simplification (`pack --simplify`); not in the Wii build |
 | [ogc-rs / ogc-sys](https://github.com/rust-wii/ogc-rs) | Rust bindings for libogc | see repo | Wii platform layer |
 | [libogc](https://github.com/devkitPro/libogc) / devkitPPC | Wii homebrew SDK and toolchain | see repo | Platform, linker |
 | [mw2-recompiled](https://github.com/PaulCombal/mw2-recompiled) | 360 static recomp (disc 1.0.557 + TU6) for PC. MP and system link playable | GPL-3.0-only | **Behavioural reference only, no code** (ADR 0004) |
