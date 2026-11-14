@@ -22,10 +22,16 @@ pub enum Effect {
     Stun,
     /// Smoke (explosion type 5): not in this build.
     Smoke,
+    /// A throwing knife: no explosion; it hurts whoever it hits and can be picked back up.
+    Knife,
 }
+
+/// IW4 offhand class of throwing knives.
+pub const OFFHAND_CLASS_THROWINGKNIFE: i32 = 4;
 
 pub fn effect(f: &EquipRecord) -> Effect {
     match (f.offhand_class, f.projectile_explosion_type) {
+        (OFFHAND_CLASS_THROWINGKNIFE, _) => Effect::Knife,
         (_, 2) => Effect::Flash,
         (2, 3) => Effect::Stun,
         (_, 5) => Effect::Smoke,
@@ -101,6 +107,10 @@ pub struct Grenade {
     pub facts: EquipRecord,
     /// The last step bounced hard enough to be heard (IW4L: a speed change over 100).
     pub bounced: bool,
+    /// Where the last step started (for a knife's hit on a player along the way).
+    pub from: [f32; 3],
+    /// A knife that already hit someone (it drops and does no more harm).
+    pub spent: bool,
 }
 
 fn len(v: [f32; 3]) -> f32 {
@@ -167,7 +177,14 @@ impl Grenade {
         } else {
             facts.fuse_time_ms
         };
-        let fuse = if fuse <= 0 { 30_000 } else { fuse.min(60_000) };
+        // IW4L `grenade_deadlines`: default 30 s, at most 60 s; a knife has no fuse and goes away at the 60 s cap.
+        let fuse = if facts.offhand_class == OFFHAND_CLASS_THROWINGKNIFE {
+            60_000
+        } else if fuse <= 0 {
+            30_000
+        } else {
+            fuse.min(60_000)
+        };
         Grenade {
             owner,
             weapon,
@@ -177,12 +194,20 @@ impl Grenade {
             resting: false,
             facts,
             bounced: false,
+            from: origin,
+            spent: false,
         }
     }
 
-    /// Fly for `dt` seconds: under gravity, bouncing off what it hits. Returns true when the fuse is up at `now_ms`.
+    pub fn is_knife(&self) -> bool {
+        self.facts.offhand_class == OFFHAND_CLASS_THROWINGKNIFE
+    }
+
+    /// Fly for `dt` seconds: under gravity, bouncing off what it hits. Returns true when the fuse is up at `now_ms`
+    /// (for a knife: its time is up and it goes away).
     pub fn step(&mut self, clip: &MapClip<'_>, dt: f32, now_ms: u32) -> bool {
         self.bounced = false;
+        self.from = self.origin;
         if !self.resting && dt > 0.0 {
             let mut left = dt;
             for _ in 0..4 {
@@ -203,6 +228,13 @@ impl Grenade {
                 }
                 let used = left * t.fraction;
                 self.velocity[2] -= GRAVITY * used;
+                if self.is_knife() {
+                    if self.knife_impact(t.endpos, t.normal, t.surface_flags) {
+                        break;
+                    }
+                    left -= used.max(1e-4);
+                    continue;
+                }
                 // Sticky grenades (semtex) stay where they hit.
                 if self.facts.stickiness != 0 {
                     self.origin = core::array::from_fn(|k| t.endpos[k] + t.normal[k] * 0.25);
@@ -237,6 +269,73 @@ impl Grenade {
         }
         (now_ms.wrapping_sub(self.detonate_at_ms) as i32) >= 0
     }
+
+    /// A knife hitting the world at `end` with surface `normal` (IW4L `knife_impact`): it bounces by the surface's
+    /// factors unless it comes off nearly straight back from the surface (sticks in) or crawls along a floor (lies
+    /// there). True when it stopped.
+    fn knife_impact(&mut self, end: [f32; 3], normal: [f32; 3], surface_flags: u32) -> bool {
+        let surf = ((surface_flags >> 20) & 0x1f) as usize;
+        let (par, perp) = (
+            self.facts.parallel_bounce.get(surf).copied().unwrap_or(0.0),
+            self.facts
+                .perpendicular_bounce
+                .get(surf)
+                .copied()
+                .unwrap_or(0.0),
+        );
+        let before = self.velocity;
+        self.velocity = bounce(self.velocity, normal, par, perp);
+        let speed = len(self.velocity);
+        let incidence = if speed > 1e-6 {
+            (0..3).map(|k| self.velocity[k] / speed * normal[k]).sum()
+        } else {
+            0.0
+        };
+        let floor = normal[2] > 0.7;
+        let change: [f32; 3] = core::array::from_fn(|k| self.velocity[k] - before[k]);
+        self.bounced = len(change) > BOUNCE_SOUND_SPEED_CHANGE;
+        if (floor && speed < 20.0) || incidence > 0.7 {
+            self.origin = end;
+            self.velocity = [0.0; 3];
+            self.resting = true;
+            return true;
+        }
+        // Off the surface a hair (IW4L: never upwards; here a floor lifts it 0.25 as other grenades are, so the
+        // next box trace doesn't start inside it), and on.
+        self.origin = core::array::from_fn(|k| {
+            end[k]
+                + if k == 2 {
+                    (normal[k] * 0.1).min(0.0) + if floor { 0.25 } else { 0.0 }
+                } else {
+                    normal[k] * 0.1
+                }
+        });
+        false
+    }
+}
+
+/// Where the segment `a`→`b` first enters the box `lo`..`hi` (fraction 0..=1), if it does.
+pub fn segment_box(a: [f32; 3], b: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Option<f32> {
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for k in 0..3 {
+        let d = b[k] - a[k];
+        if libm::fabsf(d) < 1e-9 {
+            if a[k] < lo[k] || a[k] > hi[k] {
+                return None;
+            }
+            continue;
+        }
+        let (mut e, mut x) = ((lo[k] - a[k]) / d, (hi[k] - a[k]) / d);
+        if e > x {
+            core::mem::swap(&mut e, &mut x);
+        }
+        t0 = t0.max(e);
+        t1 = t1.min(x);
+        if t0 > t1 {
+            return None;
+        }
+    }
+    Some(t0)
 }
 
 /// One player's damage from a blast at `origin` (IW4L `radius_player_attempts`): `feet` is the player's origin,
@@ -363,27 +462,16 @@ mod tests {
             return;
         };
         let weap = pack.section(wpk::tag::WEAPONS).unwrap().data;
-        for n in [
-            "flash_grenade_mp",
-            "concussion_grenade_mp",
-            "smoke_grenade_mp",
-            "semtex_mp",
-            "throwingknife_mp",
-        ] {
-            if let Some((k, _)) = wpk::weapon::find_indexed(weap, n) {
-                let e = wpk::records::get::<EquipRecord>(eq.data, k as usize).unwrap();
-                std::println!(
-                    "TMP {n}: class {} fuse {} radius {}/{} dmg {}..{} type {} stick {}",
-                    e.offhand_class,
-                    e.fuse_time_ms,
-                    e.explosion_radius,
-                    e.explosion_radius_min,
-                    e.explosion_outer_damage,
-                    e.explosion_inner_damage,
-                    e.projectile_explosion_type,
-                    e.stickiness
-                );
-            }
+        // MW2's throwing knife: a knife-class offhand that kills on a direct hit.
+        if let Some((k, _)) = wpk::weapon::find_indexed(weap, "throwingknife_mp") {
+            let e = wpk::records::get::<EquipRecord>(eq.data, k as usize).unwrap();
+            std::println!(
+                "knife: impact {} speed {}",
+                e.impact_damage,
+                e.projectile_speed
+            );
+            assert_eq!(effect(&e), Effect::Knife);
+            assert!(e.impact_damage >= 100, "a knife hit kills");
         }
         let (i, _) = wpk::weapon::find_indexed(weap, "frag_grenade_mp").expect("frag in the pack");
         let f = wpk::records::get::<EquipRecord>(eq.data, i as usize).unwrap();
@@ -429,6 +517,69 @@ mod tests {
         }
         std::println!("landed {:?} after {t} ms", g.origin);
         assert!(g.origin[0] > 300.0 && g.origin[2] > -1.0);
+    }
+
+    #[test]
+    fn a_knife_sticks_in_a_wall_it_hits_square_and_skips_off_a_glancing_one() {
+        let knife = EquipRecord {
+            offhand_class: OFFHAND_CLASS_THROWINGKNIFE,
+            fuse_time_ms: 30_000,
+            projectile_speed: 1000,
+            impact_damage: 135,
+            parallel_bounce: [0.5; 31],
+            perpendicular_bounce: [0.3; 31],
+            ..EquipRecord::default()
+        };
+        // A wall across x = 200.
+        let clip = boxes(&[
+            ([200.0, -4000.0, -64.0], [264.0, 4000.0, 400.0]),
+            ([-4000.0, -4000.0, -64.0], [4000.0, 4000.0, 0.0]),
+        ]);
+        let mc = MapClip::new(&clip);
+        let mut g = Grenade::throw(
+            0,
+            3,
+            knife,
+            [0.0, 0.0, 100.0],
+            [1.0, 0.0, 0.0],
+            [0.0; 3],
+            None,
+            0,
+        );
+        assert_eq!(effect(&g.facts), Effect::Knife);
+        let mut t = 0;
+        while !g.resting && t < 2000 {
+            assert!(!g.step(&mc, 0.016, t), "no fuse");
+            t += 16;
+        }
+        assert!(
+            g.resting && g.origin[0] > 190.0 && g.origin[2] > 50.0,
+            "stuck in the wall: {:?}",
+            g.origin
+        );
+        // Thrown along the wall at a shallow angle it skips off and keeps going.
+        let mut g = Grenade::throw(
+            0,
+            3,
+            knife,
+            [150.0, 0.0, 100.0],
+            [0.6, 0.8, 0.0],
+            [0.0; 3],
+            None,
+            0,
+        );
+        let mut skipped = false;
+        for k in 0..20 {
+            g.step(&mc, 0.016, k * 16);
+            skipped |= g.velocity[0] < 0.0 && !g.resting;
+        }
+        assert!(skipped, "bounced off: {:?} {:?}", g.origin, g.velocity);
+        // The flight segment crossing a player's box, and missing it.
+        let lo = [100.0, -15.0, 0.0];
+        let hi = [130.0, 15.0, 70.0];
+        let t = segment_box([0.0, 0.0, 40.0], [200.0, 0.0, 40.0], lo, hi).unwrap();
+        assert!((t - 0.5).abs() < 1e-4);
+        assert!(segment_box([0.0, 0.0, 90.0], [200.0, 0.0, 90.0], lo, hi).is_none());
     }
 
     #[test]

@@ -458,6 +458,8 @@ pub struct EquipRecord {
     pub projectile_activate_dist: i32,
     pub projectile_explosion_type: i32,
     pub start_ammo: i32,
+    /// Damage on a direct hit (IW4L `impact_damage`: the weapon's damage; a throwing knife's kill).
+    pub impact_damage: i32,
     pub parallel_bounce: [f32; 31],
     pub perpendicular_bounce: [f32; 31],
     /// Sounds in `common.wpk`'s bank (`equip_sound`; `crate::sound::NONE` when none): the explosion, a bounce, the
@@ -493,6 +495,7 @@ impl Default for EquipRecord {
             projectile_activate_dist: 0,
             projectile_explosion_type: 0,
             start_ammo: 0,
+            impact_damage: 0,
             parallel_bounce: [0.0; 31],
             perpendicular_bounce: [0.0; 31],
             sounds: [crate::sound::NONE; 4],
@@ -518,7 +521,7 @@ impl crate::records::Record for EquipRecord {
             self.projectile_activate_dist,
             self.projectile_explosion_type,
             self.start_ammo,
-            0,
+            self.impact_damage,
             0,
         ] {
             o.u32(v as u32);
@@ -556,6 +559,7 @@ impl crate::records::Record for EquipRecord {
             projectile_activate_dist: i(11),
             projectile_explosion_type: i(12),
             start_ammo: i(13),
+            impact_damage: i(14),
             cook_off_hold: b[64] != 0,
             timed_detonation: b[65] != 0,
             projectile_rotates: b[66] != 0,

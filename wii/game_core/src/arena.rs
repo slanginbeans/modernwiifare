@@ -674,6 +674,15 @@ impl Arena {
                     weapon: g.weapon,
                 });
             }
+            if g.is_knife() {
+                if due {
+                    self.grenades.swap_remove(i);
+                } else {
+                    self.knife_hits(i, now, out);
+                    i += 1;
+                }
+                continue;
+            }
             if !due {
                 i += 1;
                 continue;
@@ -763,6 +772,85 @@ impl Arena {
                 }
             }
         }
+    }
+
+    /// A flying knife (grenade `i`) against the players along its last step: the first one it passes through (not
+    /// its thrower) takes the knife's impact damage (IW4L's direct hit), and the knife drops there.
+    fn knife_hits(&mut self, i: usize, now: u32, out: &mut Vec<Event>) {
+        let g = self.grenades[i];
+        if g.spent || g.resting {
+            return;
+        }
+        let mut first: Option<(f32, usize)> = None;
+        for (v, f) in self.fighters.iter().enumerate() {
+            if v == g.owner || !f.life.alive() || (v == 0 && !self.human_present) {
+                continue;
+            }
+            let o = f.player.ps.origin;
+            let h = if f.player.crouched() { 50.0 } else { 70.0 };
+            let lo = [o[0] - 15.0, o[1] - 15.0, o[2]];
+            let hi = [o[0] + 15.0, o[1] + 15.0, o[2] + h];
+            if let Some(t) = crate::grenade::segment_box(g.from, g.origin, lo, hi)
+                && first.is_none_or(|(best, _)| t < best)
+            {
+                first = Some((t, v));
+            }
+        }
+        let Some((t, v)) = first else {
+            return;
+        };
+        let k = &mut self.grenades[i];
+        k.origin = core::array::from_fn(|a| g.from[a] + (g.origin[a] - g.from[a]) * t);
+        k.velocity = [0.0; 3];
+        k.spent = true;
+        self.hurt(
+            g.owner,
+            v,
+            g.facts.impact_damage,
+            damage::hitloc::NONE,
+            g.velocity,
+            now,
+            out,
+        );
+    }
+
+    /// The resting knife fighter `me` can pick up (IW4L `selected_item`: within 90 units of its feet, in sight of
+    /// its eye, best by distance and how straight ahead it is), among those `can_take` accepts (by weapon).
+    pub fn knife_in_reach(
+        &self,
+        clip: &MapClip<'_>,
+        me: usize,
+        can_take: impl Fn(u32) -> bool,
+    ) -> Option<usize> {
+        let f = &self.fighters[me];
+        let feet = f.player.ps.origin;
+        let eye = f.player.eye();
+        let fwd = f.player.camera(4.0 / 3.0).forward();
+        let mut best: Option<(f32, usize)> = None;
+        for (i, g) in self.grenades.iter().enumerate() {
+            if !g.is_knife()
+                || !g.resting
+                || !can_take(g.weapon)
+                || dist2(g.origin, feet) > 90.0 * 90.0
+            {
+                continue;
+            }
+            let d: [f32; 3] = core::array::from_fn(|k| g.origin[k] - eye[k]);
+            let dist = libm::sqrtf(d.iter().map(|x| x * x).sum());
+            if dist > 160.0 || clip.trace(eye, g.origin, [0.0; 3], [0.0; 3], 0x11).fraction < 1.0 {
+                continue;
+            }
+            let dot = if dist > 0.0 {
+                (0..3).map(|k| fwd[k] * d[k] / dist).sum()
+            } else {
+                0.0
+            };
+            let score = dist + (1.0 - (dot + 1.0) * 0.5) * 256.0;
+            if best.is_none_or(|(s, _)| score < s) {
+                best = Some((score, i));
+            }
+        }
+        best.map(|(_, i)| i)
     }
 
     /// Put fighter `v` under a flash or stun shock for `secs` seconds (a longer one already running stays).

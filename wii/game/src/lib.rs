@@ -950,6 +950,8 @@ fn run_map(
     let mut aim_targets: Vec<look::AimTarget> = Vec::with_capacity(BOTS);
     // The current field of view over the hip one (look speed and aim assist scale with the zoom).
     let mut hip_fov_scale = 1.0f32;
+    // When X started being held over a knife you can pick up (IW4L: the use button held 250 ms takes the item).
+    let mut use_hold_ms: Option<u32> = None;
     // Fixed-step clock for the player: milliseconds × 3 not yet simulated, and steps taken.
     let mut tick_acc3 = 0u32;
     // Largest stick and trigger values seen (calibration: IW4 needs 105 of 127 forward to sprint).
@@ -1080,6 +1082,33 @@ fn run_map(
         let c_stick = sticks.normalize(1, pad.cx, pad.cy);
         let (forward, right) = look::to_move(main_stick);
         let ads_held = pad.held & ffi::BTN_L != 0 || pad.l > 128;
+        // A thrown knife in reach: X (MW2's use / reload button) picks it up instead of reloading.
+        let knife_near = match (arena.as_ref(), clip.as_ref()) {
+            (Some(a), Some(c)) if life.alive() && !flying => a.knife_in_reach(c, 0, |w| {
+                arsenal.gun().is_some_and(|g| g.can_pick_up_offhand(w))
+            }),
+            _ => None,
+        };
+        let x_held = pad.held & ffi::BTN_X != 0;
+        let reload_held = x_held && knife_near.is_none();
+        match (knife_near, x_held) {
+            (Some(k), true) => {
+                let since = *use_hold_ms.get_or_insert(now);
+                if now.wrapping_sub(since) >= 250
+                    && let Some(a) = arena.as_mut()
+                {
+                    let w = a.grenades[k].weapon;
+                    if let Some(g) = arsenal.guns[arsenal.active].as_mut()
+                        && g.pick_up_offhand(w)
+                    {
+                        a.grenades.swap_remove(k);
+                        devlog::event(now, "pickup", format_args!("weapon={w}"));
+                    }
+                    use_hold_ms = None;
+                }
+            }
+            _ => use_hold_ms = None,
+        }
         // Aim-assist targets: living bots in clear view of your eye (their hull box and chest).
         aim_targets.clear();
         if let (Some(a), Some(p), Some(c)) = (arena.as_ref(), player.as_ref(), clip.as_ref())
@@ -1178,7 +1207,7 @@ fn run_map(
                             sprint: pad.held & ffi::BTN_Z != 0,
                             ads: ads_held,
                             fire: pad.held & ffi::BTN_R != 0 || pad.r > 100,
-                            reload: pad.held & ffi::BTN_X != 0,
+                            reload: reload_held,
                         },
                         &weapon_move,
                         tick_ms,
@@ -1224,7 +1253,7 @@ fn run_map(
                             tick_ms,
                             &GunInput {
                                 fire: pad.held & ffi::BTN_R != 0 || pad.r > 100,
-                                reload: pad.held & ffi::BTN_X != 0,
+                                reload: reload_held,
                                 // D-pad right: melee (MW2's console melee is a stick click; the pad has none).
                                 melee: pad.held & ffi::BTN_RIGHT != 0,
                                 // D-pad up: lethal grenade, D-pad down: tactical (held to cook, as the button).

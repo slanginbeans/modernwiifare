@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 /// 10: every weapon animation slot in the view files, first-person weapon movement (`WFPV`).
 /// 11: thrown weapons' numbers (`WEQP`). 12: team deathmatch rules, friendly compass icon.
 /// 13: flashbang and stun durations, their shock files. 14: sound distances, thrown weapons' world sounds.
-pub const REVISION: u32 = 14;
+/// 15: thrown weapons' impact damage.
+pub const REVISION: u32 = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

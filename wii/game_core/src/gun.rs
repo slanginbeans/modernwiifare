@@ -200,6 +200,32 @@ impl Gun {
             .map(|r| (r.weapon, r.ammo))
     }
 
+    /// Pick one of thrown weapon `weapon` back up (a throwing knife): true when it is carried and not full (IW4L
+    /// `projectile_pickup_ammo`: one more, up to a clip of one; start ammo here, MW2's knife carries one).
+    pub fn pick_up_offhand(&mut self, weapon: u32) -> bool {
+        let Some(r) = self
+            .offhand
+            .inventory
+            .iter_mut()
+            .find(|r| r.weapon == weapon && r.weapon != 0)
+        else {
+            return false;
+        };
+        if r.ammo >= 1 {
+            return false;
+        }
+        r.ammo += 1;
+        true
+    }
+
+    /// Whether weapon `weapon` is carried as a grenade with room for one more.
+    pub fn can_pick_up_offhand(&self, weapon: u32) -> bool {
+        self.offhand
+            .inventory
+            .iter()
+            .any(|r| r.weapon == weapon && r.weapon != 0 && r.ammo < 1)
+    }
+
     /// Hand the grenades over to the gun switched to (they belong to the player, not the gun).
     pub fn take_offhands(&mut self, from: &Gun) {
         self.offhand.inventory = from.offhand.inventory;
