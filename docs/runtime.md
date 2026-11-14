@@ -55,7 +55,7 @@ Look and aim are IW4L's gamepad model (`game_core::look`): a 12% radial dead zon
 weapon's ranges (slowdown over a target, lock-on that follows it, a short snap when you start aiming down sights).
 The GameCube sticks stop short of their full range, so each stick's full deflection is learned from how far you push
 it (once fully pushed, full forward reaches IW4's sprint threshold). ADS zooms to each weapon's own field of view
-(IW4L `calc_fov`); the first-person gun doesn't move to its sights yet.
+(IW4L `calc_fov`), and the first-person gun comes up to its sights through the weapon's ADS clips (see below).
 
 Controls in a match (IW4L movement and the map's collision): main stick move, C-stick look, **A** jump, **B** crouch
 (held), **Z** sprint, **L** ADS, **R** fire, **X** reload, **Y** switch weapon (the gun drops, then the other raises,
@@ -65,9 +65,9 @@ calls in your newest killstreak reward, **D-pad down** toggles the performance o
 GPU-wait ms, triangles (of which static models), draws, state changes, visible cells, models, position; see
 `docs/perf.md`). A pack without a `CLIP` section starts in free fly.
 
-Perks, equipment, special grenades, deathstreaks and killstreaks are chosen and saved but do nothing in a match yet.
+Equipment, special grenades and deathstreaks are chosen and saved but do nothing in a match yet.
 Weapons with attachments use the attachment variant's combat numbers (`m4_acog_mp` ...) but the base weapon's
-first-person model. Switching weapons raises the other one at once (no drop animation of the first yet).
+first-person model.
 
 Solid colour screens (START goes back to the menu): red = no SD card or no such pack, magenta = the pack failed its
 checks (or is from an older converter: convert again), orange = out of memory or texture slots.
@@ -114,11 +114,20 @@ No distance falloff or panning yet: there are no other players to hear.
 Not yet: damage to players, other weapons and attachments.
 
 ## First-person model
-The M4A1's view hands and gun (`common.wpk`, 8.4k triangles, 101 bones, 17 animations), posed and skinned on the CPU
-each frame (`game_core::viewmodel`) and drawn after the world in the front slice of the depth range, so it never
-clips into walls. Which animation plays comes from IW4L's weapon state machine (raise, fire, reload, empty reload,
-sprint, drop...), so the timing is the game's. Parts the base weapon hides (sights, heartbeat sensor) are left out at
-conversion. Lighting is flat for now (MW2 lights it from the light grid). Check it on the PC:
+Each weapon's view hands and gun (`views/<weapon>.wpk`: every animation slot the weapon names, e.g. 22 for the
+M4A1), posed and skinned on the CPU each frame and drawn after the world in the front slice of the depth range, so
+it never clips into walls.
+- Animation (`game_core::weapon_anim`, IW4L's viewmodel anim tree): IW4L's weapon state machine says which clip
+  starts (raise, first raise, quick / empty raise and drop, fire, ADS fire, last shot, rechamber, reload, empty
+  reload, shotgun reload start / loop / end, melee, sprint in / loop / out ...); each action clip plays at the rate
+  that fits its weapon timer (a reload lasts the weapon's reload time; Sleight of Hand halves it), idle waits for an
+  action clip to finish; the ADS up / down clips are scrubbed by how far the gun is up as overlays, so the gun comes
+  to its sights; every weighted clip is blended per bone.
+- Placement (`game_core::weapon_view`, IW4L's `weapon_placement_assemble`): the gun lags behind turning (the
+  weapon's sway numbers, hip and ADS), bobs with your steps, sways at idle, shifts with stance and movement
+  (`standMove` .. `proneRot`), and kicks with recoil. The numbers come from `WFPV` in `common.wpk`.
+Parts the base weapon hides (sights, heartbeat sensor) are left out at conversion. Lighting is flat for now (MW2
+lights it from the light grid). Check it on the PC:
 `mwf-convert preview <map.wpk> --viewmodel out/packs/common.wpk [--anim <slot> --time <s>]` (slot 9 = reload).
 Not measured yet: the CPU cost of skinning 7.6k vertices per frame on Broadway.
 

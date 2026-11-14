@@ -1,15 +1,23 @@
-//! The first-person model on the Wii: decoded from `common.wpk` once per map, posed and skinned on the CPU each frame
-//! (game_core::viewmodel), drawn from prebuilt display lists over positions written to MEM2.
+//! The first-person model on the Wii: decoded from the weapon's view file when its class is equipped, animated as
+//! MW2's viewmodel anim tree (`game_core::weapon_anim`: every weapon animation slot, clips fitted to the weapon's
+//! timers, the ADS overlay, per-bone blending), placed as MW2 places the gun (`game_core::weapon_view`: view sway,
+//! bob, idle sway, stance and movement offsets, recoil), skinned on the CPU, and drawn from prebuilt display lists
+//! over positions written to MEM2.
 //!
 //! Lighting is a flat ×1 for now (MW2 lights the viewmodel from the light grid at the player).
 
 use alloc::vec::Vec;
 
 use game_core::gfx::{DrawState, Gfx, Mtx34, TexDesc};
+use game_core::gun::Gun;
 use game_core::viewmodel as vmod;
+use game_core::weapon_anim::{Animator, BlendScratch, Playing, Timers, pose_blend};
+use game_core::weapon_view::{WeaponView, eye_transform};
+use playerstate_iw4::PlayerState;
 use wpk::records::{self, NONE, TextureRecord, texture_flags};
 use wpk::sound::WeaponSounds;
-use wpk::view::{Clip, ViewModel};
+use wpk::view::ViewModel;
+use wpk::weapon::FpvRecord;
 
 use crate::ffi;
 
@@ -35,15 +43,19 @@ pub struct View {
     world: Vec<Mtx34>,
     skin: Vec<Mtx34>,
     skinned: Vec<[f32; 3]>,
-    /// The clip playing: (slot, restart toggle, start time in ms).
-    playing: (u8, bool, u32),
+    /// The anim tree (built for the gun it was first drawn with), the clips it plays, blend scratch.
+    anim: Option<(u32, Animator)>,
+    playing: Vec<Playing>,
+    blend: BlendScratch,
+    /// Where the gun sits (sway, bob ...).
+    placement: WeaponView,
     /// Model-to-eye matrix of the last draw (for the muzzle flash).
     last_eye: Option<Mtx34>,
     /// The weapon's sounds (`WSND`; empty when the pack has none) and the clips they play.
     pub sounds: WeaponSounds,
     bank: Option<crate::sound::Sounds<'static>>,
-    /// Fraction of the playing clip at the last draw (`None` right after a clip starts).
-    last_frac: Option<f32>,
+    /// The clip notetracks follow (action, else idle) and its fraction at the last draw.
+    last_frac: Option<(usize, f32)>,
     /// Notetrack sounds the last draw passed.
     notes_due: Vec<u16>,
 }
@@ -143,7 +155,10 @@ impl View {
             world: Vec::with_capacity(vm.bones.len()),
             skin: Vec::with_capacity(vm.bones.len()),
             skinned: Vec::with_capacity(n),
-            playing: (wpk::view::slot::IDLE, false, 0),
+            anim: None,
+            playing: Vec::with_capacity(8),
+            blend: BlendScratch::default(),
+            placement: WeaponView::default(),
             last_eye: None,
             sounds,
             bank,
@@ -192,38 +207,52 @@ impl View {
         ])
     }
 
-    /// Pose for the gun's animation (`slot`, restart toggle) at `now_ms`, skin, and draw. Call after the world.
-    /// `gun_kick`: the gun's recoil (pitch up, yaw left, degrees), turning the model about the eye.
+    /// Animate for `gun`'s state over `dt` seconds, place by the player's state `ps` and the weapon's first-person
+    /// numbers, skin, and draw. Call after the world.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         gfx: &mut impl Gfx,
-        slot: u8,
-        restart: bool,
+        gun: &Gun,
+        ps: &PlayerState,
+        fpv: &FpvRecord,
+        dt: f32,
         now_ms: u32,
-        gun_kick: [f32; 2],
     ) {
-        if (slot, restart) != (self.playing.0, self.playing.1) {
-            self.playing = (slot, restart, now_ms);
+        // The anim tree, built for this gun's timers (again when the gun changes).
+        let index = gun.weapon_index();
+        if self.anim.as_ref().is_none_or(|(w, _)| *w != index) {
+            self.anim = Some((index, Animator::new(&self.vm, Timers::of(gun.facts()))));
+            self.placement.reset();
             self.last_frac = None;
         }
-        let time = now_ms.wrapping_sub(self.playing.2) as f32 / 1000.0;
-        let clip: Option<&Clip> = self
-            .vm
-            .clip(slot)
-            .or_else(|| self.vm.clip(wpk::view::slot::IDLE));
-        // Notetrack sounds passed since the last frame.
+        let Some((_, anim)) = self.anim.as_mut() else {
+            return;
+        };
+        anim.set_perks(ps.perks);
+        anim.weap_anim(gun.weap_anim_raw(), gun.ammo().0 == 0);
+        anim.advance(dt);
+        anim.ads(ps.f_weapon_pos_frac);
+        anim.playing(&mut self.playing);
+        // Notetrack sounds of the clip in front (the action, else the idle) passed since the last frame.
         self.notes_due.clear();
-        if let Some(c) = clip {
+        if let Some((clip, time)) = anim.action().or_else(|| anim.idle())
+            && let Some(c) = self.vm.clips.get(clip)
+        {
             let frac = vmod::fraction(c, time);
+            let from = self
+                .last_frac
+                .filter(|(k, f)| *k == clip && *f <= frac)
+                .map(|(_, f)| f);
             self.notes_due.extend(game_core::weapon_sound::notes_passed(
                 &self.sounds.notes,
                 c.slot,
-                self.last_frac,
+                from,
                 frac,
             ));
-            self.last_frac = Some(frac);
+            self.last_frac = Some((clip, frac));
         }
-        vmod::pose(&self.vm, clip.map(|c| (c, time)), &mut self.world);
+        pose_blend(&self.vm, &self.playing, &mut self.blend, &mut self.world);
         vmod::skin_matrices(&self.vm, &self.world, &mut self.skin);
         vmod::skin(&self.vm, &self.skin, &mut self.skinned);
         self.positions.copy_from_slice(&self.skinned);
@@ -235,16 +264,18 @@ impl View {
             ffi::mwf_view_begin(FOVY, ZNEAR, ZFAR);
             ffi::mwf_view_arrays(self.positions.as_ptr().cast(), self.attributes);
         }
-        let (p, y) = (gun_kick[0].to_radians(), gun_kick[1].to_radians());
-        let (sp, cp, sy, cy) = (libm::sinf(p), libm::cosf(p), libm::sinf(y), libm::cosf(y));
-        // Eye space: yaw about +y (left positive), then pitch about +x (muzzle up positive).
-        let kick: Mtx34 = [
-            [cy, 0.0, sy, 0.0],
-            [sp * sy, cp, -sp * cy, 0.0],
-            [-cp * sy, sp, cp * cy, 0.0],
-        ];
+        // MW2's weapon placement (sway, bob, idle sway, movement offsets, recoil) about the eye.
+        let placed = self.placement.update(
+            ps,
+            gun.facts(),
+            fpv,
+            gun.gun_max(),
+            gun.gun_recoil_state(),
+            dt,
+            now_ms,
+        );
         let eye = vmod::eye_from_model(&self.world[usize::from(self.vm.view_bone)]);
-        let eye = vmod::mul(&kick, &eye);
+        let eye = vmod::mul(&eye_transform(&placed), &eye);
         gfx.pos_matrix(&eye);
         self.last_eye = Some(eye);
         let mut last: Option<DrawState> = None;

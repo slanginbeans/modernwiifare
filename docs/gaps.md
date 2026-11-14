@@ -26,7 +26,9 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
   learned from use (full forward reaches the sprint threshold); ADS zoom with `hud_iw4::calc_fov_from_ads`.
 
 ## Next, gameplay (ranked)
-1. **Viewmodel ADS pose** (the gun moving to its sights) and confirm the stick range from the logs.
+1. ~~Viewmodel ADS pose~~ done with the full viewmodel anim tree (every slot, timer-fitted rates, ADS overlay,
+   per-bone blend) and MW2's weapon placement (view sway, bob, idle sway, movement offsets). Still to confirm: the
+   stick range from the logs; the first-person lighting from the light grid.
 2. ~~Weapon switching through IW4L~~ done: the gun asks for the other weapon (`usercmd.weapon`), IW4L drops it,
    the other takes the hand and raises (first raise once a life); refused mid-melee, cancelled by asking again.
 3. **Melee**: done without the lunge. The melee button goes through IW4L's hand driver (`weapon_hands`:

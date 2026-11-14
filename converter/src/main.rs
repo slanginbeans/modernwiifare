@@ -706,6 +706,7 @@ fn run_common(args: &[String]) -> ExitCode {
             wpk::weapon::KickRecord,
             wpk::weapon::MoveRecord,
             wpk::weapon::AimRecord,
+            wpk::weapon::FpvRecord,
         ),
     );
     let mut both: Vec<Row> = links
@@ -717,13 +718,14 @@ fn run_common(args: &[String]) -> ExitCode {
                 .weapon_kick
                 .iter()
                 .zip(&links.weapon_moves)
-                .zip(&links.weapon_aims),
+                .zip(&links.weapon_aims)
+                .zip(&links.weapon_fpv),
         )
         .filter(|((n, _), _)| !n.is_empty())
-        .map(|((n, c), ((k, m), a))| {
+        .map(|((n, c), (((k, m), a), v))| {
             // MW2's per-location damage table, baked into each weapon as IW4L does.
             let c = weapons::with_global_location(*c, links.lochit);
-            (wpk::weapon::WeaponRecord::new(n, c), (*k, *m, *a))
+            (wpk::weapon::WeaponRecord::new(n, c), (*k, *m, *a, *v))
         })
         .collect();
     both.sort_by_key(|(w, _)| w.name);
@@ -732,6 +734,7 @@ fn run_common(args: &[String]) -> ExitCode {
     let kicks: Vec<_> = extra.iter().map(|e| e.0).collect();
     let moves: Vec<_> = extra.iter().map(|e| e.1).collect();
     let aims: Vec<_> = extra.iter().map(|e| e.2).collect();
+    let fpvs: Vec<_> = extra.iter().map(|e| e.3).collect();
     let files: HashSet<String> = weapons.iter().map(|w| w.name().to_owned()).collect();
     println!(
         "hit-location damage table: {}",
@@ -776,6 +779,11 @@ fn run_common(args: &[String]) -> ExitCode {
         wpk::tag::WEAPON_AIM,
         aims.len() as u32,
         wpk::records::encode(&aims),
+    );
+    b.section(
+        wpk::tag::WEAPON_FPV,
+        fpvs.len() as u32,
+        wpk::records::encode(&fpvs),
     );
     b.section(wpk::tag::CLASSES, 0, catalog.encode());
     // Menus: MW2's fonts and baked screens, with their textures.

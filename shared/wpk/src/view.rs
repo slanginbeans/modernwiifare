@@ -12,48 +12,57 @@ use alloc::vec::Vec;
 
 use crate::be::{self, Push};
 
-/// Weapon animation slots carried (IW4 `weapAnimFiles` indices).
+/// Weapon animation slots (IW4 `weapAnimFiles` indices); every one a weapon names is carried.
 pub mod slot {
     pub const IDLE: u8 = 0x1;
     pub const EMPTY_IDLE: u8 = 0x2;
     pub const FIRE: u8 = 0x3;
+    pub const HOLD_FIRE: u8 = 0x4;
     pub const LASTSHOT: u8 = 0x5;
     pub const RECHAMBER: u8 = 0x6;
     pub const MELEE: u8 = 0x7;
+    pub const MELEE_CHARGE: u8 = 0x8;
     pub const RELOAD: u8 = 0x9;
     pub const RELOAD_EMPTY: u8 = 0xA;
+    pub const RELOAD_START: u8 = 0xB;
+    pub const RELOAD_END: u8 = 0xC;
     pub const RAISE: u8 = 0xD;
     pub const FIRST_RAISE: u8 = 0xE;
+    pub const BREACH_RAISE: u8 = 0xF;
     pub const DROP: u8 = 0x10;
+    pub const ALT_RAISE: u8 = 0x11;
+    pub const ALT_DROP: u8 = 0x12;
+    pub const QUICK_RAISE: u8 = 0x13;
+    pub const QUICK_DROP: u8 = 0x14;
+    pub const EMPTY_RAISE: u8 = 0x15;
+    pub const EMPTY_DROP: u8 = 0x16;
     pub const SPRINT_IN: u8 = 0x17;
     pub const SPRINT_LOOP: u8 = 0x18;
     pub const SPRINT_OUT: u8 = 0x19;
+    pub const STUNNED_START: u8 = 0x1A;
+    pub const STUNNED_LOOP: u8 = 0x1B;
+    pub const STUNNED_END: u8 = 0x1C;
+    pub const DETONATE: u8 = 0x1D;
+    pub const NIGHTVISION_WEAR: u8 = 0x1E;
+    pub const NIGHTVISION_REMOVE: u8 = 0x1F;
     pub const ADS_FIRE: u8 = 0x20;
     pub const ADS_LASTSHOT: u8 = 0x21;
+    pub const ADS_RECHAMBER: u8 = 0x22;
     pub const ADS_UP: u8 = 0x23;
     pub const ADS_DOWN: u8 = 0x24;
-    pub const ALL: [u8; 18] = [
-        IDLE,
-        EMPTY_IDLE,
-        FIRE,
-        LASTSHOT,
-        RECHAMBER,
-        MELEE,
-        RELOAD,
-        RELOAD_EMPTY,
-        RAISE,
-        FIRST_RAISE,
-        DROP,
-        SPRINT_IN,
-        SPRINT_LOOP,
-        SPRINT_OUT,
-        ADS_FIRE,
-        ADS_LASTSHOT,
-        ADS_UP,
-        ADS_DOWN,
-    ];
+    /// Number of slots (0 is IW4's root, never a clip).
+    pub const COUNT: usize = 0x25;
+    /// Every slot a clip can fill.
+    pub const ALL: [u8; COUNT - 1] = {
+        let mut a = [0u8; COUNT - 1];
+        let mut i = 0;
+        while i < COUNT - 1 {
+            a[i] = (i + 1) as u8;
+            i += 1;
+        }
+        a
+    };
 }
-
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Bone {
     /// Parent bone index, or -1 for a root.

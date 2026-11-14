@@ -322,6 +322,119 @@ impl crate::records::Record for AimRecord {
     }
 }
 
+/// How the first-person weapon moves (IW4 weapon def, `WFPV`, parallel to `WEAP`): view sway (hip and ADS: max
+/// angle, pitch, yaw, horizontal and vertical scales), idle sway (ADS / hip amount and speed, crouch and prone
+/// factors), the stance / movement offsets (`standMove` .. `proneRot`, rates and minimum speeds), the crouched and
+/// prone gun offsets, the ADS aim pitch and bob factors. Read by IW4L's `weapon_placement_assemble` on the Wii.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FpvRecord {
+    pub sway_hip: [f32; 5],
+    pub sway_ads: [f32; 5],
+    /// ADS amount, hip amount, ADS speed, hip speed, crouch factor, prone factor.
+    pub idle: [f32; 6],
+    /// stand move, stand rot, strafe move, strafe rot, ducked move, ducked rot, prone move, prone rot.
+    pub movement: [[f32; 3]; 8],
+    /// pos move rate, pos prone move rate, stand / ducked / prone move min speed, pos rot rate, pos prone rot rate.
+    pub movement_rates: [f32; 7],
+    pub ducked_ofs: [f32; 3],
+    pub prone_ofs: [f32; 3],
+    pub ads_aim_pitch: f32,
+    pub ads_bob_factor: f32,
+    pub ads_view_bob_mult: f32,
+}
+
+impl Default for FpvRecord {
+    fn default() -> Self {
+        FpvRecord {
+            sway_hip: [0.0; 5],
+            sway_ads: [0.0; 5],
+            idle: [0.0; 6],
+            movement: [[0.0; 3]; 8],
+            movement_rates: [0.0; 7],
+            ducked_ofs: [0.0; 3],
+            prone_ofs: [0.0; 3],
+            ads_aim_pitch: 0.0,
+            ads_bob_factor: 0.0,
+            ads_view_bob_mult: 0.0,
+        }
+    }
+}
+
+impl FpvRecord {
+    const FLOATS: usize = 56;
+
+    fn floats(&self) -> [f32; Self::FLOATS] {
+        let mut v = [0.0; Self::FLOATS];
+        let mut i = 0;
+        let mut put = |x: f32| {
+            v[i] = x;
+            i += 1;
+        };
+        self.sway_hip.iter().for_each(|&x| put(x));
+        self.sway_ads.iter().for_each(|&x| put(x));
+        self.idle.iter().for_each(|&x| put(x));
+        self.movement.iter().flatten().for_each(|&x| put(x));
+        self.movement_rates.iter().for_each(|&x| put(x));
+        self.ducked_ofs.iter().for_each(|&x| put(x));
+        self.prone_ofs.iter().for_each(|&x| put(x));
+        put(self.ads_aim_pitch);
+        put(self.ads_bob_factor);
+        put(self.ads_view_bob_mult);
+        v
+    }
+
+    fn from_floats(v: &[f32; Self::FLOATS]) -> FpvRecord {
+        let mut i = 0;
+        let mut take = || {
+            i += 1;
+            v[i - 1]
+        };
+        let arr = |n: usize, take: &mut dyn FnMut() -> f32| -> [f32; 8] {
+            let mut a = [0.0; 8];
+            for x in a.iter_mut().take(n) {
+                *x = take();
+            }
+            a
+        };
+        let sh = arr(5, &mut take);
+        let sa = arr(5, &mut take);
+        let id = arr(6, &mut take);
+        let mut movement = [[0.0; 3]; 8];
+        for m in &mut movement {
+            for x in m.iter_mut() {
+                *x = take();
+            }
+        }
+        let mr = arr(7, &mut take);
+        let d = arr(3, &mut take);
+        let p = arr(3, &mut take);
+        FpvRecord {
+            sway_hip: [sh[0], sh[1], sh[2], sh[3], sh[4]],
+            sway_ads: [sa[0], sa[1], sa[2], sa[3], sa[4]],
+            idle: [id[0], id[1], id[2], id[3], id[4], id[5]],
+            movement,
+            movement_rates: [mr[0], mr[1], mr[2], mr[3], mr[4], mr[5], mr[6]],
+            ducked_ofs: [d[0], d[1], d[2]],
+            prone_ofs: [p[0], p[1], p[2]],
+            ads_aim_pitch: take(),
+            ads_bob_factor: take(),
+            ads_view_bob_mult: take(),
+        }
+    }
+}
+
+impl crate::records::Record for FpvRecord {
+    const LEN: usize = FpvRecord::FLOATS * 4;
+    fn write(&self, o: &mut Vec<u8>) {
+        for v in self.floats() {
+            o.f32(v);
+        }
+    }
+    fn read(b: &[u8]) -> Self {
+        let v: [f32; FpvRecord::FLOATS] = core::array::from_fn(|i| be::f32(b, i * 4));
+        FpvRecord::from_floats(&v)
+    }
+}
 /// The record named `name` in a `WEAP` section, with its index.
 pub fn find_indexed(section: &[u8], name: &str) -> Option<(u32, WeaponRecord)> {
     section.chunks_exact(LEN).enumerate().find_map(|(i, r)| {

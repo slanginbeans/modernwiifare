@@ -90,6 +90,8 @@ pub mod tag {
     pub const WEAPON_MOVE: Tag = *b"WMOV";
     /// Each weapon's ADS zoom and aim-assist ranges (`weapon::AimRecord`, parallel to `WEAP`).
     pub const WEAPON_AIM: Tag = *b"WAIM";
+    /// How each first-person weapon moves (`weapon::FpvRecord`, parallel to `WEAP`).
+    pub const WEAPON_FPV: Tag = *b"WFPV";
     /// Sound alias lists ([`crate::sound::AliasRecord`]).
     pub const SOUND_ALIASES: Tag = *b"SNDA";
     /// Sound variants ([`crate::sound::VariantRecord`]).

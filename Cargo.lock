@@ -444,6 +444,7 @@ dependencies = [
  "gamemode_iw4",
  "hud_iw4",
  "libm",
+ "math_iw4",
  "movement_iw4",
  "playerstate_iw4",
  "trace_iw4",
@@ -759,6 +760,7 @@ dependencies = [
  "dpvs_iw4",
  "game_core",
  "libm",
+ "playerstate_iw4",
  "wpk",
 ]
 

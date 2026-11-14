@@ -60,6 +60,61 @@ pub fn moves(g: &WeaponGeometry) -> wpk::weapon::MoveRecord {
     }
 }
 
+/// How the first-person weapon moves: view sway, idle sway, stance / movement offsets, ADS pitch and bob.
+pub fn fpv(g: &WeaponGeometry) -> wpk::weapon::FpvRecord {
+    let s = &g.sway;
+    let m = &g.movement;
+    let i = &g.idle;
+    wpk::weapon::FpvRecord {
+        sway_hip: [
+            s.sway_max_angle,
+            s.sway_pitch_scale,
+            s.sway_yaw_scale,
+            s.sway_horiz_scale,
+            s.sway_vert_scale,
+        ],
+        sway_ads: [
+            s.ads_sway_max_angle,
+            s.ads_sway_pitch_scale,
+            s.ads_sway_yaw_scale,
+            s.ads_sway_horiz_scale,
+            s.ads_sway_vert_scale,
+        ],
+        idle: [
+            i.ads_idle_amount,
+            i.hip_idle_amount,
+            i.ads_idle_speed,
+            i.hip_idle_speed,
+            i.idle_crouch_factor,
+            i.idle_prone_factor,
+        ],
+        movement: [
+            m.stand_move,
+            m.stand_rot,
+            m.strafe_move,
+            m.strafe_rot,
+            m.ducked_move,
+            m.ducked_rot,
+            m.prone_move,
+            m.prone_rot,
+        ],
+        movement_rates: [
+            m.pos_move_rate,
+            m.pos_prone_move_rate,
+            m.stand_move_min_speed,
+            m.ducked_move_min_speed,
+            m.prone_move_min_speed,
+            m.pos_rot_rate,
+            m.pos_prone_rot_rate,
+        ],
+        ducked_ofs: g.ducked_ofs,
+        prone_ofs: g.prone_ofs,
+        ads_aim_pitch: g.ads_aim_pitch,
+        ads_bob_factor: g.ads_bob_factor,
+        ads_view_bob_mult: g.ads_view_bob_mult,
+    }
+}
+
 /// ADS zoom and aim-assist ranges.
 pub fn aims(g: &WeaponGeometry) -> wpk::weapon::AimRecord {
     wpk::weapon::AimRecord {

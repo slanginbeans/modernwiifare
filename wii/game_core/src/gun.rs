@@ -236,20 +236,6 @@ impl Gun {
         (self.hand.clip, self.hand.stock)
     }
 
-    /// The first-person animation the weapon state machine wants: (IW4 anim slot, restart toggle). The toggle flips
-    /// each time an animation is (re)started, so a repeated fire restarts the clip. Idle is the empty idle when the
-    /// magazine is empty.
-    pub fn anim(&self) -> (u8, bool) {
-        let raw = self.hand.weap_anim as u32;
-        let restart = raw & weapon_iw4::WEAP_ANIM_RESTART_BIT != 0;
-        let slot = match weapon_iw4::slot_for_weap_anim_event(raw) {
-            Some(s) => s as u8,
-            None if self.hand.clip == 0 => wpk::view::slot::EMPTY_IDLE,
-            None => wpk::view::slot::IDLE,
-        };
-        (slot, restart)
-    }
-
     /// Index of this weapon in `common.wpk`'s weapon list (set by whoever built the gun).
     pub fn weapon_index(&self) -> u32 {
         self.hand.weapon
@@ -334,6 +320,22 @@ impl Gun {
     /// Viewmodel kick, degrees (pitch, yaw).
     pub fn gun_kick(&self) -> [f32; 2] {
         self.gun_recoil.angles
+    }
+
+    /// The gun's recoil springs (MW2's weapon placement turns the gun by them).
+    pub fn gun_recoil_state(&self) -> GunRecoilPlacementState {
+        self.gun_recoil
+    }
+
+    /// The gun's largest recoil turn (pitch, yaw degrees; the kick record's, 0 without one).
+    pub fn gun_max(&self) -> [f32; 2] {
+        self.kick
+            .map_or([0.0; 2], |k| [k.gun_max_pitch, k.gun_max_yaw])
+    }
+
+    /// The raw `weap_anim` word (IW4: the weapon animation event and its restart bit).
+    pub fn weap_anim_raw(&self) -> i32 {
+        self.hand.weap_anim
     }
 
     /// A shot's recoil impulse (IW4L `ViewKickState::seed_fire_scaled`).

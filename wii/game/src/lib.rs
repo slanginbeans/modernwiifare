@@ -602,6 +602,11 @@ fn run_map(
     input: &mut front::Input,
 ) -> Exit {
     let weapons = weapon_section(common);
+    // How each first-person weapon moves (sway, bob ...; empty with an older pack).
+    let fpvs = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::WEAPON_FPV))
+        .map_or(&[][..], |s| s.data);
     // MW2's match rules from the user's scripts (stock values with an older pack).
     let rules = wpk::Pack::parse(common, false)
         .ok()
@@ -1317,13 +1322,15 @@ fn run_map(
         sections[section::BODIES] = lap(&mut mark);
         if !flying
             && life.alive()
-            && let (Some(v), Some(g)) = (
+            && let (Some(v), Some(g), Some(p)) = (
                 arsenal.views[arsenal.active].as_mut(),
                 arsenal.guns[arsenal.active].as_ref(),
+                player.as_ref(),
             )
         {
-            let (slot, restart) = g.anim();
-            v.draw(gfx, slot, restart, now, g.gun_kick());
+            let fpv = wpk::records::get::<wpk::weapon::FpvRecord>(fpvs, g.weapon_index() as usize)
+                .unwrap_or_default();
+            v.draw(gfx, g, &p.ps, &fpv, dt, now);
             v.play_notes();
             // Muzzle flash for 50 ms after a shot: a placeholder additive-looking glow at the gun's tag_flash until
             // MW2's view flash effect is converted.
