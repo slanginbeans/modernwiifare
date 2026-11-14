@@ -19,7 +19,8 @@ use std::path::{Path, PathBuf};
 /// 15: thrown weapons' impact damage. 16: blast cones, claymore and explosives rules.
 /// 17: smoke's sight blockers (`WSMK`). 18: shocks' look control.
 /// 19: footsteps (`STEP`). 20: bullet penetration (`WPEN`, `PENT`).
-pub const REVISION: u32 = 20;
+/// 21: map objectives (`OBJS`: Domination flags).
+pub const REVISION: u32 = 21;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

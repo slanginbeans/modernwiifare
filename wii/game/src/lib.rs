@@ -436,7 +436,7 @@ fn draw_match_hud(
     now: u32,
 ) {
     let mut line = Str::default();
-    if a.mode == arena::Mode::Tdm {
+    if a.mode.teams() {
         // Your team first, as MW2's team score bar.
         let mine = usize::from(a.fighters[0].team);
         let theirs = 3 - mine;
@@ -444,6 +444,32 @@ fn draw_match_hud(
         line.num(a.team_score[mine]);
         line.push_str("  ENEMY ");
         line.num(a.team_score[theirs]);
+        // Domination: each flag's holder (yours, the enemy's, nobody's) and the one you are taking.
+        if let Some(d) = a.dom.as_ref() {
+            for f in &d.flags {
+                line.push_str("  ");
+                let mut l = [0u8; 4];
+                line.push_str(f.letter().encode_utf8(&mut l));
+                line.push_str(match f.owner {
+                    0 => ":--",
+                    t if usize::from(t) == mine => ":US",
+                    _ => ":EN",
+                });
+            }
+            let you = a.fighters[0].player.ps.origin;
+            if let Some(f) = d
+                .flags
+                .iter()
+                .find(|f| usize::from(f.claim) == mine && f.contains(you))
+            {
+                line.push_str("  SECURING ");
+                let mut l = [0u8; 4];
+                line.push_str(f.letter().encode_utf8(&mut l));
+                line.push_str(" ");
+                line.num((f.progress_ms * 100.0 / a.rules.dom_use_ms.max(1) as f32) as u32);
+                line.push_str("%");
+            }
+        }
     } else {
         line.push_str("SCORE ");
         line.num(a.fighters[0].score);
@@ -602,7 +628,7 @@ fn scoreboard(gfx: &mut Shim, input: &mut front::Input, a: &Arena) {
     let title = match a.mode {
         arena::Mode::Ffa if order.first() == Some(&0) => "YOU WIN",
         arena::Mode::Ffa => "MATCH OVER",
-        arena::Mode::Tdm => {
+        arena::Mode::Tdm | arena::Mode::Dom => {
             // Your team first.
             order.sort_by_key(|&i| a.fighters[i].team != a.fighters[0].team);
             match a.leading_team() {
@@ -786,6 +812,11 @@ fn run_map(
             .map(game_core::nav::Navigator::new);
         (vis, clip, nav)
     };
+    // Game-mode objectives (Domination flags; none with an older pack).
+    let objectives: Vec<wpk::records::ObjectiveRecord> = wpk::Pack::parse(bytes, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::OBJECTIVES))
+        .map_or_else(Vec::new, |s| wpk::records::iter(s.data).collect());
     let mut world = match World::load(bytes, vis.as_ref(), gfx) {
         Ok(w) => w,
         Err(game_core::world::LoadError::TooManyTextures) => return fail(0xe08020ff),
@@ -860,7 +891,8 @@ fn run_map(
     // The mode's spawns (free-for-all or team deathmatch spawns when the map has them).
     let spawn_kind = match setup.0 {
         arena::Mode::Ffa => wpk::records::spawn_kind::DM,
-        arena::Mode::Tdm => wpk::records::spawn_kind::TDM,
+        // Domination spawns on the team deathmatch spawns (not MW2's flag-weighted `mp_dom_spawn` choice).
+        arena::Mode::Tdm | arena::Mode::Dom => wpk::records::spawn_kind::TDM,
     };
     let spawn_list: Vec<([f32; 3], f32)> = {
         let dm: Vec<_> = world
@@ -965,6 +997,9 @@ fn run_map(
     let clock = MatchClock::with_limit(ffi::ms(), setup.1.time_limit_ms);
     if let Some(a) = arena.as_mut() {
         a.set_mode(setup.0, setup.1);
+        if setup.0 == arena::Mode::Dom {
+            a.dom = game_core::dom::Domination::from_objectives(&objectives);
+        }
     }
     // Below the lowest spawn point by this much is out of the world.
     let floor_z = world
@@ -1049,6 +1084,7 @@ fn run_map(
             let kind = match setup.0 {
                 arena::Mode::Ffa => "FREE-FOR-ALL",
                 arena::Mode::Tdm => "TEAM DEATHMATCH",
+                arena::Mode::Dom => "DOMINATION",
             };
             let mode = if setup.1.score_limit > 0 {
                 alloc::format!("{kind}: FIRST TO {} POINTS", setup.1.score_limit)
@@ -1511,6 +1547,7 @@ fn run_map(
             );
             a.regen(now);
             a.update_grenades(c, dt, now, &mut events);
+            a.update_objectives(dt * 1000.0, now, &mut events);
             a.footsteps(c, &mut events);
             life = a.fighters[0].life;
             // Hits slow you (IW4 damage timer, set on the arena's copy of you).

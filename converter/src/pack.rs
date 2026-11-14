@@ -224,6 +224,44 @@ pub fn parse_entities(text: &str) -> Vec<BTreeMap<String, String>> {
     out
 }
 
+/// Game-mode objectives from parsed entities: Domination flags (`dom.gsc` `domFlags`: the `flag_primary` and
+/// `flag_secondary` triggers, labelled by `script_label` `_a`, `_b` ...; a trigger radius's `radius` / `height`).
+pub fn objectives(entities: &[BTreeMap<String, String>]) -> Vec<wpk::records::ObjectiveRecord> {
+    let num = |s: &str| -> Vec<f32> {
+        s.split_whitespace()
+            .filter_map(|t| t.parse().ok())
+            .collect()
+    };
+    let mut out = Vec::new();
+    for e in entities {
+        let t = e.get("targetname").map(String::as_str);
+        if !matches!(t, Some("flag_primary" | "flag_secondary")) {
+            continue;
+        }
+        let origin = e.get("origin").map(|o| num(o)).unwrap_or_default();
+        if origin.len() != 3 {
+            continue;
+        }
+        let label = e
+            .get("script_label")
+            .and_then(|l| l.trim_start_matches('_').bytes().next())
+            .map_or(0, |b| b.to_ascii_lowercase().saturating_sub(b'a'));
+        let get = |k: &str| e.get(k).and_then(|v| v.trim().parse::<f32>().ok());
+        let (Some(radius), Some(height)) = (get("radius"), get("height")) else {
+            continue;
+        };
+        out.push(wpk::records::ObjectiveRecord {
+            kind: wpk::records::objective_kind::DOM_FLAG,
+            label,
+            origin: [origin[0], origin[1], origin[2]],
+            radius,
+            height,
+        });
+    }
+    out.sort_by_key(|o| o.label);
+    out
+}
+
 /// Player spawns from parsed entities: TDM (`mp_tdm_spawn*`) and free-for-all (`mp_dm_spawn*`).
 pub fn spawns(entities: &[BTreeMap<String, String>]) -> Vec<SpawnRecord> {
     let mut out = Vec::new();
@@ -955,6 +993,12 @@ pub fn build(
         wpk::tag::SPAWNS,
         spawns.len() as u32,
         records::encode(&spawns),
+    );
+    let objs = objectives(&entities);
+    b.section(
+        wpk::tag::OBJECTIVES,
+        objs.len() as u32,
+        records::encode(&objs),
     );
     let v = &world.vis;
     report.visibility = VisReport {

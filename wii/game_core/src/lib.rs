@@ -23,6 +23,7 @@ pub mod bot;
 pub mod camera;
 pub mod collision;
 pub mod damage;
+pub mod dom;
 pub mod fly;
 pub mod gfx;
 pub mod grenade;

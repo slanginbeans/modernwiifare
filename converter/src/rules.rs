@@ -20,7 +20,9 @@ pub const RANK: &str = "maps/mp/gametypes/_rank.gsc";
 pub const FLASH: &str = "maps/mp/_flashgrenades.gsc";
 pub const SHOCK_CONCUSSION: &str = "shock/concussion_grenade_mp.shock";
 pub const SHOCK_FLASH: &str = "shock/flashbang_mp.shock";
-pub const SCRIPTS: [&str; 11] = [
+pub const DOM: &str = "maps/mp/gametypes/dom.gsc";
+pub const SCRIPTS: [&str; 12] = [
+    DOM,
     TWEAKABLES,
     HEALTH_OVERLAY,
     FFA,
@@ -167,6 +169,7 @@ pub fn missing(r: &Rules) -> Vec<&'static str> {
             (found::SHOCK_STUN, "stun shock"),
             (found::CLAYMORE, "claymore trip"),
             (found::EXPLOSIVES, "explosives per player"),
+            (found::DOM, "Domination"),
         ]
         .into_iter()
         .filter(|(bit, _)| r.found_fx & bit == 0)
@@ -328,6 +331,44 @@ pub fn read(scripts: &HashMap<String, String>) -> Rules {
         {
             r.max_explosives = (v as u32).max(1);
             r.found_fx |= found::EXPLOSIVES;
+        }
+    }
+    // Domination: the limits (`registerTimeLimitDvar` minutes, `registerScoreLimitDvar`), a capture's points
+    // (`registerScoreInfo( "capture", n )`), the flags' use time (`setUseTime( s )` in `domFlags`) and the score
+    // tick (the `wait ( s )` in `updateDomScores`).
+    if let Some(t) = get(DOM) {
+        let first_arg = |f: &str, k: usize| {
+            calls(&t, f, 0)
+                .first()
+                .and_then(|(_, a)| a.get(k).and_then(|s| number(s)))
+        };
+        let capture = calls(&t, "registerScoreInfo", 0)
+            .into_iter()
+            .find(|(_, a)| a.first().is_some_and(|n| n == "capture"))
+            .and_then(|(_, a)| a.get(1).and_then(|s| number(s)));
+        let use_s = function_body(&t, "domFlags").and_then(|b| {
+            calls(b, "setUseTime", 0)
+                .first()
+                .and_then(|(_, a)| a.first().and_then(|s| number(s)))
+        });
+        let tick_s = function_body(&t, "updateDomScores").and_then(|b| {
+            calls(b, "wait", 0)
+                .first()
+                .and_then(|(_, a)| a.first().and_then(|s| number(s)))
+        });
+        if let (Some(tl), Some(sl), Some(cap), Some(u), Some(tick)) = (
+            first_arg("registerTimeLimitDvar", 1),
+            first_arg("registerScoreLimitDvar", 1),
+            capture,
+            use_s,
+            tick_s,
+        ) {
+            r.dom_time_limit_ms = (tl * 60_000.0) as u32;
+            r.dom_score_limit = sl as u32;
+            r.dom_capture_score = cap as u32;
+            r.dom_use_ms = (u * 1000.0) as u32;
+            r.dom_tick_ms = (tick * 1000.0) as u32;
+            r.found_fx |= found::DOM;
         }
     }
     for (name, bit, slot) in [

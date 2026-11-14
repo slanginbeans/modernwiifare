@@ -274,6 +274,7 @@ pub fn game_setup(
                 String::from(match mode {
                     Mode::Ffa => "FREE-FOR-ALL",
                     Mode::Tdm => "TEAM DEATHMATCH",
+                    Mode::Dom => "DOMINATION",
                 }),
             ),
             value("SCORE LIMIT", score),
@@ -291,7 +292,8 @@ pub fn game_setup(
             Step::Accept(0) => {
                 *mode = match mode {
                     Mode::Ffa => Mode::Tdm,
-                    Mode::Tdm => Mode::Ffa,
+                    Mode::Tdm => Mode::Dom,
+                    Mode::Dom => Mode::Ffa,
                 };
                 *limits = Limits::of(rules, *mode);
             }

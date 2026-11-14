@@ -138,6 +138,12 @@ pub enum Event {
         gait: usize,
         surface: usize,
     },
+    /// A Domination flag was taken.
+    FlagCaptured {
+        label: u8,
+        team: u8,
+        by: Option<usize>,
+    },
     /// A claymore saw an enemy (it goes off after the grace period).
     ClaymoreTripped {
         origin: [f32; 3],
@@ -184,6 +190,15 @@ pub enum Mode {
     Ffa,
     /// Team deathmatch (`war.gsc`).
     Tdm,
+    /// Domination (`dom.gsc`): the map's flags.
+    Dom,
+}
+
+impl Mode {
+    /// Whether players are on teams.
+    pub fn teams(self) -> bool {
+        self != Mode::Ffa
+    }
 }
 
 pub const TEAM_NONE: u8 = 0;
@@ -201,8 +216,16 @@ pub struct Limits {
 
 impl Limits {
     pub fn of(rules: &Rules, mode: Mode) -> Limits {
-        let (time_limit_ms, score_limit, kill_score, headshot_score) =
-            rules.of_mode(mode == Mode::Tdm);
+        let (time_limit_ms, score_limit, kill_score, headshot_score) = if mode == Mode::Dom {
+            (
+                rules.dom_time_limit_ms,
+                rules.dom_score_limit,
+                rules.kill_score,
+                rules.headshot_score,
+            )
+        } else {
+            rules.of_mode(mode == Mode::Tdm)
+        };
         Limits {
             score_limit,
             time_limit_ms,
@@ -229,6 +252,8 @@ pub struct Arena {
     pub blockers: &'static [u8],
     /// The smoke in the air.
     pub smoke: crate::smoke::Smoke,
+    /// Domination's flags (in Domination, when the map has them).
+    pub dom: Option<crate::dom::Domination>,
     rng: u32,
     /// Whether the human (slot 0) is in the match (not free-flying): bots ignore and can't hit it otherwise.
     pub human_present: bool,
@@ -357,6 +382,7 @@ impl Arena {
             equips: &[],
             blockers: &[],
             smoke: crate::smoke::Smoke::default(),
+            dom: None,
             rng: 0x2545_f491,
             human_present: true,
             spawn_count: 0,
@@ -394,7 +420,7 @@ impl Arena {
             .fighters
             .iter()
             .enumerate()
-            .filter(|(i, f)| live(*i, f) && self.mode == Mode::Tdm && !self.enemies(who, *i))
+            .filter(|(i, f)| live(*i, f) && self.mode.teams() && !self.enemies(who, *i))
             .map(|(_, f)| f.player.ps.origin)
             .collect();
         self.spawn_count += 1;
@@ -415,7 +441,7 @@ impl Arena {
         };
         let picked = match self.mode {
             Mode::Ffa => pick_spawn(spawns, &others, last, sees, jitter),
-            Mode::Tdm => pick_spawn_team(spawns, &allies, &others, last, sees, jitter),
+            Mode::Tdm | Mode::Dom => pick_spawn_team(spawns, &allies, &others, last, sees, jitter),
         };
         match picked {
             Some(i) => {
@@ -458,8 +484,8 @@ impl Arena {
         for (i, f) in self.fighters.iter_mut().enumerate() {
             f.team = match mode {
                 Mode::Ffa => TEAM_NONE,
-                Mode::Tdm if i == 0 || i % 2 == 0 => TEAM_ALLIES,
-                Mode::Tdm => TEAM_AXIS,
+                Mode::Tdm | Mode::Dom if i == 0 || i % 2 == 0 => TEAM_ALLIES,
+                Mode::Tdm | Mode::Dom => TEAM_AXIS,
             };
         }
     }
@@ -471,7 +497,7 @@ impl Arena {
         }
         match self.mode {
             Mode::Ffa => true,
-            Mode::Tdm => self.fighters[a].team != self.fighters[b].team,
+            Mode::Tdm | Mode::Dom => self.fighters[a].team != self.fighters[b].team,
         }
     }
 
@@ -479,8 +505,8 @@ impl Arena {
     pub fn leading_team(&self) -> Option<u8> {
         let (a, x) = (self.team_score[1], self.team_score[2]);
         match self.mode {
-            Mode::Tdm if a > x => Some(TEAM_ALLIES),
-            Mode::Tdm if x > a => Some(TEAM_AXIS),
+            Mode::Tdm | Mode::Dom if a > x => Some(TEAM_ALLIES),
+            Mode::Tdm | Mode::Dom if x > a => Some(TEAM_AXIS),
             _ => None,
         }
     }
@@ -502,7 +528,7 @@ impl Arena {
         }
         match self.mode {
             Mode::Ffa => self.leader().1 >= limit,
-            Mode::Tdm => self.team_score.iter().any(|&s| s >= limit),
+            Mode::Tdm | Mode::Dom => self.team_score.iter().any(|&s| s >= limit),
         }
     }
 
@@ -644,7 +670,7 @@ impl Arena {
         out: &mut Vec<Event>,
     ) {
         // No friendly fire in team modes (MW2's default `scr_team_fftype` 0); your own grenade still hurts you.
-        if from != victim && self.mode == Mode::Tdm && !self.enemies(from, victim) {
+        if from != victim && self.mode.teams() && !self.enemies(from, victim) {
             return;
         }
         let v = &mut self.fighters[victim];
@@ -675,9 +701,10 @@ impl Arena {
                     points += limits.headshot_score;
                 }
                 k.score += points;
-                // Team modes: the kill's points go to the team's score too (`war.gsc` `onNormalDeath`).
+                // Team deathmatch: the kill's points go to the team's score too (`war.gsc` `onNormalDeath`);
+                // Domination scores only by its flags.
                 let team = usize::from(k.team);
-                if team != 0 {
+                if team != 0 && self.mode == Mode::Tdm {
                     self.team_score[team] += limits.kill_score;
                 }
                 let k = &mut self.fighters[from];
@@ -747,7 +774,7 @@ impl Arena {
                     continue;
                 }
                 // Teammates' flashes and stuns don't affect you (MW2's default: no friendly fire); your own do.
-                let friendly = v != g.owner && self.mode == Mode::Tdm && !self.enemies(g.owner, v);
+                let friendly = v != g.owner && self.mode.teams() && !self.enemies(g.owner, v);
                 if kind == crate::grenade::Effect::Flash {
                     let seen = {
                         let (_, yaw) = f.player.view();
@@ -1068,6 +1095,37 @@ impl Arena {
         Some((math_iw4::vec_to_yaw(delta[0], delta[1]), dist as u8))
     }
 
+    /// Step the mode's objectives by `dt_ms` (Domination's flags): captures score the capturer, held flags their
+    /// team.
+    pub fn update_objectives(&mut self, dt_ms: f32, now: u32, out: &mut Vec<Event>) {
+        let Some(d) = self.dom.as_mut() else {
+            return;
+        };
+        let visitors: Vec<crate::dom::Visitor> = self
+            .fighters
+            .iter()
+            .enumerate()
+            .map(|(i, f)| crate::dom::Visitor {
+                id: i,
+                team: f.team,
+                feet: f.player.ps.origin,
+                able: f.life.alive() && f.player.on_ground() && (i != 0 || self.human_present),
+            })
+            .collect();
+        let mut ev = Vec::new();
+        let points = d.update(&self.rules, &visitors, dt_ms, now, &mut ev);
+        for (s, p) in self.team_score.iter_mut().zip(points) {
+            *s += p;
+        }
+        for e in ev {
+            let crate::dom::DomEvent::Captured { label, team, by } = e;
+            if let Some(p) = by {
+                self.fighters[p].score += self.rules.dom_capture_score;
+            }
+            out.push(Event::FlagCaptured { label, team, by });
+        }
+    }
+
     /// Footsteps since the last call: a fighter on the ground whose bob cycle wrapped (IW4L `bob_cycle_wrapped`)
     /// steps, by its gait (prone, sprinting, walking or crouched, else running) on the surface under its feet.
     pub fn footsteps(&mut self, clip: &MapClip<'_>, out: &mut Vec<Event>) {
@@ -1235,6 +1293,10 @@ impl Arena {
             self.fighters[i].steps += 1;
             if think {
                 let contacts = self.contacts(clip, i, now);
+                let objective = self.dom.as_ref().and_then(|d| {
+                    let f = &self.fighters[i];
+                    d.goal_for(f.team, f.player.ps.origin)
+                });
                 let f = &mut self.fighters[i];
                 let senses = Senses {
                     now_ms: now,
@@ -1244,6 +1306,7 @@ impl Arena {
                     view: f.player.view(),
                     enemies: &contacts,
                     clip: f.gun.as_ref().map_or(0, |g| g.ammo().0),
+                    objective,
                 };
                 if let Some(brain) = f.brain.as_mut() {
                     f.act = brain.think(nav.as_deref_mut(), &senses);

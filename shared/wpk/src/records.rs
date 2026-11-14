@@ -462,6 +462,46 @@ impl Record for SpawnRecord {
     }
 }
 
+/// Game-mode objectives in a map (`OBJS`).
+pub mod objective_kind {
+    /// A Domination flag (`flag_primary` / `flag_secondary` trigger).
+    pub const DOM_FLAG: u8 = 1;
+}
+
+/// One objective: its kind, its label (`script_label`: 0 for `_a`, 1 `_b` ...), and its trigger cylinder (origin at
+/// the base, radius, height).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ObjectiveRecord {
+    pub kind: u8,
+    pub label: u8,
+    pub origin: [f32; 3],
+    pub radius: f32,
+    pub height: f32,
+}
+
+impl Record for ObjectiveRecord {
+    const LEN: usize = 24;
+    fn write(&self, o: &mut Vec<u8>) {
+        o.u8(self.kind);
+        o.u8(self.label);
+        o.zeros(2);
+        for v in self.origin {
+            o.f32(v);
+        }
+        o.f32(self.radius);
+        o.f32(self.height);
+    }
+    fn read(b: &[u8]) -> Self {
+        ObjectiveRecord {
+            kind: b[0],
+            label: b[1],
+            origin: [be::f32(b, 4), be::f32(b, 8), be::f32(b, 12)],
+            radius: be::f32(b, 16),
+            height: be::f32(b, 20),
+        }
+    }
+}
+
 /// One level of detail of a static model: a run of `MSRF` surfaces, used while the camera distance (divided by the
 /// placement scale) is below `dist` (IW4 `lodDist`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

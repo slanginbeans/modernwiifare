@@ -66,6 +66,9 @@ pub struct Senses<'a> {
     pub enemies: &'a [Contact],
     /// Rounds in the magazine.
     pub clip: i32,
+    /// Where the game mode wants this bot (a Domination flag to take or hold); it goes there when it has no
+    /// enemy to chase and waits once inside.
+    pub objective: Option<([f32; 3], f32)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -306,7 +309,18 @@ impl Brain {
             move_goal = Some(p);
         }
         let mut wander = false;
-        if move_goal.is_none() && target.is_none() {
+        let mut holding = false;
+        if move_goal.is_none()
+            && target.is_none()
+            && let Some((o, r)) = s.objective
+        {
+            if dist2(o, s.feet) > (r * 0.5) * (r * 0.5) {
+                move_goal = Some(o);
+            } else {
+                holding = true;
+            }
+        }
+        if move_goal.is_none() && target.is_none() && !holding {
             if self.route_goal.is_none() || self.route.is_empty() {
                 let g = nav
                     .as_deref()
@@ -453,6 +467,7 @@ mod tests {
         let mut yaw = 0.0;
         for f in 0..120u32 {
             let s = Senses {
+                objective: None,
                 now_ms: f * 16,
                 msec: 16,
                 feet: [0.0; 3],
@@ -478,6 +493,7 @@ mod tests {
         let hidden = [enemy([0.0, 400.0, 0.0], false)];
         for f in 0..120u32 {
             let s = Senses {
+                objective: None,
                 now_ms: f * 16,
                 msec: 16,
                 feet: [0.0; 3],
@@ -506,6 +522,7 @@ mod tests {
             };
             let e = [heard];
             let s = Senses {
+                objective: None,
                 now_ms: f * 16,
                 msec: 16,
                 feet: p.ps.origin,

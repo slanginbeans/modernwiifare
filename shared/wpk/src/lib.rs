@@ -65,6 +65,8 @@ pub mod tag {
     pub const MINIMAP: Tag = *b"MINI";
     /// Player spawn points ([`crate::records::SpawnRecord`]).
     pub const SPAWNS: Tag = *b"SPWN";
+    /// Game-mode objectives (`records::ObjectiveRecord`: Domination flags).
+    pub const OBJECTIVES: Tag = *b"OBJS";
     /// Static model vertices (`WorldVertex`, model space, lightmap UV unused).
     pub const MODEL_VERTICES: Tag = *b"MVTX";
     /// Static model surfaces (`BatchRecord` over `MVTX`; display lists in `WDLS`).

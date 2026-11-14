@@ -37,7 +37,8 @@ pub mod found {
     pub const SHOCK_STUN: u16 = 1 << 3;
     pub const CLAYMORE: u16 = 1 << 4;
     pub const EXPLOSIVES: u16 = 1 << 5;
-    pub const ALL_FX: u16 = (1 << 6) - 1;
+    pub const DOM: u16 = 1 << 6;
+    pub const ALL_FX: u16 = (1 << 7) - 1;
 }
 
 /// A shell shock's screen and movement (an IW4 `.shock` file: `bg_shock_screenType`, blur blend / fade, white and
@@ -131,6 +132,13 @@ pub struct Rules {
     pub claymore_radius: f32,
     /// How many C4 / claymores a player may have out (`scr_maxPerPlayerExplosives`): a new one blows the oldest.
     pub max_explosives: u32,
+    /// Domination (`dom.gsc`): time and score limits, a capture's points, a flag's capture time with one player,
+    /// and how often each held flag scores a point for its team.
+    pub dom_time_limit_ms: u32,
+    pub dom_score_limit: u32,
+    pub dom_capture_score: u32,
+    pub dom_use_ms: u32,
+    pub dom_tick_ms: u32,
     pub found: u16,
     pub found_team: u16,
     pub found_fx: u16,
@@ -188,6 +196,11 @@ impl Default for Rules {
             claymore_grace_ms: 750,
             claymore_radius: 192.0,
             max_explosives: 2,
+            dom_time_limit_ms: 1_800_000,
+            dom_score_limit: 300,
+            dom_capture_score: 150,
+            dom_use_ms: 10_000,
+            dom_tick_ms: 5000,
             found: 0,
             found_team: 0,
             found_fx: 0,
@@ -255,6 +268,15 @@ impl Rules {
             o.f32(s.look.sensitivity);
             o.f32(s.look.max_pitch_speed);
             o.f32(s.look.max_yaw_speed);
+        }
+        for v in [
+            self.dom_time_limit_ms,
+            self.dom_score_limit,
+            self.dom_capture_score,
+            self.dom_use_ms,
+            self.dom_tick_ms,
+        ] {
+            o.u32(v);
         }
         o
     }
@@ -324,6 +346,32 @@ impl Rules {
             claymore_grace_ms: tu(8, d.claymore_grace_ms),
             claymore_radius: tf(12, d.claymore_radius),
             max_explosives: tu(16, d.max_explosives),
+            // Domination follows the shocks' look control.
+            dom_time_limit_ms: if b.len() >= 262 {
+                be::u32(b, 242)
+            } else {
+                d.dom_time_limit_ms
+            },
+            dom_score_limit: if b.len() >= 262 {
+                be::u32(b, 246)
+            } else {
+                d.dom_score_limit
+            },
+            dom_capture_score: if b.len() >= 262 {
+                be::u32(b, 250)
+            } else {
+                d.dom_capture_score
+            },
+            dom_use_ms: if b.len() >= 262 {
+                be::u32(b, 254)
+            } else {
+                d.dom_use_ms
+            },
+            dom_tick_ms: if b.len() >= 262 {
+                be::u32(b, 258)
+            } else {
+                d.dom_tick_ms
+            },
             found: be::u16(b, 176),
             found_team: be::u16(b, 178),
             found_fx: be::u16(b, 180),
