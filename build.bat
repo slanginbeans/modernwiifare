@@ -6,11 +6,12 @@ rem  Double-click this file (or run it from a command prompt). It:
 rem    1. updates this folder from the GitHub repo (git pull), if it can
 rem    2. builds the Wii programs (Rust + devkitPro)
 rem    3. packages them for the Homebrew Channel:
-rem         dist\apps\mwf_game\boot.dol + meta.xml (and the test spikes)
+rem         dist\apps\mwf_game\boot.dol + meta.xml (test spikes: dist\spikes\apps)
 rem    4. if it finds your MW2 / IW4x folder, converts the maps and weapons that
 rem       are missing or out of date (only those: an up-to-date pack is skipped)
 rem       and copies them into dist\apps\mwf_game (maps\, views\, common.wpk)
-rem       Copy the "apps" folder inside "dist" to the root of the SD card.
+rem       Copy dist\apps\mwf_game into the SD card's apps folder: it's the only
+rem       folder the game needs.
 rem
 rem  Needs:
 rem    - devkitPro with the Wii tools (installer: github.com/devkitPro/installer,
@@ -209,16 +210,16 @@ echo   ^(Docker Desktop works too, if you already use it.^)
 echo.
 echo   No installs at all: on github.com open the repo, Actions, the newest
 echo   "ci" run, and download "modernwiifare-sd-card" at the bottom. It's the
-echo   same dist\apps folder, built by GitHub.
+echo   same mwf_game folder, built by GitHub ^(without game data^).
 goto failed
 
 :done
 if /i "%TARGET%"=="package" if "%DATA%"=="1" call :data
 echo.
 if /i "%TARGET%"=="package" (
-    echo Done. Copy the "apps" folder from:
-    echo   %cd%\dist
-    echo to the root of the Wii's SD card, then launch from the Homebrew Channel.
+    echo Done. Copy this folder into the "apps" folder on the Wii's SD card:
+    echo   %cd%\dist\apps\mwf_game
+    echo ^(so the card has apps\mwf_game\boot.dol^), then launch from the Homebrew Channel.
 ) else (
     echo Cleaned.
 )

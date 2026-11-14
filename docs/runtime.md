@@ -4,7 +4,8 @@
 **Easiest:** keep this repo folder next to your `Call of Duty Modern Warfare 2` folder (or set `MWF_GAME` to it) and
 double-click `build.bat`. It builds the game, converts every map and weapon that is missing or out of date (a pack
 made by the current converter from unchanged game files is skipped, so later runs take seconds), and puts it all in
-`distpps\mwf_game`. Copy `distpps` to the SD card. `build.bat nodata` skips the conversion.
+`dist\apps\mwf_game`. Copy that one folder into the SD card's `apps` folder (so the card has
+`apps\mwf_game\boot.dol` with its `maps\`, `views\` and `common.wpk`). `build.bat nodata` skips the conversion.
 The converter is built for `x86_64-pc-windows-gnullvm` with llvm-mingw (`tools\mwf-convert.ps1`; the plain Windows
 GNU toolchain can't build IW4L's zone reader): it uses `rust\env.ps1` at the root of the repo's drive when there is
 one (or `MWF_RUST_ENV`), and otherwise offers to download a pinned llvm-mingw into `.toolchain\`.
@@ -20,7 +21,7 @@ By hand:
    reports are not needed). Without `common.wpk` you walk unarmed and Create-a-Class is off. The game finds its folder
    from the path the Homebrew Channel starts it with, so a USB copy (`usb:/apps/mwf_game/`) works too; started
    without one (wiiload, emulators) it uses `sd:/apps/mwf_game`.
-3. Copy `apps/mwf_game` from the build (`make -C wii package` → `dist/apps`, or CI's `modernwiifare-sd-card`) to
+3. Copy `mwf_game` from the build (`make -C wii package` → `dist/apps/mwf_game`, or CI's `modernwiifare-sd-card`) to
    `sd:/apps/`, and start **Modern Wiifare** from the Homebrew Channel. GameCube controller in port 1.
 
 ## Menus

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds the Wii programs inside the official devkitPro Docker image, so you don't need devkitPro or
-# Rust installed. Output: dist/apps/... (copy "apps" to the SD card root).
+# Rust installed. Output: dist/apps/mwf_game (copy that folder into the SD card's apps/).
 # Usage: ./build.sh [make target]   (default: package; also: clean)
 set -e
 cd "$(dirname "$0")"

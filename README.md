@@ -11,10 +11,11 @@ install into Wii-sized data packs on your machine. Not affiliated with or endors
 - Third-party references and licenses: [docs/references.md](docs/references.md)
 
 ## Building (Windows)
-Double-click **`build.bat`**. It updates from GitHub, builds, and puts the Homebrew Channel apps in `dist\apps`.
-Copy that `apps` folder to the root of the SD card.
+Double-click **`build.bat`**. It updates from GitHub, builds the game, converts your maps and weapons (only what
+changed; it finds your `Call of Duty Modern Warfare 2` folder next to this one, or `MWF_GAME`) and puts everything
+in **`dist\apps\mwf_game`**. Copy that one folder into the SD card's `apps` folder.
 It needs devkitPro with "Wii Development" ticked (it offers to install Rust for you), or Docker Desktop.
-`build.bat noupdate` skips the update and `build.bat clean` deletes the output.
+`build.bat noupdate` skips the update, `build.bat nodata` the conversion, and `build.bat clean` deletes the output.
 
 On Linux/macOS with Docker: `./build.sh`. No installs at all: download `modernwiifare-sd-card` from the newest
 **ci** run under the repo's Actions tab.

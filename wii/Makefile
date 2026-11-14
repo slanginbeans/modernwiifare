@@ -1,7 +1,8 @@
 # Builds the Phase 0 spike .dol files and the game (mwf_game.dol).
 #   Needs devkitPro (devkitPPC + libogc) and the Rust toolchain from rust-toolchain.toml.
 #   make            -> build/spike_a_gx.dol, build/spike_b_net.dol
-#   make package    -> ../dist/apps/<app>/{boot.dol,meta.xml}  (copy dist/apps to the SD card root)
+#   make package    -> ../dist/apps/mwf_game/{boot.dol,meta.xml,maps/,views/}: the one folder to copy to the SD
+#                      card's apps/ (the test spikes go to ../dist/spikes/apps/)
 #   make hbc        -> same layout under build/hbc/apps (used by CI)
 #   make run-a|run-b WIILOAD=tcp:<wii-ip>   -> send over the network with wiiload
 
@@ -68,14 +69,17 @@ hbc: all
 # What build.bat / build.sh produce: dist/apps at the repo root, ready for the SD card.
 DIST := ../dist
 package: all
+	@# The game is the only app in dist/apps (the folder to copy); the spikes go to dist/spikes/apps.
+	@rm -rf $(DIST)/apps/mwf_spike_*
 	@for s in $(SPIKES); do \
-	  mkdir -p $(DIST)/apps/mwf_$$s $(DIST)/debug; \
-	  cp $(BUILD)/$$s.dol $(DIST)/apps/mwf_$$s/boot.dol; \
-	  sed "s/@BUILD_ID@/$(BUILD_ID)/" hbc/$$s/meta.xml > $(DIST)/apps/mwf_$$s/meta.xml; \
+	  if [ "$$s" = game ]; then app=$(DIST)/apps/mwf_game; else app=$(DIST)/spikes/apps/mwf_$$s; fi; \
+	  mkdir -p $$app $(DIST)/debug; \
+	  cp $(BUILD)/$$s.dol $$app/boot.dol; \
+	  sed "s/@BUILD_ID@/$(BUILD_ID)/" hbc/$$s/meta.xml > $$app/meta.xml; \
 	  cp $(BUILD)/$$s.elf $(DIST)/debug/$$s.elf; \
 	done
 	@mkdir -p $(DIST)/apps/mwf_game/maps $(DIST)/apps/mwf_game/views
-	@echo "Copy dist/apps to the root of the SD card. Map packs go in apps/mwf_game/maps/, common.wpk in apps/mwf_game/, weapon files in apps/mwf_game/views/."
+	@echo "Copy dist/apps/mwf_game into the SD card's apps/ folder (map packs in its maps/, weapon files in views/, common.wpk beside boot.dol)."
 
 run-a: $(BUILD)/spike_a_gx.dol
 	$(WIILOAD_BIN) $<
