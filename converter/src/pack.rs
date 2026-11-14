@@ -357,6 +357,8 @@ pub struct PackReport {
     pub sections: BTreeMap<String, u64>,
     /// Vertices of each team's player character.
     pub character_vertices: Vec<usize>,
+    /// World triangles before simplification (`world_triangles` is what the pack draws).
+    pub world_triangles_source: u64,
     pub textures: usize,
     pub lightmaps: usize,
     pub materials: usize,
@@ -510,6 +512,7 @@ impl Textures {
 }
 
 /// Build the pack bytes for one map. `index` / `tex_dir`: the textures `convert_zone` wrote for this zone.
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     map: &str,
     world: &WorldData,
@@ -518,6 +521,7 @@ pub fn build(
     index: &[IndexEntry],
     tex_dir: &Path,
     stamp: &crate::stamp::Stamp,
+    quality: &crate::simplify::WorldQuality,
 ) -> Result<(Vec<u8>, PackReport), String> {
     let mut report = PackReport {
         map: map.to_owned(),
@@ -688,6 +692,22 @@ pub fn build(
     }
     report.vertex_groups = groups;
 
+    // Where batches meet: how many batches use each vertex position (simplification keeps those vertices).
+    let mut batches_at: HashMap<[u32; 3], (usize, u32)> = HashMap::new();
+    if quality.ratio < 1.0 {
+        for (k, d) in draws.values().enumerate().filter(|(_, d)| !d.blended) {
+            for &rel in &d.indices {
+                let p = world.vertices[(d.group_base + u32::from(rel)) as usize].pos;
+                let e = batches_at
+                    .entry(crate::simplify::position_key(p))
+                    .or_insert((k, 0));
+                if e.1 == 0 || e.0 != k {
+                    e.1 += 1;
+                    e.0 = k;
+                }
+            }
+        }
+    }
     let mut batches = Vec::with_capacity(draws.len());
     let mut dls = Vec::new();
     let mut batch_cells: Vec<u16> = Vec::with_capacity(draws.len());
@@ -709,6 +729,31 @@ pub fn build(
                 verts.push(world.vertices[(d.group_base + u32::from(rel)) as usize]);
             }
             tris.push(*slot);
+        }
+        // Simplified for the Wii's triangle budget (opaque batches; blended ones keep their authored order), then
+        // only the vertices still used.
+        report.world_triangles_source += (tris.len() / 3) as u64;
+        if !d.blended && quality.ratio < 1.0 {
+            let shared = |v: &WorldVertex| {
+                batches_at
+                    .get(&crate::simplify::position_key(v.pos))
+                    .is_some_and(|e| e.1 > 1)
+            };
+            let simplified = crate::simplify::batch(&verts, &tris, quality, shared);
+            let mut keep = vec![u16::MAX; verts.len()];
+            let mut used: Vec<WorldVertex> = Vec::new();
+            tris = simplified
+                .iter()
+                .map(|&i| {
+                    let k = &mut keep[usize::from(i)];
+                    if *k == u16::MAX {
+                        *k = used.len() as u16;
+                        used.push(verts[usize::from(i)]);
+                    }
+                    *k
+                })
+                .collect();
+            verts = used;
         }
         let centre = std::array::from_fn(|k| (d.min[k] + d.max[k]) * 0.5);
         let (vertex_base, quant) = store_vertices(
@@ -737,11 +782,11 @@ pub fn build(
             lightmap,
             dl_off: dls.len() as u32,
             dl_len: dl.len() as u32,
-            tri_count: (d.indices.len() / 3) as u32,
+            tri_count: (tris.len() / 3) as u32,
             bounds_min: d.min,
             bounds_max: d.max,
         });
-        report.world_triangles += (d.indices.len() / 3) as u64;
+        report.world_triangles += (tris.len() / 3) as u64;
         report.world_dl_vertices += wpk::strips::dl_vertex_count(&dl) as u64;
         dls.extend_from_slice(&dl);
     }
@@ -1231,7 +1276,7 @@ pub fn render_text(r: &PackReport) -> String {
         s.push_str(&format!("  {k} {:>9.2} MiB\n", mib(*v)));
     }
     s.push_str(&format!(
-        "textures {} (lightmaps {}), materials {} ({} without texture), world {} vertices, {} triangles ({} display-list vertices) in {} batches \
+        "textures {} (lightmaps {}), materials {} ({} without texture), world {} vertices, {} triangles of {} before simplification ({} display-list vertices) in {} batches \
          ({} vertex groups), sky surfaces dropped {}, surfaces without material {}, skybox {}, spawns {}\n",
         r.textures,
         r.lightmaps,
@@ -1239,6 +1284,7 @@ pub fn render_text(r: &PackReport) -> String {
         r.materials_without_texture,
         r.world_vertices,
         r.world_triangles,
+        r.world_triangles_source,
         r.world_dl_vertices,
         r.batches,
         r.vertex_groups,

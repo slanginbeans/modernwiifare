@@ -38,6 +38,7 @@ mod pixel_decode;
 mod preview;
 mod report;
 mod rules;
+mod simplify;
 mod sounds;
 mod stamp;
 mod static_models;
@@ -223,6 +224,8 @@ struct MapArgs {
     out: Option<PathBuf>,
     /// Rebuild even when the output is up to date.
     force: bool,
+    /// World mesh simplification (`--simplify <ratio>`, `--simplify-error <units>`).
+    quality: simplify::WorldQuality,
 }
 
 fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
@@ -231,6 +234,7 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
     let mut zone: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
     let mut force = false;
+    let mut quality = simplify::WorldQuality::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         if a == "--force" {
@@ -238,7 +242,7 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
             continue;
         }
         let target = match a.as_str() {
-            "--map" | "--zone" | "--out" => a.as_str(),
+            "--map" | "--zone" | "--out" | "--simplify" | "--simplify-error" => a.as_str(),
             _ if game.is_none() => {
                 game = Some(PathBuf::from(a));
                 continue;
@@ -255,6 +259,8 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
         match target {
             "--map" => map = value.clone(),
             "--zone" => zone = Some(PathBuf::from(value)),
+            "--simplify" => quality.ratio = value.parse().unwrap_or(1.0f32).clamp(0.05, 1.0),
+            "--simplify-error" => quality.max_error = value.parse().unwrap_or(2.0f32).max(0.0),
             _ => out = Some(PathBuf::from(value)),
         }
     }
@@ -268,6 +274,7 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
         zone,
         out,
         force,
+        quality,
     })
 }
 
@@ -1193,6 +1200,7 @@ fn run_pack_one(a: MapArgs) -> ExitCode {
         &index,
         &tex_dir,
         &st,
+        &a.quality,
     ) {
         Ok(x) => x,
         Err(e) => {

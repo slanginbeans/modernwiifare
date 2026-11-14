@@ -58,6 +58,8 @@ Not sacrificed: collision (never simplified), movement and weapon timings, 640×
 
 | Bots (5): `pmove`, sight traces, gun, routes each frame | host: ~0.4 ms per frame for all five on `mp_rust`; Broadway is perhaps 10-20× slower, so **3-8 ms**: measure on hardware, and lower `BOTS` or think every other frame if it doesn't fit |
 
+| World mesh simplification (meshoptimizer, `pack --simplify <ratio> --simplify-error <units>`; locked where batches meet; UV, lightmap UV and colour weighed) | `mp_rust` world 193k triangles: 161k at 0.5 / 4 units, 155k at 0.3 / 8, 151k at 0.2 / 16 (**-17 to -22%**). From 8 units up the textures on curved props warp and the ground shows patches where vertex colours (IW4's terrain blend weights) moved. MW2's world meshes are already low-poly: the count comes from many small surfaces, not dense ones. **Off by default**: too little gain for what it costs to look at. |
+
 Where that leaves us: `mp_terminal` spends ~244k world + ~91k model triangles per view, still ~3× the 60 fps
 budget. Memory is solved for every map. Next: world draw distance (fog) and `LOD_SCALE` (in `game_core::world`) as
 the per-map 60 fps levers, set from hardware numbers.
