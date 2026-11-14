@@ -460,6 +460,17 @@ pub struct EquipRecord {
     pub start_ammo: i32,
     pub parallel_bounce: [f32; 31],
     pub perpendicular_bounce: [f32; 31],
+    /// Sounds in `common.wpk`'s bank (`equip_sound`; `crate::sound::NONE` when none): the explosion, a bounce, the
+    /// pull back and the throw.
+    pub sounds: [u16; 4],
+}
+
+/// Indices into [`EquipRecord::sounds`].
+pub mod equip_sound {
+    pub const EXPLODE: usize = 0;
+    pub const BOUNCE: usize = 1;
+    pub const PULLBACK: usize = 2;
+    pub const THROW: usize = 3;
 }
 
 impl Default for EquipRecord {
@@ -484,12 +495,13 @@ impl Default for EquipRecord {
             start_ammo: 0,
             parallel_bounce: [0.0; 31],
             perpendicular_bounce: [0.0; 31],
+            sounds: [crate::sound::NONE; 4],
         }
     }
 }
 
 impl crate::records::Record for EquipRecord {
-    const LEN: usize = 16 * 4 + 4 + 62 * 4;
+    const LEN: usize = 16 * 4 + 4 + 62 * 4 + 8;
     fn write(&self, o: &mut Vec<u8>) {
         for v in [
             self.offhand_class,
@@ -522,6 +534,9 @@ impl crate::records::Record for EquipRecord {
         {
             o.f32(*v);
         }
+        for v in self.sounds {
+            o.u16(v);
+        }
     }
     fn read(b: &[u8]) -> Self {
         let i = |k: usize| be::u32(b, k * 4) as i32;
@@ -546,6 +561,7 @@ impl crate::records::Record for EquipRecord {
             projectile_rotates: b[66] != 0,
             parallel_bounce: core::array::from_fn(f),
             perpendicular_bounce: core::array::from_fn(|k| f(31 + k)),
+            sounds: core::array::from_fn(|k| be::u16(b, 68 + 62 * 4 + k * 2)),
         }
     }
 }

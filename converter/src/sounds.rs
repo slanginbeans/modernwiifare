@@ -35,6 +35,8 @@ pub struct AliasRow {
     pub pitch_min: f32,
     pub pitch_max: f32,
     pub probability: f32,
+    pub dist_min: f32,
+    pub dist_max: f32,
 }
 
 #[derive(Default)]
@@ -162,6 +164,8 @@ impl Capture {
                     pitch_min: f(row, sa::SND_ALIAS_PITCH_MIN, 60, 1.0),
                     pitch_max: f(row, sa::SND_ALIAS_PITCH_MAX, 64, 1.0),
                     probability: f(row, sa::SND_ALIAS_PROBABILITY, 88, 1.0),
+                    dist_min: f(row, sa::SND_ALIAS_DIST_MIN, 68, 0.0),
+                    dist_max: f(row, sa::SND_ALIAS_DIST_MAX, 72, 0.0),
                 }
             })
             .collect();
@@ -278,6 +282,8 @@ impl Bank {
                 pitch_min: row.pitch_min,
                 pitch_max: row.pitch_max.max(row.pitch_min),
                 probability: row.probability,
+                dist_min: row.dist_min,
+                dist_max: row.dist_max,
             });
         }
         let count = self.variants.len() as u16 - first;
@@ -430,6 +436,8 @@ mod tests {
             pitch_min: 1.0,
             pitch_max: 1.0,
             probability: 1.0,
+            dist_min: 0.0,
+            dist_max: 0.0,
         };
         c.aliases
             .insert("fire".into(), vec![row.clone(), row.clone()]);

@@ -49,10 +49,13 @@ pub struct VariantRecord {
     pub pitch_max: f32,
     /// IW4 alias probability weight of this variant.
     pub probability: f32,
+    /// Full volume up to `dist_min` units from the listener, silent from `dist_max` (IW4 `distMin` / `distMax`).
+    pub dist_min: f32,
+    pub dist_max: f32,
 }
 
 impl Record for VariantRecord {
-    const LEN: usize = 32;
+    const LEN: usize = 40;
     fn write(&self, o: &mut Vec<u8>) {
         o.u32(self.data_off);
         o.u32(self.data_len);
@@ -63,6 +66,8 @@ impl Record for VariantRecord {
             self.pitch_min,
             self.pitch_max,
             self.probability,
+            self.dist_min,
+            self.dist_max,
         ] {
             o.f32(v);
         }
@@ -77,6 +82,8 @@ impl Record for VariantRecord {
             pitch_min: be::f32(b, 20),
             pitch_max: be::f32(b, 24),
             probability: be::f32(b, 28),
+            dist_min: be::f32(b, 32),
+            dist_max: be::f32(b, 36),
         }
     }
 }
@@ -167,6 +174,8 @@ mod tests {
             pitch_min: 0.95,
             pitch_max: 1.05,
             probability: 1.0,
+            dist_min: 120.0,
+            dist_max: 5000.0,
         };
         let bytes = records::encode(&[v]);
         assert_eq!(bytes.len(), VariantRecord::LEN);

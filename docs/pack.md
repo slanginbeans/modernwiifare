@@ -51,7 +51,8 @@ ignores the section.
 | `WEAP` | `WeaponRecord` | every weapon's combat numbers (IW4L `CapturedCombatInput`), sorted by name |
 | `KICK` | `KickRecord` (80 B) | recoil, parallel to `WEAP` |
 | `WFPV` | `FpvRecord` (224 B) | how each first-person weapon moves, parallel to `WEAP`: view sway (hip / ADS), idle sway, stance and movement offsets, crouched / prone offsets, ADS aim pitch and bob factors |
-| `WEQP` | `EquipRecord` (316 B) | thrown / launched weapons, parallel to `WEAP` (zero for guns): offhand class, fuse and cooking, blast radius and inner / outer damage, throw speeds, arming distance, stickiness, bounce factors per surface type |
+| `WEQP` | `EquipRecord` (324 B) | thrown / launched weapons, parallel to `WEAP` (zero for guns): offhand class, fuse and cooking, blast radius and inner / outer damage, throw speeds, arming distance, stickiness, bounce factors per surface type, and its world sounds (explosion, bounce, pull back, throw: alias indices into this pack's `SNDA`). The explosion is the weapon's own, else its explosion effect's sound element, else IW4L's engine alias (`grenade_explode_default` / `rocket_explode_default`) |
+| `SNDA` / `SNDV` / `SNDD` | as in `views/*.wpk` | the thrown weapons' world sounds |
 | `CLSS` | one blob (`wpk::classes::Catalog`) | Create-a-Class: weapons (group, display name, attachment mask), attachments and the pairs that clash, perks / equipment / deathstreaks by slot, special grenades, killstreaks, MW2's 5 default classes and 5 starting custom classes |
 | `RULE` | one blob (`wpk::rules::Rules`) | match rules read from the user's game-type scripts (`converter/src/rules.rs`): max health, regeneration (delay, step, tick, hurt cutoff, very-hurt wait), free-for-all time and score limits, points for a kill / headshot / assist, move speed by the primary weapon's class and Lightweight's scaler, and which values were read |
 | `UIPK` | one blob (`wpk::ui::UiPack`, also: owner-draw rects such as the minimap's, and named compass icons) | the menus: fonts (glyph tables over atlas textures), screens (textured quads on 640 × 480, the button style, text labels with their kind: MW2 text, title, or a slot for live text; the back button's rect), and a plain white texture for filled bars |
@@ -65,7 +66,7 @@ ignores the section.
 | `VIEW` | one blob (`wpk::view::ViewModel`), `count` = the weapon's `WEAP` index | skinned first-person model and its clips |
 | `WSND` | one blob (`wpk::sound::WeaponSounds`) | the alias of each weapon event (fire, last shot, empty, reload, empty reload, raise, first raise, put away, melee swipe) and notetrack sounds (anim slot, time fraction, alias) |
 | `SNDA` | `AliasRecord` (4 B) | a sound alias: a run of `SNDV` variants |
-| `SNDV` | `VariantRecord` (32 B) | a clip in `SNDD` (offset, padded length, rate), volume and pitch ranges, probability weight |
+| `SNDV` | `VariantRecord` (40 B) | a clip in `SNDD` (offset, padded length, rate), volume and pitch ranges, probability weight, falloff distances (min / max) |
 | `SNDD` | – | mono 16-bit big-endian PCM, each clip 32-byte aligned and padded to 32 (ASND DMA) |
 
 ## How the world is built (`converter/src/pack.rs`)

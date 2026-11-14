@@ -708,6 +708,7 @@ fn run_common(args: &[String]) -> ExitCode {
             wpk::weapon::AimRecord,
             wpk::weapon::FpvRecord,
             wpk::weapon::EquipRecord,
+            [Option<String>; 4],
         ),
     );
     let mut both: Vec<Row> = links
@@ -721,13 +722,24 @@ fn run_common(args: &[String]) -> ExitCode {
                 .zip(&links.weapon_moves)
                 .zip(&links.weapon_aims)
                 .zip(&links.weapon_fpv)
-                .zip(&links.weapon_equip),
+                .zip(&links.weapon_equip)
+                .zip(links.weapon_world_sounds.iter().enumerate()),
         )
         .filter(|((n, _), _)| !n.is_empty())
-        .map(|((n, c), ((((k, m), a), v), e))| {
+        .map(|((n, c), (((((k, m), a), v), e), (i, ws)))| {
             // MW2's per-location damage table, baked into each weapon as IW4L does.
             let c = weapons::with_global_location(*c, links.lochit);
-            (wpk::weapon::WeaponRecord::new(n, c), (*k, *m, *a, *v, *e))
+            (
+                wpk::weapon::WeaponRecord::new(n, c),
+                (*k, *m, *a, *v, *e, {
+                    // Grenades without their own explosion sound use the impact table's.
+                    let mut ws = ws.clone();
+                    if ws[0].is_none() {
+                        ws[0] = links.impact_explosion_sound(i);
+                    }
+                    ws
+                }),
+            )
         })
         .collect();
     both.sort_by_key(|(w, _)| w.name);
@@ -737,7 +749,22 @@ fn run_common(args: &[String]) -> ExitCode {
     let moves: Vec<_> = extra.iter().map(|e| e.1).collect();
     let aims: Vec<_> = extra.iter().map(|e| e.2).collect();
     let fpvs: Vec<_> = extra.iter().map(|e| e.3).collect();
-    let equips: Vec<_> = extra.iter().map(|e| e.4).collect();
+    // Thrown weapons' world sounds (explosions, bounces, pull back, throw) in the common pack's own bank.
+    let mut world_bank = sounds::Bank::default();
+    let equips: Vec<_> = extra
+        .iter()
+        .map(|e| {
+            let mut r = e.4;
+            if r.offhand_class != 0 {
+                for (slot, name) in r.sounds.iter_mut().zip(&e.5) {
+                    if let Some(n) = name {
+                        *slot = world_bank.add(&capture, n);
+                    }
+                }
+            }
+            r
+        })
+        .collect();
     let files: HashSet<String> = weapons.iter().map(|w| w.name().to_owned()).collect();
     println!(
         "hit-location damage table: {}",
@@ -792,6 +819,27 @@ fn run_common(args: &[String]) -> ExitCode {
         wpk::tag::WEAPON_EQUIP,
         equips.len() as u32,
         wpk::records::encode(&equips),
+    );
+    println!(
+        "world sounds: {} aliases, {} variants, {:.2} MiB",
+        world_bank.aliases.len(),
+        world_bank.variants.len(),
+        world_bank.data.len() as f64 / (1024.0 * 1024.0)
+    );
+    b.section(
+        wpk::tag::SOUND_ALIASES,
+        world_bank.aliases.len() as u32,
+        wpk::records::encode(&world_bank.aliases),
+    );
+    b.section(
+        wpk::tag::SOUND_VARIANTS,
+        world_bank.variants.len() as u32,
+        wpk::records::encode(&world_bank.variants),
+    );
+    b.section(
+        wpk::tag::SOUND_DATA,
+        0,
+        std::mem::take(&mut world_bank.data),
     );
     b.section(wpk::tag::CLASSES, 0, catalog.encode());
     // Menus: MW2's fonts and baked screens, with their textures.

@@ -123,6 +123,11 @@ pub enum Event {
         origin: [f32; 3],
         weapon: u32,
     },
+    /// A grenade bounced (loud enough to hear).
+    GrenadeBounce {
+        origin: [f32; 3],
+        weapon: u32,
+    },
 }
 
 /// The player's position for hit tests and for the bots to see.
@@ -661,7 +666,15 @@ impl Arena {
     pub fn update_grenades(&mut self, clip: &MapClip<'_>, dt: f32, now: u32, out: &mut Vec<Event>) {
         let mut i = 0;
         while i < self.grenades.len() {
-            if !self.grenades[i].step(clip, dt, now) {
+            let due = self.grenades[i].step(clip, dt, now);
+            let g = &self.grenades[i];
+            if g.bounced {
+                out.push(Event::GrenadeBounce {
+                    origin: g.origin,
+                    weapon: g.weapon,
+                });
+            }
+            if !due {
                 i += 1;
                 continue;
             }

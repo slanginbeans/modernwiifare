@@ -906,6 +906,12 @@ fn run_map(
     let mut boxes: Vec<[f32; 6]> = Vec::with_capacity(BOTS * 10);
     let mut box_colours: Vec<u32> = Vec::with_capacity(BOTS * 10);
     let mut impacts: [(Option<[f32; 3]>, u32); 8] = [(None, 0); 8];
+    // World sounds (explosions, grenade bounces, throws) from the common pack's bank.
+    let mut world_sounds = sound::Sounds::load(common);
+    let equip_sound = |weapon: u32, k: usize| {
+        wpk::records::get::<wpk::weapon::EquipRecord>(equips, weapon as usize)
+            .map_or(wpk::sound::NONE, |e| e.sounds[k])
+    };
     // Recent explosions (where, when) for their flash.
     let mut blasts: [(Option<[f32; 3]>, u32); 4] = [(None, 0); 4];
     let mut next_blast = 0usize;
@@ -1258,6 +1264,15 @@ fn run_map(
                                 now,
                             ));
                             devlog::event(now, "grenade", format_args!("weapon={weapon}"));
+                            if let Some(w) = world_sounds.as_mut() {
+                                w.play(equip_sound(weapon, wpk::weapon::equip_sound::THROW));
+                            }
+                        }
+                        if let Some(game_core::gun::WeaponTickEvent::OffhandPrepare { weapon }) =
+                            event
+                            && let Some(w) = world_sounds.as_mut()
+                        {
+                            w.play(equip_sound(weapon, wpk::weapon::equip_sound::PULLBACK));
                         }
                         if event == Some(game_core::gun::WeaponTickEvent::MeleeFired)
                             && let Some(a) = arena.as_mut()
@@ -1391,7 +1406,25 @@ fn run_map(
                         );
                     }
                 }
-                Event::Explosion { origin, .. } => {
+                Event::GrenadeBounce { origin, weapon } => {
+                    if let Some(w) = world_sounds.as_mut() {
+                        w.play_at(
+                            equip_sound(weapon, wpk::weapon::equip_sound::BOUNCE),
+                            origin,
+                            cam.eye,
+                            cam.right(),
+                        );
+                    }
+                }
+                Event::Explosion { origin, weapon } => {
+                    if let Some(w) = world_sounds.as_mut() {
+                        w.play_at(
+                            equip_sound(weapon, wpk::weapon::equip_sound::EXPLODE),
+                            origin,
+                            cam.eye,
+                            cam.right(),
+                        );
+                    }
                     blasts[next_blast] = (Some(origin), now);
                     next_blast = (next_blast + 1) % blasts.len();
                     devlog::event(now, "explosion", format_args!(""));

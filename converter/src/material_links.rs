@@ -200,6 +200,16 @@ impl SlotMap {
     }
 }
 
+/// An effect's sound aliases and the effects it starts (runners, impact / death / emitted effects).
+#[derive(Default)]
+struct FxSounds {
+    sounds: Vec<String>,
+    children: Vec<String>,
+}
+
+/// How far down child effects are searched for a sound.
+const FX_DEPTH: u32 = 4;
+
 #[derive(Default)]
 pub struct Links {
     pub owner: Option<Owner>,
@@ -238,6 +248,16 @@ pub struct Links {
     pub weapon_fpv: Vec<wpk::weapon::FpvRecord>,
     /// Thrown / launched weapons' numbers (parallel to `weapons`).
     pub weapon_equip: Vec<wpk::weapon::EquipRecord>,
+    /// Each weapon's world sound alias names (explosion, bounce, pull back, throw; parallel to `weapons`).
+    pub weapon_world_sounds: Vec<[Option<String>; 4]>,
+    /// Each effect's sounds and child effects, by name (lower case).
+    fx_defs: HashMap<String, FxSounds>,
+    /// Effect names by asset slot.
+    fx_slots: HashMap<Ptr, String>,
+    /// The effect captured last, waiting for its slot.
+    last_fx_name: Option<String>,
+    /// Each weapon's IW4 impact type (parallel to `weapons`).
+    pub weapon_impact_types: Vec<i32>,
     /// First-person models and animations of each weapon (parallel to `weapons`).
     pub weapon_views: Vec<WeaponView>,
     /// Every string table of the zone, by name (lower case).
@@ -478,6 +498,20 @@ impl Links {
             w.melee_swipe_sound_player_name,
         ]
         .map(direct);
+        // A thrown weapon's sounds: its explosion, the first surface bounce it names, its pull back and throw.
+        let bounce = w.bounce_sound_names.iter().copied().find_map(direct);
+        // Most explosives name no explosion sound: theirs plays from the explosion effect's sound element.
+        let effect_sound = w
+            .explosion_slot
+            .and_then(|slot| self.fx_slots.get(&slot))
+            .and_then(|n| self.fx_sound(n, FX_DEPTH));
+        self.weapon_impact_types.push(w.impact_type);
+        self.weapon_world_sounds.push([
+            direct(w.proj_explosion_sound_name).or(effect_sound),
+            bounce,
+            direct(w.pullback_sound_player_name),
+            direct(w.fire_sound_player_name),
+        ]);
         // notetrackSoundMap: 16 script-string pairs (IW4L `read_script_string_map`).
         let mut note_map = Vec::new();
         if let (Some(keys), Some(values)) = (w.notetrack_sound_keys, w.notetrack_sound_values) {
@@ -664,8 +698,98 @@ impl Links {
             AssetType::XModel => self.xmodel_loaded(s, slot, insert_slot),
             AssetType::Weapon => self.weapon_loaded(s),
             AssetType::LoadedSound => self.sounds.loaded_slot(slot, insert_slot),
+            AssetType::Fx => {
+                if let Some(n) = self.last_fx_name.take() {
+                    if let Some(i) = insert_slot {
+                        self.fx_slots.insert(i, n.clone());
+                    }
+                    self.fx_slots.insert(slot, n);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Hook for `AssetLinkSink::capture_fx`: the alias names of the effect's sound elements (IW4L
+    /// `fastfile_iw4::load::fx` layout: element type at 176, visual count at 177, visuals at 188 / 200 x64; a
+    /// sound visual is a pointer to its alias name, an array of them when there are several).
+    pub fn fx_captured(&mut self, s: &ZoneStream<'_>, g: &fastfile_iw4::FxEffectDefGeometry) {
+        use asset_iw4::size as sz;
+        let name = |p: Ptr, field: usize| match s.ptr_at(p, field) {
+            Ok(fastfile_iw4::ZonePtr::Offset(q)) => s
+                .cstr(s.resolve_alias(q))
+                .ok()
+                .filter(|n| !n.is_empty())
+                .map(str::to_owned),
+            _ => None,
+        };
+        let Some(own) = g
+            .name
+            .and_then(|p| s.cstr(s.resolve_alias(p)).ok())
+            .filter(|n| !n.is_empty())
+            .map(str::to_ascii_lowercase)
+        else {
+            return;
+        };
+        let mut fx = FxSounds::default();
+        if let Some(arr) = g.elem_defs {
+            for i in 0..g.elem_def_count {
+                let p = arr.at(i * s.layout(sz::FX_ELEM_DEF, 288));
+                // Effects the element starts on impact, on death and while it lives.
+                for field in [s.layout(216, 232), s.layout(220, 240), s.layout(224, 248)] {
+                    fx.children.extend(name(p, field));
+                }
+                let (Ok(ty), Ok(n)) = (s.u8_at(p, 176), s.u8_at(p, 177)) else {
+                    continue;
+                };
+                // Sound and runner visuals are names (an alias, an effect).
+                let into = match ty {
+                    sz::fx_elem::SOUND => &mut fx.sounds,
+                    sz::fx_elem::RUNNER => &mut fx.children,
+                    _ => continue,
+                };
+                let vis = p.at(s.layout(188, 200));
+                if n == 1 {
+                    into.extend(name(vis, 0));
+                } else if n > 1
+                    && let Ok(fastfile_iw4::ZonePtr::Offset(a)) = s.ptr_at(vis, 0)
+                {
+                    let a = s.resolve_alias(a);
+                    for k in 0..usize::from(n) {
+                        into.extend(name(a.at(k * s.layout(sz::FX_ELEM_VISUALS, 8)), 0));
+                    }
+                }
+            }
+        }
+        for c in &mut fx.children {
+            c.make_ascii_lowercase();
+        }
+        self.fx_defs.entry(own.clone()).or_insert(fx);
+        self.last_fx_name = Some(own);
+    }
+
+    /// The first sound effect `name` plays, its own or a child effect's (depth-first, a few levels down).
+    fn fx_sound(&self, name: &str, depth: u32) -> Option<String> {
+        let fx = self.fx_defs.get(name)?;
+        if let Some(s) = fx.sounds.first() {
+            return Some(s.clone());
+        }
+        if depth == 0 {
+            return None;
+        }
+        fx.children.iter().find_map(|c| self.fx_sound(c, depth - 1))
+    }
+
+    /// The explosion sound weapon `i` plays when neither it nor its explosion effect names one: IW4L
+    /// `audio::explosion_surface_aliases` (grenades `grenade_explode_<surface>`, rockets `rocket_explode_<surface>`,
+    /// each falling back to `_default`; one sound per weapon here, so the default surface).
+    pub fn impact_explosion_sound(&self, i: usize) -> Option<String> {
+        let prefix = match self.weapon_impact_types.get(i)? {
+            8 => "grenade_explode",
+            9 => "rocket_explode",
+            _ => return None,
+        };
+        Some(format!("{prefix}_default"))
     }
 
     /// Hook for `AssetLinkSink::alias`.
@@ -686,6 +810,11 @@ impl Links {
                 }
             }
             AssetType::LoadedSound => self.sounds.alias_slot(slot, target),
+            AssetType::Fx => {
+                if let Some(n) = self.fx_slots.get(&target).cloned() {
+                    self.fx_slots.insert(slot, n);
+                }
+            }
             _ => {}
         }
     }

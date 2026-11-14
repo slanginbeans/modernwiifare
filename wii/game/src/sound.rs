@@ -2,7 +2,8 @@
 //! place from the pack in MEM2 (flushed when it was loaded).
 //!
 //! Each play picks a variant by its probability weight and a volume and pitch in the alias's ranges, as IW4 does.
-//! Player-view sounds only: no distance falloff or panning yet (they play at the listener).
+//! Player-view sounds play at the listener; world sounds ([`Sounds::play_at`]) fade with distance between the alias's
+//! `distMin` and `distMax` (IW4's linear falloff) and pan left / right by where they are.
 
 use wpk::records::{self, Record};
 use wpk::sound::{AliasRecord, NONE, VariantRecord};
@@ -37,8 +38,17 @@ impl<'a> Sounds<'a> {
         (x >> 8) as f32 / (1u32 << 24) as f32
     }
 
-    /// Play alias `alias` (an index into `SNDA`) once.
+    /// Play alias `alias` (an index into `SNDA`) once, at the listener.
     pub fn play(&mut self, alias: u16) {
+        self.play_with(alias, None);
+    }
+
+    /// Play alias `alias` at world point `at`, heard from `listener` with its right-hand axis `right` (unit).
+    pub fn play_at(&mut self, alias: u16, at: [f32; 3], listener: [f32; 3], right: [f32; 3]) {
+        self.play_with(alias, Some((at, listener, right)));
+    }
+
+    fn play_with(&mut self, alias: u16, place: Option<([f32; 3], [f32; 3], [f32; 3])>) {
         if alias == NONE {
             return;
         }
@@ -86,8 +96,40 @@ impl<'a> Sounds<'a> {
         };
         let vol = v.vol_min + (v.vol_max - v.vol_min) * self.random();
         let pitch = v.pitch_min + (v.pitch_max - v.pitch_min) * self.random();
-        let level = (vol.clamp(0.0, 1.0) * 255.0) as u8;
+        let (mut left, mut right) = (vol, vol);
+        if let Some((at, ear, axis)) = place {
+            let d: [f32; 3] = core::array::from_fn(|k| at[k] - ear[k]);
+            let dist = libm::sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            // IW4's linear falloff between the alias's distances (none when it names no far distance).
+            let gain = if v.dist_max <= v.dist_min || dist <= v.dist_min {
+                1.0
+            } else if dist >= v.dist_max {
+                0.0
+            } else {
+                1.0 - (dist - v.dist_min) / (v.dist_max - v.dist_min)
+            };
+            if gain <= 0.0 {
+                return;
+            }
+            // Pan by how far to the side the sound is.
+            let pan = if dist > 1.0 {
+                ((d[0] * axis[0] + d[1] * axis[1] + d[2] * axis[2]) / dist).clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
+            left = vol * gain * (1.0 - pan.max(0.0) * 0.7);
+            right = vol * gain * (1.0 + pan.min(0.0) * 0.7);
+        }
+        let level = |x: f32| (x.clamp(0.0, 1.0) * 255.0) as u8;
         let rate = (v.rate as f32 * pitch.clamp(0.25, 4.0)) as u32;
-        unsafe { ffi::mwf_snd_play(clip.as_ptr(), clip.len() as u32, rate, level, level) };
+        unsafe {
+            ffi::mwf_snd_play(
+                clip.as_ptr(),
+                clip.len() as u32,
+                rate,
+                level(left),
+                level(right),
+            )
+        };
     }
 }

@@ -84,6 +84,8 @@ pub const MASK_MISSILE: u32 = 0x0080_0811;
 /// A bounce off a floor (normal z over 0.2) that leaves less than this speed stops the grenade (the IW / Quake 3
 /// engines' missile stop check).
 const REST_SPEED: f32 = 40.0;
+/// A bounce that changes the speed by more than this makes a sound (IW4L `BOUNCE_EVENT_SPEED_DELTA`).
+const BOUNCE_SOUND_SPEED_CHANGE: f32 = 100.0;
 /// A grenade's collision half size.
 const HALF: f32 = 1.0;
 
@@ -97,6 +99,8 @@ pub struct Grenade {
     pub detonate_at_ms: u32,
     pub resting: bool,
     pub facts: EquipRecord,
+    /// The last step bounced hard enough to be heard (IW4L: a speed change over 100).
+    pub bounced: bool,
 }
 
 fn len(v: [f32; 3]) -> f32 {
@@ -172,11 +176,13 @@ impl Grenade {
             detonate_at_ms: now_ms.wrapping_add(fuse as u32),
             resting: false,
             facts,
+            bounced: false,
         }
     }
 
     /// Fly for `dt` seconds: under gravity, bouncing off what it hits. Returns true when the fuse is up at `now_ms`.
     pub fn step(&mut self, clip: &MapClip<'_>, dt: f32, now_ms: u32) -> bool {
+        self.bounced = false;
         if !self.resting && dt > 0.0 {
             let mut left = dt;
             for _ in 0..4 {
@@ -215,7 +221,12 @@ impl Grenade {
                         .copied()
                         .unwrap_or(0.0),
                 );
+                let before = self.velocity;
                 self.velocity = bounce(self.velocity, t.normal, par, perp);
+                let change: [f32; 3] = core::array::from_fn(|k| self.velocity[k] - before[k]);
+                if len(change) > BOUNCE_SOUND_SPEED_CHANGE {
+                    self.bounced = true;
+                }
                 if t.normal[2] > 0.2 && len(self.velocity) < REST_SPEED {
                     self.velocity = [0.0; 3];
                     self.resting = true;
@@ -389,6 +400,12 @@ mod tests {
             &f.perpendicular_bounce[..4]
         );
         assert_eq!(f.offhand_class, 1);
+        std::println!("frag sounds {:?}", f.sounds);
+        assert_ne!(
+            f.sounds[wpk::weapon::equip_sound::EXPLODE],
+            wpk::sound::NONE,
+            "the explosion has a sound"
+        );
         assert!(
             f.fuse_time_ms > 1000 && f.explosion_radius > 100 && f.explosion_inner_damage >= 100
         );

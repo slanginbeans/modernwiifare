@@ -292,6 +292,14 @@ impl AssetLinkSink for Collector {
         Ok(())
     }
 
+    fn capture_fx(
+        &mut self,
+        s: &ZoneStream<'_>,
+        geometry: fastfile_iw4::FxEffectDefGeometry,
+    ) -> fastfile_iw4::Result<()> {
+        self.links.fx_captured(s, &geometry);
+        Ok(())
+    }
     fn capture_raw_file(
         &mut self,
         name: &str,
