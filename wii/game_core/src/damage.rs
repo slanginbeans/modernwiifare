@@ -91,8 +91,9 @@ const STANDING: [HitBox; 10] = [
 ];
 
 /// The hit boxes of a player at `origin`, crouched or not (crouched: 50 tall, IW4's crouch hull; heights scaled).
-pub fn boxes(origin: [f32; 3], crouched: bool) -> [HitBox; 10] {
-    let scale = if crouched { 50.0 / 70.0 } else { 1.0 };
+pub fn boxes(origin: [f32; 3], height: f32) -> [HitBox; 10] {
+    // The standing column squashed to the stance's hull height (crouched 50, prone 30).
+    let scale = height / 70.0;
     STANDING.map(|h| HitBox {
         loc: h.loc,
         mins: [
@@ -177,7 +178,7 @@ mod tests {
 
     #[test]
     fn shots_find_the_first_box() {
-        let bx = boxes([100.0, 0.0, 0.0], false);
+        let bx = boxes([100.0, 0.0, 0.0], 70.0);
         // Level with the head, from the side: the head.
         assert_eq!(
             first_hit([0.0, 0.0, 64.0], [200.0, 0.0, 64.0], &bx).map(|h| h.1),
@@ -191,7 +192,7 @@ mod tests {
         // Over the head: nothing.
         assert!(first_hit([0.0, 0.0, 80.0], [200.0, 0.0, 80.0], &bx).is_none());
         // Crouched, the head is lower.
-        let c = boxes([100.0, 0.0, 0.0], true);
+        let c = boxes([100.0, 0.0, 0.0], 50.0);
         assert!(first_hit([0.0, 0.0, 64.0], [200.0, 0.0, 64.0], &c).is_none());
         assert_eq!(
             first_hit([0.0, 0.0, 46.0], [200.0, 0.0, 46.0], &c).map(|h| h.1),

@@ -45,7 +45,7 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
    deaths: done. Spawns follow MW2's free-for-all weighting (`_spawnlogic.gsc`: distance to everyone, enemies in
    sight, the nearest enemy, the last spawn used): done. Still to do: the playlist's overrides (the stock script
    limit is 1000 points).
-9. Crouch as MW2's console toggle; prone.
+9. ~~Crouch as MW2's console toggle; prone~~ done (tap / hold, IW4L's stance button). Footsteps done. Not yet: Ninja's quieter steps, bots hearing steps.
 13. **Team deathmatch**: done (teams, team score, friendly fire off, team spawns, Game Setup with the scripts'
     limits). The stock script limits are low (500 points, 5 kills); MW2's retail playlists aren't readable from
     the install (`mp_playlists_dlc2`'s playlist is empty), so Game Setup offers longer limits. Not yet: the other

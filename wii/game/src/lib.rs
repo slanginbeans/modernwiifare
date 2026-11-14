@@ -914,6 +914,16 @@ fn run_map(
     let mut impacts: [(Option<[f32; 3]>, u32); 8] = [(None, 0); 8];
     // World sounds (explosions, grenade bounces, throws) from the common pack's bank.
     let mut world_sounds = sound::Sounds::load(common);
+    // Footsteps by gait, listener and surface (`STEP`; empty with an older pack).
+    let footsteps: Vec<u16> = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::FOOTSTEPS))
+        .map_or_else(Vec::new, |s| {
+            s.data
+                .chunks_exact(2)
+                .map(|b| u16::from_be_bytes([b[0], b[1]]))
+                .collect()
+        });
     let equip_sound = |weapon: u32, k: usize| {
         wpk::records::get::<wpk::weapon::EquipRecord>(equips, weapon as usize)
             .map_or(wpk::sound::NONE, |e| e.sounds[k])
@@ -958,6 +968,7 @@ fn run_map(
     let mut hip_fov_scale = 1.0f32;
     // When X started being held over a knife you can pick up (IW4L: the use button held 250 ms takes the item).
     let mut use_hold_ms: Option<u32> = None;
+    let mut stance_button = game_core::player::StanceButton::default();
     // X double tap for C4 (`watchC4AltDetonate`): when X went down, and when a short press ended.
     let mut x_down_ms: Option<u32> = None;
     let mut x_short_release_ms: Option<u32> = None;
@@ -1150,7 +1161,7 @@ fn run_map(
                     continue;
                 }
                 let (feet, chest) = arena::feet_and_aim(&f.player);
-                let height = if f.player.crouched() { 50.0 } else { 70.0 };
+                let height = f.player.hull_height();
                 let t = c.trace(eye, chest, [0.0; 3], [0.0; 3], game_core::gun::MASK_SHOT);
                 if t.fraction < 1.0 {
                     continue;
@@ -1243,7 +1254,12 @@ fn run_map(
                             right,
                             look: look_delta,
                             jump: pad.held & ffi::BTN_A != 0,
-                            crouch: pad.held & ffi::BTN_B != 0,
+                            // B: tap to crouch, hold to go prone (MW2's console stance button).
+                            stance: stance_button.update(
+                                pad.held & ffi::BTN_B != 0,
+                                !p.on_ground(),
+                                now as i32,
+                            ),
                             sprint: pad.held & ffi::BTN_Z != 0,
                             ads: ads_held,
                             fire: pad.held & ffi::BTN_R != 0 || pad.r > 100,
@@ -1423,6 +1439,7 @@ fn run_map(
                     });
                     perk_set = equip(&mut arsenal, gfx, class);
                     life.respawn();
+                    stance_button.reset();
                 }
             }
             _ => fly::update(
@@ -1454,6 +1471,7 @@ fn run_map(
             );
             a.regen(now);
             a.update_grenades(c, dt, now, &mut events);
+            a.footsteps(c, &mut events);
             life = a.fighters[0].life;
             // Hits slow you (IW4 damage timer, set on the arena's copy of you).
             if let Some(p) = player.as_mut() {
@@ -1465,6 +1483,26 @@ fn run_map(
         }
         for e in events.drain(..) {
             match e {
+                Event::Footstep {
+                    fighter,
+                    origin,
+                    gait,
+                    surface,
+                } => {
+                    // Yours as you hear them (the `_plr` set), others' where they are.
+                    let you = usize::from(fighter == 0);
+                    let alias = footsteps
+                        .get(wpk::sound::step_index(gait, you, surface))
+                        .copied()
+                        .unwrap_or(wpk::sound::NONE);
+                    if let Some(w) = world_sounds.as_mut() {
+                        if you == 1 {
+                            w.play(alias);
+                        } else {
+                            w.play_at(alias, origin, cam.eye, cam.right());
+                        }
+                    }
+                }
                 Event::Hit {
                     attacker,
                     victim,
@@ -1587,7 +1625,7 @@ fn run_map(
                 .filter(|(_, f)| f.life.alive())
             {
                 let ally = !a.enemies(0, i);
-                for h in game_core::damage::boxes(f.draw_origin(now), f.player.crouched()) {
+                for h in game_core::damage::boxes(f.draw_origin(now), f.player.hull_height()) {
                     boxes.push([
                         h.mins[0], h.mins[1], h.mins[2], h.maxs[0], h.maxs[1], h.maxs[2],
                     ]);

@@ -747,6 +747,7 @@ dependencies = [
  "gx_texture",
  "hud_iw4",
  "lighting_iw4",
+ "movement_iw4",
  "png",
  "serde",
  "serde_json",

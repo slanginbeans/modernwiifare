@@ -406,13 +406,14 @@ pub fn segment_box(a: [f32; 3], b: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Opti
 }
 
 /// One player's damage from a blast at `origin` (IW4L `radius_player_attempts`): `feet` is the player's origin,
-/// `crouched` its stance, `yaw` its view yaw, `sees(from, to)` a world trace that passes.
+/// `height` its hull's top and `view_height` its eye, `yaw` its view yaw, `sees(from, to)` a world trace that passes.
 #[allow(clippy::too_many_arguments)]
 pub fn blast_damage(
     f: &EquipRecord,
     origin: [f32; 3],
     feet: [f32; 3],
-    crouched: bool,
+    height: f32,
+    view_height: f32,
     yaw: f32,
     cone: Option<([f32; 3], f32)>,
     mut sees: impl FnMut([f32; 3], [f32; 3]) -> bool,
@@ -421,7 +422,6 @@ pub fn blast_damage(
     if radius <= 0.0 {
         return 0;
     }
-    let height = if crouched { 50.0 } else { 70.0 };
     let mid = [feet[0], feet[1], feet[2] + height * 0.5];
     let half = [15.0, 15.0, height * 0.5];
     let dist = gamemode_iw4::radius_damage_distance_to_aabb(origin, mid, half);
@@ -435,7 +435,6 @@ pub fn blast_damage(
             return 0;
         }
     }
-    let view_height = if crouched { 40.0 } else { 60.0 };
     let r = yaw.to_radians();
     let right = [libm::sinf(r), -libm::cosf(r), 0.0];
     let vis =
@@ -677,7 +676,8 @@ mod tests {
                 &f,
                 [0.0, 0.0, 10.0],
                 [x, 0.0, 0.0],
-                false,
+                70.0,
+                60.0,
                 0.0,
                 None,
                 |_, _| true,
@@ -690,7 +690,8 @@ mod tests {
             &f,
             [0.0, 0.0, 10.0],
             [50.0, 0.0, 0.0],
-            false,
+            70.0,
+            60.0,
             0.0,
             None,
             |_, _| false,
@@ -702,7 +703,8 @@ mod tests {
             &f,
             [0.0, 0.0, 10.0],
             [80.0, 0.0, 0.0],
-            false,
+            70.0,
+            60.0,
             0.0,
             cone,
             |_, _| true,
@@ -711,7 +713,8 @@ mod tests {
             &f,
             [0.0, 0.0, 10.0],
             [-80.0, 0.0, 0.0],
-            false,
+            70.0,
+            60.0,
             0.0,
             cone,
             |_, _| true,

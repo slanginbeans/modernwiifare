@@ -64,7 +64,7 @@ The GameCube sticks stop short of their full range, so each stick's full deflect
 it (once fully pushed, full forward reaches IW4's sprint threshold). ADS zooms to each weapon's own field of view
 (IW4L `calc_fov`), and the first-person gun comes up to its sights through the weapon's ADS clips (see below).
 
-Controls in a match (IW4L movement and the map's collision): main stick move, C-stick look, **A** jump, **B** crouch
+Controls in a match (IW4L movement and the map's collision): main stick move, C-stick look, **A** jump, **B** stance (tap: crouch / stand, hold 0.3 s: prone / stand; IW4L's console stance button)
 (held), **Z** sprint, **L** ADS, **R** fire, **X** reload, **Y** switch weapon (the gun drops, then the other raises,
 as in MW2), **D-pad right** melee, **D-pad up** lethal grenade (hold to cook), **D-pad down** tactical grenade,
 **D-pad left** calls in your newest killstreak reward. **Z + D-pad up** toggles free fly (main
@@ -72,6 +72,8 @@ stick, C-stick, L/R triggers down/up, B fast); leaving free fly drops the player
 **Z + D-pad down** toggles the performance overlay (fps, frame / CPU /
 GPU-wait ms, triangles (of which static models), draws, state changes, visible cells, models, position; see
 `docs/perf.md`). A pack without a `CLIP` section starts in free fly.
+
+Footsteps: each player's bob cycle wrapping is a step (IW4L), sounding `step_<gait>[_plr]_<surface>` (sprint, run, walk / crouch, prone; the surface under the feet; `_default` when a surface has none; `STEP` in `common.wpk`); yours as you hear them, others' where they are.
 
 Grenades: your class's frag-type equipment (frag, semtex) is thrown through IW4L's offhand states (pull back, cook
 while held, throw) and flies as IW4L's sim flies it (throw speed, gravity, the weapon's per-surface bounce, the fuse;
@@ -156,7 +158,7 @@ feed, and hits show MW2's hitmarker.
   its min-damage range) times the hit location's multiplier from MW2's `mp_lochit_dmgtable` (read from your copy and
   baked into each weapon by the converter, as IW4L does). Bullets hit the first player in their path before the wall
   behind. Players' hit volumes are a stack of boxes (head, neck, upper and lower torso, arms, upper and lower legs)
-  sized from IW4's hull and view heights, standing or crouched, until the character models are converted: where a
+  sized from IW4's hull and view heights, standing, crouched or prone (the standing boxes squashed to the hull), until the character models are converted: where a
   shot lands on the body is approximated, the damage numbers are not.
 - **Bots** play with the same IW4L movement and weapon code as you, their guns from MW2's five default classes. They
   see 90° in front of them up to 5906 units with a clear line (IW4L's bot sensor), hear gunfire within 2000 units,

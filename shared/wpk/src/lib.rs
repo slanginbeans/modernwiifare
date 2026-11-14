@@ -96,6 +96,8 @@ pub mod tag {
     pub const WEAPON_EQUIP: Tag = *b"WEQP";
     /// Sight-blocking effect elements of thrown weapons (`weapon::BlockerRecord`; smoke).
     pub const WEAPON_BLOCKERS: Tag = *b"WSMK";
+    /// Footstep sounds by gait, listener and surface (`sound::step_index`; u16 aliases in the world bank).
+    pub const FOOTSTEPS: Tag = *b"STEP";
     /// Sound alias lists ([`crate::sound::AliasRecord`]).
     pub const SOUND_ALIASES: Tag = *b"SNDA";
     /// Sound variants ([`crate::sound::VariantRecord`]).

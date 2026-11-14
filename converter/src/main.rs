@@ -765,6 +765,24 @@ fn run_common(args: &[String]) -> ExitCode {
             r
         })
         .collect();
+    // Footsteps (IW4L `audio::aliases`): `step_<gait>[_plr]_<surface>`, else the gait's `_default`, per gait (sprint,
+    // run, walk, prone), listener (others, you) and surface type.
+    let mut steps = vec![wpk::sound::NONE; wpk::sound::STEP_COUNT];
+    for (g, gait) in ["sprint", "run", "walk", "prone"].iter().enumerate() {
+        for (l, plr) in ["", "_plr"].iter().enumerate() {
+            let fallback = format!("step_{gait}{plr}_default");
+            let fallback_idx = world_bank.add(&capture, &fallback);
+            for (s, surf) in movement_iw4::SURFACE_TYPE_NAMES.iter().enumerate() {
+                let name = format!("step_{gait}{plr}_{surf}");
+                let idx = if capture.aliases.contains_key(&name) {
+                    world_bank.add(&capture, &name)
+                } else {
+                    fallback_idx
+                };
+                steps[wpk::sound::step_index(g, l, s)] = idx;
+            }
+        }
+    }
     let files: HashSet<String> = weapons.iter().map(|w| w.name().to_owned()).collect();
     println!(
         "hit-location damage table: {}",
@@ -873,6 +891,11 @@ fn run_common(args: &[String]) -> ExitCode {
         wpk::tag::SOUND_DATA,
         0,
         std::mem::take(&mut world_bank.data),
+    );
+    b.section(
+        wpk::tag::FOOTSTEPS,
+        steps.len() as u32,
+        steps.iter().flat_map(|v| v.to_be_bytes()).collect(),
     );
     b.section(wpk::tag::CLASSES, 0, catalog.encode());
     // Menus: MW2's fonts and baked screens, with their textures.

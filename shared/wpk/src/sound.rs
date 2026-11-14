@@ -14,6 +14,23 @@ use crate::records::Record;
 /// "No sound" in an alias index.
 pub const NONE: u16 = 0xFFFF;
 
+/// Footstep table (`STEP` in `common.wpk`: u16 alias indices into its world bank): by gait (sprint, run, walk,
+/// prone), listener (another player, you) and IW4 surface type (31).
+pub const STEP_COUNT: usize = 4 * 2 * 31;
+
+/// Gaits of the footstep table.
+pub mod gait {
+    pub const SPRINT: usize = 0;
+    pub const RUN: usize = 1;
+    pub const WALK: usize = 2;
+    pub const PRONE: usize = 3;
+}
+
+/// Index in the footstep table of `gait`, `you` (0 others, 1 you) and `surface`.
+pub fn step_index(gait: usize, you: usize, surface: usize) -> usize {
+    (gait * 2 + you) * 31 + surface.min(30)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AliasRecord {
     pub first_variant: u16,

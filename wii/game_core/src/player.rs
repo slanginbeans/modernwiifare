@@ -23,6 +23,8 @@ pub struct Steer {
     pub right: i8,
     pub jump: bool,
     pub crouch: bool,
+    /// Prone (IW4 `BUTTON_PRONE`; wins over crouch).
+    pub prone: bool,
     pub sprint: bool,
     pub ads: bool,
     /// Fire and reload held: pmove sees them (they end a sprint, IW4 `SPRINT_INTERFERING`).
@@ -39,11 +41,63 @@ pub struct MovePad {
     /// View change this step, degrees (pitch down positive, yaw left positive), from [`crate::look::look_frame`].
     pub look: [f32; 2],
     pub jump: bool,
-    pub crouch: bool,
+    /// Stance bits from [`StanceButton`] (`buttons::CROUCH` / `buttons::PRONE`).
+    pub stance: u32,
     pub sprint: bool,
     pub ads: bool,
     pub fire: bool,
     pub reload: bool,
+}
+
+/// The console stance button (IW4L `input_iw4` `stance_button` / `stance_hold`): a tap toggles crouch; held
+/// [`STANCE_HOLD_MS`] on the ground it goes prone (or stands up from prone).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StanceButton {
+    /// `buttons::CROUCH`, `buttons::PRONE` or 0.
+    pub latch: u32,
+    held: Option<(u32, i32)>,
+    was_down: bool,
+}
+
+/// IW4L `STANCE_HOLD_MS`.
+pub const STANCE_HOLD_MS: i32 = 300;
+
+impl StanceButton {
+    /// The button's state at `now_ms` (`airborne`: the hold waits for the ground). Returns the stance bits.
+    pub fn update(&mut self, down: bool, airborne: bool, now_ms: i32) -> u32 {
+        if down != self.was_down {
+            self.was_down = down;
+            if down {
+                self.held = Some((self.latch, now_ms));
+                self.latch = buttons::CROUCH;
+            } else if let Some((from, _)) = self.held.take()
+                && from == buttons::CROUCH
+            {
+                self.latch = 0;
+            }
+        }
+        if let Some((from, since)) = self.held {
+            if airborne {
+                self.held = Some((from, now_ms));
+            } else if now_ms.wrapping_sub(since) >= STANCE_HOLD_MS {
+                self.latch = if from == buttons::PRONE {
+                    0
+                } else {
+                    buttons::PRONE
+                };
+                self.held = None;
+            }
+        }
+        self.latch
+    }
+
+    /// Stand (a jump from crouch, a spawn).
+    pub fn reset(&mut self) {
+        *self = StanceButton {
+            was_down: self.was_down,
+            ..StanceButton::default()
+        };
+    }
 }
 
 /// Units per degree in IW4's 16-bit angles.
@@ -237,7 +291,8 @@ impl Player {
                 forward: pad.forward,
                 right: pad.right,
                 jump: pad.jump,
-                crouch: pad.crouch,
+                crouch: pad.stance & buttons::CROUCH != 0,
+                prone: pad.stance & buttons::PRONE != 0,
                 sprint: pad.sprint,
                 ads: pad.ads,
                 fire: pad.fire,
@@ -256,7 +311,9 @@ impl Player {
         if st.jump {
             btn |= buttons::JUMP;
         }
-        if st.crouch {
+        if st.prone {
+            btn |= buttons::PRONE;
+        } else if st.crouch {
             btn |= buttons::CROUCH;
         }
         if st.sprint {
@@ -321,6 +378,22 @@ impl Player {
     pub fn eye(&self) -> [f32; 3] {
         let o = self.ps.origin;
         [o[0], o[1], o[2] + self.ps.view_height_current]
+    }
+
+    /// The top of the player's hull by stance (IW4: 70 standing, 50 crouched, 30 prone).
+    pub fn hull_height(&self) -> f32 {
+        if self.prone() {
+            30.0
+        } else if self.crouched() {
+            50.0
+        } else {
+            70.0
+        }
+    }
+
+    /// Whether prone (IW4 `PMF_PRONE`).
+    pub fn prone(&self) -> bool {
+        self.ps.pm_flags & playerstate_iw4::pm_flags::PRONE != 0
     }
 
     /// Whether crouched (IW4 `PMF_DUCKED`).
@@ -456,5 +529,71 @@ mod tests {
             moved * 2 > spawns.len(),
             "most spawns should have room to run"
         );
+    }
+    #[test]
+    fn the_stance_button_taps_to_crouch_and_holds_to_go_prone() {
+        let mut s = StanceButton::default();
+        let crouch = buttons::CROUCH;
+        let prone = buttons::PRONE;
+        // Tap: crouch, stays crouched; tap again: stand.
+        assert_eq!(s.update(true, false, 0), crouch);
+        assert_eq!(s.update(false, false, 100), crouch);
+        assert_eq!(s.update(true, false, 1000), crouch);
+        assert_eq!(s.update(false, false, 1100), 0);
+        // Hold 300 ms: prone; hold again from prone: stand.
+        s.update(true, false, 2000);
+        assert_eq!(s.update(true, false, 2300), prone);
+        assert_eq!(s.update(false, false, 2400), prone);
+        s.update(true, false, 3000);
+        assert_eq!(s.update(true, false, 3300), 0);
+        s.update(false, false, 3400);
+        // In the air the hold waits for the ground.
+        s.update(true, true, 4000);
+        assert_eq!(s.update(true, true, 4500), crouch);
+        assert_eq!(s.update(true, false, 4600), crouch);
+        assert_eq!(s.update(true, false, 4900), prone);
+    }
+
+    #[test]
+    fn going_prone_lowers_the_view_and_hull() {
+        let clip = floor_clip();
+        let mc = MapClip::new(&clip);
+        let mut p = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+        let pad = MovePad {
+            stance: buttons::PRONE,
+            ..MovePad::default()
+        };
+        for _ in 0..120 {
+            p.update(&mc, &pad, &WeaponMove::default(), 16);
+        }
+        assert!(p.prone(), "prone");
+        assert_eq!(p.hull_height(), 30.0);
+        assert!(
+            p.ps.view_height_current < 20.0,
+            "{}",
+            p.ps.view_height_current
+        );
+    }
+    #[test]
+    fn running_steps_about_twice_a_second() {
+        let clip = floor_clip();
+        let mc = MapClip::new(&clip);
+        let mut p = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+        let pad = MovePad {
+            forward: 127,
+            ..MovePad::default()
+        };
+        let mut steps = 0;
+        let mut last = p.ps.bob_cycle as u8;
+        for _ in 0..120 {
+            p.update(&mc, &pad, &WeaponMove::default(), 16);
+            let bob = p.ps.bob_cycle as u8;
+            if movement_iw4::bob_cycle_wrapped(last, bob) {
+                steps += 1;
+            }
+            last = bob;
+        }
+        std::println!("{steps} steps in 1.9 s");
+        assert!((2..=8).contains(&steps), "{steps}");
     }
 }

@@ -61,6 +61,8 @@ pub struct Fighter {
     act: Act,
     prev_origin: [f32; 3],
     last_step_ms: u32,
+    /// The bob cycle last seen (a wrap is a footstep), None until seen.
+    last_bob: Option<u8>,
 }
 
 impl Fighter {
@@ -86,6 +88,7 @@ impl Fighter {
             steps: 0,
             act: Act::default(),
             last_step_ms: 0,
+            last_bob: None,
         }
     }
 
@@ -128,6 +131,13 @@ pub enum Event {
         origin: [f32; 3],
         weapon: u32,
     },
+    /// A footstep (IW4L `emit_footstep_on_bob_wrap`): fighter, where, the footstep table's gait and surface.
+    Footstep {
+        fighter: usize,
+        origin: [f32; 3],
+        gait: usize,
+        surface: usize,
+    },
     /// A claymore saw an enemy (it goes off after the grace period).
     ClaymoreTripped {
         origin: [f32; 3],
@@ -137,7 +147,8 @@ pub enum Event {
 /// The player's position for hit tests and for the bots to see.
 pub fn feet_and_aim(p: &Player) -> ([f32; 3], [f32; 3]) {
     let o = p.ps.origin;
-    let chest = if p.crouched() { 32.0 } else { 45.0 };
+    // The chest at the same share of the hull at every stance (45 of 70 standing, 32 of 50 crouched).
+    let chest = p.hull_height() * 0.643;
     (o, [o[0], o[1], o[2] + chest])
 }
 
@@ -513,7 +524,7 @@ impl Arena {
             .filter(move |(i, f)| *i != me && f.life.alive() && (*i != 0 || self.human_present))
             .map(|(_, f)| Body {
                 origin: f.player.ps.origin,
-                height: if f.player.crouched() { 50.0 } else { 70.0 },
+                height: f.player.hull_height(),
             })
     }
 
@@ -540,7 +551,7 @@ impl Arena {
             if i == from || !f.life.alive() || (i == 0 && !self.human_present) {
                 continue;
             }
-            let boxes = damage::boxes(f.player.ps.origin, f.player.crouched());
+            let boxes = damage::boxes(f.player.ps.origin, f.player.hull_height());
             if let Some((t, loc)) = damage::first_hit(shot.start, shot.end, &boxes)
                 && best.is_none_or(|b| t < b.0)
             {
@@ -594,7 +605,7 @@ impl Arena {
                 if i == from || !f.life.alive() || (i == 0 && !self.human_present) {
                     continue;
                 }
-                let boxes = damage::boxes(f.player.ps.origin, f.player.crouched());
+                let boxes = damage::boxes(f.player.ps.origin, f.player.hull_height());
                 if let Some((t, _)) = damage::first_hit(eye, end, &boxes)
                     && t < wall
                     && best.is_none_or(|b| t < b.0)
@@ -738,7 +749,7 @@ impl Arena {
                         let to = [g.origin[0], g.origin[1], g.origin[2]];
                         let vis = gamemode_iw4::can_damage_player_vis_scale(
                             f.player.ps.origin,
-                            if f.player.crouched() { 40.0 } else { 60.0 },
+                            f.player.ps.view_height_current,
                             [
                                 libm::sinf(yaw.to_radians()),
                                 -libm::cosf(yaw.to_radians()),
@@ -779,7 +790,8 @@ impl Arena {
                     &g.facts,
                     g.origin,
                     f.player.ps.origin,
-                    f.player.crouched(),
+                    f.player.hull_height(),
+                    f.player.ps.view_height_current,
                     yaw,
                     g.cone(),
                     |a, b| {
@@ -916,7 +928,7 @@ impl Arena {
                 continue;
             }
             let o = f.player.ps.origin;
-            let h = if f.player.crouched() { 50.0 } else { 70.0 };
+            let h = f.player.hull_height();
             let lo = [o[0] - 15.0, o[1] - 15.0, o[2]];
             let hi = [o[0] + 15.0, o[1] + 15.0, o[2] + h];
             if let Some(t) = crate::grenade::segment_box(g.from, g.origin, lo, hi)
@@ -980,6 +992,51 @@ impl Arena {
             }
         }
         best.map(|(_, i)| i)
+    }
+
+    /// Footsteps since the last call: a fighter on the ground whose bob cycle wrapped (IW4L `bob_cycle_wrapped`)
+    /// steps, by its gait (prone, sprinting, walking or crouched, else running) on the surface under its feet.
+    pub fn footsteps(&mut self, clip: &MapClip<'_>, out: &mut Vec<Event>) {
+        use wpk::sound::gait;
+        for (i, f) in self.fighters.iter_mut().enumerate() {
+            let bob = f.player.ps.bob_cycle as u8;
+            let last = f.last_bob.replace(bob);
+            if !f.life.alive() || (i == 0 && !self.human_present) || !f.player.on_ground() {
+                continue;
+            }
+            if !last.is_some_and(|l| movement_iw4::bob_cycle_wrapped(l, bob)) {
+                continue;
+            }
+            let flags = f.player.ps.pm_flags;
+            let g = if f.player.prone() {
+                gait::PRONE
+            } else if flags & playerstate_iw4::pm_flags::SPRINTING != 0 {
+                gait::SPRINT
+            } else if f.player.crouched() || flags & playerstate_iw4::pm_flags::WALKING != 0 {
+                gait::WALK
+            } else {
+                gait::RUN
+            };
+            let o = f.player.ps.origin;
+            let t = clip.trace(
+                [o[0], o[1], o[2] + 1.0],
+                [o[0], o[1], o[2] - 32.0],
+                [0.0; 3],
+                [0.0; 3],
+                crate::collision::MASK_PLAYER_SOLID,
+            );
+            let surface = if t.fraction < 1.0 {
+                ((t.surface_flags >> 20) & 0x1f) as usize
+            } else {
+                0
+            };
+            out.push(Event::Footstep {
+                fighter: i,
+                origin: o,
+                gait: g,
+                surface,
+            });
+        }
     }
 
     /// Put fighter `v` under a flash or stun shock for `secs` seconds (a longer one already running stays).
