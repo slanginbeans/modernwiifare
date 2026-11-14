@@ -292,6 +292,7 @@ fn bake_screen(
 pub fn bake(
     ui: &UiCapture,
     localize: &HashMap<String, String>,
+    extra_icons: &[(String, String)],
     mut tex: impl FnMut(&str) -> Option<u16>,
 ) -> (UiPack, BakeReport) {
     let mut report = BakeReport::default();
@@ -353,10 +354,16 @@ pub fn bake(
     }
     report.screens = screens.len();
     let white = tex("white").unwrap_or(NONE);
-    let icons = ICONS
+    let mut icons: Vec<(String, u16)> = ICONS
         .iter()
         .filter_map(|&n| tex(n).map(|t| (n.to_owned(), t)))
         .collect();
+    // The HUD's own images (`key` -> material): the hitmarker, weapons' HUD icons, killstreak icons.
+    for (key, material) in extra_icons {
+        if let Some(t) = tex(material) {
+            icons.push((key.clone(), t));
+        }
+    }
     (
         UiPack {
             fonts,
@@ -479,7 +486,7 @@ mod tests {
         let mut ui = UiCapture::default();
         ui.menus.insert("main_text".into(), menu);
         let mut names = Vec::new();
-        let (pack, r) = bake(&ui, &HashMap::new(), |m| {
+        let (pack, r) = bake(&ui, &HashMap::new(), &[], |m| {
             names.push(m.to_owned());
             Some(names.len() as u16 - 1)
         });
@@ -548,7 +555,7 @@ mod tests {
         ui.menus.insert("changeclass".into(), menu);
         let localize = HashMap::from([("TITLE_KEY".to_owned(), "CHOOSE".to_owned())]);
         let mut names = Vec::new();
-        let (pack, _) = bake(&ui, &localize, |m| {
+        let (pack, _) = bake(&ui, &localize, &[], |m| {
             names.push(m.to_owned());
             Some(names.len() as u16 - 1)
         });

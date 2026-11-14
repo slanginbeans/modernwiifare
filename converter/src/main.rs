@@ -104,6 +104,10 @@ fn run(args: &[String]) -> ExitCode {
                         preview::write_png(&out, &img)?;
                         written.push(out);
                     }
+                    let img = menu_preview::render_hud(&b)?;
+                    let out = PathBuf::from("out/preview/menu_hud.png");
+                    preview::write_png(&out, &img)?;
+                    written.push(out);
                     // With a map pack too: that map's HUD minimap at its first spawn.
                     if let Some(map) = args.get(2) {
                         let m = std::fs::read(map).map_err(|e| format!("{map}: {e}"))?;
@@ -596,7 +600,46 @@ fn build_ui(
             tex.add_file(&z.dir, file, wpk::records::Wrap::Clamp).ok()
         })
     };
-    Some(ui_bake::bake(&ui, &localize, |name| lookup(name, tex)))
+    // The HUD's images: MW2's hitmarker (`damage_feedback`), each weapon's HUD icon (`weapon:<name>`) and each
+    // killstreak's icon (`streak:<name>`: killstreakTable column 14).
+    let mut extra: Vec<(String, String)> =
+        vec![("damage_feedback".into(), "damage_feedback".into())];
+    // One key per icon: the shortest weapon name using it (the base weapon; attachment variants share its icon, and
+    // the HUD falls back to the base name).
+    let mut by_icon: HashMap<String, String> = HashMap::new();
+    for z in &zones {
+        for (n, icon) in z.links.weapons.iter().zip(&z.links.weapon_hud_icons) {
+            if let Some(m) = icon.as_ref().filter(|m| !n.is_empty() && !m.is_empty()) {
+                let e = by_icon.entry(m.clone()).or_insert_with(|| n.clone());
+                if n.len() < e.len() {
+                    *e = n.clone();
+                }
+            }
+        }
+    }
+    let mut weapon_icons: Vec<(String, String)> = by_icon
+        .into_iter()
+        .map(|(m, n)| (format!("weapon:{n}"), m))
+        .collect();
+    weapon_icons.sort();
+    extra.extend(weapon_icons);
+    for z in &zones {
+        if let Some(t) = z.links.tables.get("mp/killstreaktable.csv") {
+            for r in 1..t.rows() {
+                let (name, icon) = (t.cell(r, 1), t.cell(r, 14));
+                let key = format!("streak:{name}");
+                if !name.is_empty()
+                    && icon.starts_with("specialty_")
+                    && !extra.iter().any(|(k, _)| *k == key)
+                {
+                    extra.push((key, icon.to_owned()));
+                }
+            }
+        }
+    }
+    Some(ui_bake::bake(&ui, &localize, &extra, |name| {
+        lookup(name, tex)
+    }))
 }
 
 fn run_common(args: &[String]) -> ExitCode {
@@ -950,6 +993,19 @@ fn run_common(args: &[String]) -> ExitCode {
     let mut ui_tex = pack::Textures::default();
     let mut scripts = HashMap::new();
     let built = build_ui(&a, &mut ui_tex, &mut scripts);
+    if let Some((u, _)) = &built {
+        let count = |p: &str| u.icons.iter().filter(|(k, _)| k.starts_with(p)).count();
+        println!(
+            "HUD icons: {} weapons, {} killstreaks, hitmarker {}",
+            count("weapon:"),
+            count("streak:"),
+            if count("damage_feedback") > 0 {
+                "found"
+            } else {
+                "missing"
+            }
+        );
+    }
     let rules = rules::read(&scripts);
     println!(
         "match rules: {} of {} values read from the game-type scripts ({} scripts found)",

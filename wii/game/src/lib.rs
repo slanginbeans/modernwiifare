@@ -227,7 +227,14 @@ fn spawn_camera(world: &World<'_>, i: usize) -> Camera {
 }
 
 /// Damage vignette, death screen, match clock and deaths.
-fn draw_life_hud(gfx: &mut Shim, rects: &mut Vec<Rect>, life: &Life, clock: &MatchClock, now: u32) {
+fn draw_life_hud(
+    gfx: &mut Shim,
+    rects: &mut Vec<Rect>,
+    life: &Life,
+    clock: &MatchClock,
+    now: u32,
+    text: bool,
+) {
     let hurt = life.hurt(now);
     if hurt > 0.01 {
         let a = (hurt * 200.0) as u32;
@@ -243,6 +250,11 @@ fn draw_life_hud(gfx: &mut Shim, rects: &mut Vec<Rect>, life: &Life, clock: &Mat
     }
     if !life.alive() {
         gfx.hud_rects(&[[0, 0, 640, 480]], 0x20000080);
+    }
+    if !text {
+        return;
+    }
+    if !life.alive() {
         let mut line = Str::default();
         line.push_str("YOU DIED\nRESPAWN IN ");
         line.num(life.respawn_in(now).div_ceil(1000));
@@ -273,6 +285,7 @@ fn draw_gun_hud(
     cam: &Camera,
     impacts: &[(Option<[f32; 3]>, u32)],
     now: u32,
+    text: bool,
 ) {
     // Crosshair: four ticks at the spread cone's edge (as MW2's hip-fire crosshair opens while firing or moving).
     let half_w = libm::tanf(cam.fovy.to_radians() * 0.5) * cam.aspect;
@@ -297,6 +310,9 @@ fn draw_gun_hud(
         }
     }
     gfx.hud_rects(rects, 0xffd040e0);
+    if !text {
+        return;
+    }
     // Ammo and weapon, bottom right.
     let (clip, stock) = g.ammo();
     let mut line = Str::default();
@@ -1055,6 +1071,14 @@ fn run_map(
         Vec::new()
     };
     let mut reward_note: Option<(&'static str, u32)> = None;
+    // The HUD's score popup: your score last frame, the points just scored and when.
+    let mut last_score = 0u32;
+    let mut popup: Option<(u32, u32)> = None;
+    // Weapon names by index (the HUD's grenade icons).
+    let weapon_names: Vec<alloc::string::String> =
+        wpk::records::iter::<wpk::weapon::WeaponRecord>(weapons)
+            .map(|r| alloc::string::String::from(r.name()))
+            .collect();
     let mut radar = game_core::minimap::Radar::default();
     let mut radar_at = last;
     let mut timing = Timing::default();
@@ -2062,14 +2086,139 @@ fn run_map(
         }
         sections[section::VIEW] = lap(&mut mark);
         if !flying {
+            // MW2's HUD (its fonts and images) when the common pack has the UI; else the plain one.
+            let mw2 = ui::get().is_some() && arena.is_some();
             if let Some(g) = arsenal.gun().filter(|_| life.alive()) {
-                draw_gun_hud(gfx, &mut hud_rects, g, &cam, &impacts, now);
+                draw_gun_hud(gfx, &mut hud_rects, g, &cam, &impacts, now, !mw2);
             }
-            draw_life_hud(gfx, &mut hud_rects, &life, &clock, now);
+            draw_life_hud(gfx, &mut hud_rects, &life, &clock, now, !mw2);
             if let Some(a) = arena.as_ref() {
-                draw_match_hud(gfx, &mut hud_rects, a, &feed, hitmarker_ms, now);
+                // Points just scored pop up at the crosshair.
+                let score = a.fighters[0].score;
+                if score > last_score {
+                    popup = Some((score - last_score, now));
+                }
+                last_score = score;
+                if !mw2 {
+                    draw_match_hud(gfx, &mut hud_rects, a, &feed, hitmarker_ms, now);
+                }
             }
-            // The UAV's sweep, then the minimap.
+            if let (true, Some(u), Some(a)) = (mw2, ui::get(), arena.as_ref()) {
+                let mut score_line = Str::default();
+                let mut objective_line = Str::default();
+                if a.mode.teams() {
+                    let mine = usize::from(a.fighters[0].team);
+                    score_line.push_str("US ");
+                    score_line.num(a.team_score[mine]);
+                    score_line.push_str("   THEM ");
+                    score_line.num(a.team_score[3 - mine]);
+                    if let Some(d) = a.dom.as_ref() {
+                        for f in &d.flags {
+                            let mut l = [0u8; 4];
+                            objective_line.push_str(f.letter().encode_utf8(&mut l));
+                            objective_line.push_str(match f.owner {
+                                0 => " NEUTRAL  ",
+                                t if usize::from(t) == mine => " OURS  ",
+                                _ => " THEIRS  ",
+                            });
+                        }
+                        let you = a.fighters[0].player.ps.origin;
+                        if let Some(f) = d
+                            .flags
+                            .iter()
+                            .find(|f| usize::from(f.claim) == mine && f.contains(you))
+                        {
+                            objective_line.push_str("SECURING ");
+                            objective_line.num(
+                                (f.progress_ms * 100.0 / a.rules.dom_use_ms.max(1) as f32) as u32,
+                            );
+                            objective_line.push('%');
+                        }
+                    }
+                } else {
+                    score_line.push_str("SCORE ");
+                    score_line.num(a.fighters[0].score);
+                    let (who, k) = a.leader();
+                    score_line.push_str("   ");
+                    score_line.push_str(fighter_name(who).as_str());
+                    score_line.push(' ');
+                    score_line.num(k);
+                }
+                if a.limits.score_limit > 0 {
+                    score_line.push_str(" / ");
+                    score_line.num(a.limits.score_limit);
+                }
+                let mut clock_line = Str::default();
+                let left = clock.remaining_ms(now) / 1000;
+                clock_line.num(left / 60);
+                clock_line.push(':');
+                if left % 60 < 10 {
+                    clock_line.push('0');
+                }
+                clock_line.num(left % 60);
+                let mut feed_lines: [Str; 4] = Default::default();
+                let mut feed_mine = [false; 4];
+                let mut n_feed = 0;
+                for (e, t) in &feed {
+                    let Some((killer, victim)) = e else { continue };
+                    if now.wrapping_sub(*t) > 4000 {
+                        continue;
+                    }
+                    let l = &mut feed_lines[n_feed];
+                    if killer == victim {
+                        l.push_str(fighter_name(*victim).as_str());
+                        l.push_str(" DIED");
+                    } else {
+                        l.push_str(fighter_name(*killer).as_str());
+                        l.push_str(" KILLED ");
+                        l.push_str(fighter_name(*victim).as_str());
+                    }
+                    feed_mine[n_feed] = *killer == 0 || *victim == 0;
+                    n_feed += 1;
+                }
+                let feed_refs: Vec<(&str, bool)> = (0..n_feed)
+                    .map(|k| (feed_lines[k].as_str(), feed_mine[k]))
+                    .collect();
+                let gun = arsenal.gun().filter(|_| life.alive());
+                let mut display = Str::default();
+                let weapon = gun.map(|g| {
+                    let base = g.name().split('_').next().unwrap_or("");
+                    match loadouts
+                        .catalog
+                        .and_then(|c| c.weapons.iter().find(|w| w.name == base))
+                    {
+                        Some(w) => display.push_str(&w.display),
+                        None => display.push_str(&base.to_ascii_uppercase()),
+                    }
+                    let (clip, stock) = g.ammo();
+                    (g.name(), clip, stock)
+                });
+                let mut grenades: [Option<(&str, i32)>; 2] = [None; 2];
+                if let Some(g) = gun {
+                    for (k, (w, n)) in g.offhand_ammo().take(2).enumerate() {
+                        grenades[k] = weapon_names.get(w as usize).map(|name| (name.as_str(), n));
+                    }
+                }
+                let state = game_core::hud_mw2::State {
+                    now,
+                    weapon: weapon.map(|(n, c, s)| (n, display.as_str(), c, s)),
+                    grenades,
+                    score: score_line.as_str(),
+                    objectives: objective_line.as_str(),
+                    clock: clock_line.as_str(),
+                    feed: &feed_refs,
+                    hitmarker: hitmarker_ms.is_some_and(|t| now.wrapping_sub(t) < 150),
+                    popup,
+                    reward: rewards.last().map(|r| r.as_str()),
+                    notice: reward_note,
+                    respawn_in: (!life.alive()).then(|| life.respawn_in(now).div_ceil(1000)),
+                    nuke_in: a
+                        .nuke
+                        .filter(|n| !n.done)
+                        .map(|n| n.detonate_ms.saturating_sub(now).div_ceil(1000)),
+                };
+                u.page(|ui, q| game_core::hud_mw2::layout(ui, &state, q));
+            } // The UAV's sweep, then the minimap.
             if let (Some((m, _)), Some(a)) = (world.minimap.as_ref(), arena.as_ref()) {
                 let enemies: Vec<(usize, [f32; 3])> = a
                     .fighters
@@ -2099,13 +2248,15 @@ fn run_map(
                     gfx.hud_rects(&[[0, 0, 640, 480]], 0xffff_ff00 | alpha);
                 }
             }
-            if let Some((text, at)) = reward_note.filter(|(_, at)| now.wrapping_sub(*at) < 3000) {
+            if let Some((text, at)) =
+                reward_note.filter(|(_, at)| now.wrapping_sub(*at) < 3000 && !mw2)
+            {
                 let _ = at;
                 hud_rects.clear();
                 hud::text(&mut hud_rects, 200, 360, 2, text);
                 gfx.hud_rects(&hud_rects, 0xffd040e0);
             }
-            if let Some(r) = rewards.last() {
+            if let Some(r) = rewards.last().filter(|_| !mw2) {
                 let mut line = Str::default();
                 line.push_str("D-PAD LEFT: ");
                 line.push_str(&r.to_ascii_uppercase());

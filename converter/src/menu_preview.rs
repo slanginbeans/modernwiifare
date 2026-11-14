@@ -224,7 +224,7 @@ pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
             ));
             (
                 "PAUSED",
-                s(&["RESUME", "CHANGE CLASS", "END GAME"]),
+                s(&["RESUME", "CHANGE CLASS", "OPTIONS", "DEBUG", "END GAME"]),
                 Vec::new(),
                 "A SELECT   B RESUME",
             )
@@ -250,7 +250,7 @@ pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
         }
         _ => (
             "MODERN WIIFARE",
-            s(&["PLAY", "CREATE A CLASS", "QUIT"]),
+            s(&["PLAY", "CREATE A CLASS", "OPTIONS", "DEBUG", "QUIT"]),
             Vec::new(),
             "A SELECT",
         ),
@@ -281,6 +281,49 @@ pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
         ui_page::score_rows(&ui, &rows, &mut quads);
     }
     let mut img = Image::new(640, 480, [26, 30, 36, 255]);
+    for q in &quads {
+        draw(&mut img, &textures, q);
+    }
+    Ok(img)
+}
+
+/// The match HUD (`game_core::hud_mw2`) with sample content over a dark frame.
+pub fn render_hud(common: &[u8]) -> Result<Image, String> {
+    let pack = wpk::Pack::parse(common, true).map_err(|e| format!("{e:?}"))?;
+    let ui = pack
+        .section(wpk::tag::UI)
+        .and_then(|s| UiPack::decode(s.data))
+        .ok_or("no menu data in this pack (convert again)")?;
+    let txda = pack
+        .section(wpk::tag::TEXTURE_DATA)
+        .map_or(&[][..], |s| s.data);
+    let textures: Vec<Option<Image>> = pack
+        .section(wpk::tag::TEXTURES)
+        .map(|s| {
+            records::iter::<TextureRecord>(s.data)
+                .map(|r| crate::preview::decode_texture(&r, txda))
+                .collect()
+        })
+        .unwrap_or_default();
+    let feed = [("BOT 2 KILLED BOT 4", false), ("YOU KILLED BOT 1", true)];
+    let state = game_core::hud_mw2::State {
+        now: 1000,
+        weapon: Some(("m4_mp", "M4A1", 24, 120)),
+        grenades: [Some(("frag_grenade_mp", 1)), Some(("flash_grenade_mp", 2))],
+        score: "US 1250   THEM 900 / 7500",
+        objectives: "A OURS  B NEUTRAL  C THEIRS  SECURING 40%",
+        clock: "7:42",
+        feed: &feed,
+        hitmarker: true,
+        popup: Some((100, 900)),
+        reward: Some("uav"),
+        notice: Some(("UAV ONLINE", 500)),
+        respawn_in: None,
+        nuke_in: None,
+    };
+    let mut quads = Vec::new();
+    game_core::hud_mw2::layout(&ui, &state, &mut quads);
+    let mut img = Image::new(640, 480, [70, 76, 84, 255]);
     for q in &quads {
         draw(&mut img, &textures, q);
     }

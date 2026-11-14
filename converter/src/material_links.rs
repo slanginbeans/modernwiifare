@@ -331,6 +331,8 @@ pub struct Links {
     pub weapon_impact_types: Vec<i32>,
     /// Each weapon's bullet penetration (parallel to `weapons`).
     pub weapon_pen: Vec<wpk::weapon::PenRecord>,
+    /// Each weapon's HUD icon material (`hudIcon`; parallel to `weapons`).
+    pub weapon_hud_icons: Vec<Option<String>>,
     /// The penetration depth table (`info/bullet_penetration_mp`), by type and surface.
     pub pen_table: Option<[[f32; 31]; 4]>,
     /// Each weapon's explosion effect's sight blockers (parallel to `weapons`).
@@ -583,6 +585,11 @@ impl Links {
             .and_then(|slot| self.fx_slots.get(&slot))
             .and_then(|n| self.fx_sound(n, FX_DEPTH));
         self.weapon_impact_types.push(w.impact_type);
+        let hud_icon = w
+            .hud_icon_slot
+            .and_then(|slot| self.material_name(slot))
+            .map(str::to_owned);
+        self.weapon_hud_icons.push(hud_icon);
         self.weapon_pen.push(wpk::weapon::PenRecord {
             kind: w.penetrate_type,
             multiplier: w.penetrate_multiplier,
