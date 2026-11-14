@@ -6,7 +6,9 @@
 //! that are always shown, plus those whose visibility only tests for the multiplayer build (`"mp"`); buttons take
 //! their look from the menu's first button and drive our own menu flow.
 
-use wpk::ui::{ButtonStyle, Font, Glyph, NONE, Quad, Screen, UiPack};
+use std::collections::HashMap;
+
+use wpk::ui::{ButtonStyle, Font, Glyph, Label, NONE, Quad, Screen, UiPack, label_kind};
 
 use crate::ui_capture::{Item, Menu, Rect, UiCapture};
 
@@ -22,11 +24,27 @@ pub const FONTS: [&str; 8] = [
     "fonts/hudsmallfont",
 ];
 
-/// Screens baked from MW2 menus: (our name, MW2 menu).
-pub const SCREENS: [(&str, &str); 1] = [("main", "main_text")];
+/// Screens baked from MW2 menus: (our name, MW2 menu, x offset in virtual pixels). The scoreboard page is drawn
+/// inside MW2's centred 544-wide scoreboard frame, so its centre-aligned items move left by half of that.
+pub const SCREENS: [(&str, &str, f32); 5] = [
+    ("main", "main_text", 0.0),
+    ("class_select", "changeclass", 0.0),
+    ("pause", "class", 0.0),
+    ("cac", "menu_cac_assault", 0.0),
+    ("scoreboard", "page_scoreboard", -272.0),
+];
 
-/// IW4 window style "shader": the item draws its background material.
+/// Items wider than this (virtual pixels) are layers the menu's scripts scroll across the screen (MW2's cloud
+/// overlays); still, they only wash the screen out, and they are the costliest quads to fill.
+const SCROLLING_LAYER_W: f32 = 960.0;
+
+/// IW4 window styles: "empty" (text only), "filled" (back colour over the background material, or plain), "shader"
+/// (the background material in the fore colour).
+const WINDOW_STYLE_EMPTY: i32 = 0;
+const WINDOW_STYLE_FILLED: i32 = 1;
 const WINDOW_STYLE_SHADER: i32 = 3;
+/// The back button's text (its rect is kept; the front end draws its own hint there).
+const BACK_TEXT: &str = "@PLATFORM_BACK_CAPS";
 /// IW4 item type "button".
 const ITEM_TYPE_BUTTON: i32 = 1;
 
@@ -60,7 +78,11 @@ fn place(p: &hud_iw4::ScreenPlacement, r: &Rect) -> hud_iw4::AppliedRect {
 fn shown(item: &Item) -> bool {
     match &item.visible {
         None => true,
-        Some(v) => v.split_whitespace().any(|t| t == "s:6d70"),
+        Some(v) => {
+            v.split_whitespace().any(|t| t == "s:6d70")
+                // A constant true test, `( 1 )`, dumps as "op 16 1".
+                || v.split_whitespace().filter(|&t| t != "op" && t != "16").eq(["1"])
+        }
     }
 }
 
@@ -69,36 +91,105 @@ fn material(name: &str) -> &str {
     name.trim_start_matches(',')
 }
 
+fn font_index(p: &hud_iw4::ScreenPlacement, fonts: &[Font], font: i32, scale: f32) -> u8 {
+    let name = hud_iw4::font::ui_get_font_handle(font, p.scale_virtual_to_real[1], scale);
+    fonts
+        .iter()
+        .position(|f| f.name.eq_ignore_ascii_case(name))
+        .unwrap_or(0) as u8
+}
+
+/// A menu string: `@KEY` through the localize table (the key itself when the table lacks it), else as written.
+fn text_of(text: &str, localize: &HashMap<String, String>) -> String {
+    match text.strip_prefix('@') {
+        Some(key) => localize.get(key).cloned().unwrap_or_else(|| key.to_owned()),
+        None => text.to_owned(),
+    }
+}
+
+fn label_of(p: &hud_iw4::ScreenPlacement, fonts: &[Font], item: &Item, text: String) -> Label {
+    let r = place(p, &item.rect);
+    Label {
+        x: r.x,
+        y: r.y,
+        w: r.w,
+        h: r.h,
+        font: font_index(p, fonts, item.font, item.text_scale),
+        text_scale: item.text_scale,
+        align: (item.text_align_mode & 0xf) as u8,
+        text_x: item.text_align_x * p.scale_virtual_to_real[0],
+        text_y: item.text_align_y * p.scale_virtual_to_real[1],
+        rgba: rgba(item.fore_color),
+        text,
+    }
+}
+
 fn bake_screen(
     name: &str,
     menu: &Menu,
     p: &hud_iw4::ScreenPlacement,
     fonts: &[Font],
+    localize: &HashMap<String, String>,
     tex: &mut impl FnMut(&str) -> Option<u16>,
     report: &mut BakeReport,
 ) -> Screen {
     let mut quads = Vec::new();
+    let mut labels = Vec::new();
     for item in &menu.items {
-        if item.style != WINDOW_STYLE_SHADER
-            || item.background.is_empty()
-            || !shown(item)
-            || item.fore_color[3] <= 0.0
+        if !shown(item)
+            || item.item_type == ITEM_TYPE_BUTTON
+            || item.rect.w.abs() > SCROLLING_LAYER_W
         {
             continue;
         }
-        let Some(texture) = tex(material(&item.background)) else {
+        // Text: MW2's own, or an empty slot for live text (a text-only item, or a filled one with a font).
+        if (item.style == WINDOW_STYLE_EMPTY || item.style == WINDOW_STYLE_FILLED)
+            && item.fore_color[3] > 0.0
+            && (item.style == WINDOW_STYLE_EMPTY || item.font != 0 || !item.text.is_empty())
+        {
+            let kind = if item.text.is_empty() {
+                label_kind::SLOT
+            } else if !labels.iter().any(|(k, _)| *k == label_kind::TITLE) {
+                label_kind::TITLE
+            } else {
+                label_kind::TEXT
+            };
+            labels.push((
+                kind,
+                label_of(p, fonts, item, text_of(&item.text, localize)),
+            ));
+        }
+        let (material_name, colour) = match item.style {
+            WINDOW_STYLE_SHADER if !item.background.is_empty() => {
+                (material(&item.background), item.fore_color)
+            }
+            WINDOW_STYLE_FILLED if item.back_color[3] > 0.0 => {
+                let m = if item.background.is_empty() {
+                    "white"
+                } else {
+                    material(&item.background)
+                };
+                (m, item.back_color)
+            }
+            _ => continue,
+        };
+        if colour[3] <= 0.0 {
+            continue;
+        }
+        let Some(texture) = tex(material_name) else {
             report.missing_textures += 1;
             continue;
         };
         let r = place(p, &item.rect);
         // Negative sizes mirror the image (MW2 tiles its cloud layer this way).
+        // As IW4's `UI_DrawHandlePic`: the rect keeps its corner, only the texture flips.
         let (x, w, u0, u1) = if r.w < 0.0 {
-            (r.x + r.w, -r.w, 1.0, 0.0)
+            (r.x, -r.w, 1.0, 0.0)
         } else {
             (r.x, r.w, 0.0, 1.0)
         };
         let (y, h, v0, v1) = if r.h < 0.0 {
-            (r.y + r.h, -r.h, 1.0, 0.0)
+            (r.y, -r.h, 1.0, 0.0)
         } else {
             (r.y, r.h, 0.0, 1.0)
         };
@@ -108,16 +199,24 @@ fn bake_screen(
             w,
             h,
             uv: [u0, v0, u1, v1],
-            rgba: rgba(item.fore_color),
+            rgba: rgba(colour),
             texture,
         });
     }
     report.quads += quads.len();
+    let back = menu
+        .items
+        .iter()
+        .find(|i| i.item_type == ITEM_TYPE_BUTTON && i.text == BACK_TEXT)
+        .map(|i| {
+            let r = place(p, &i.rect);
+            [r.x, r.y, r.w, r.h]
+        });
     // The button list: the first always-shown button, and the gap to the next one.
     let buttons: Vec<&Item> = menu
         .items
         .iter()
-        .filter(|i| i.item_type == ITEM_TYPE_BUTTON && shown(i))
+        .filter(|i| i.item_type == ITEM_TYPE_BUTTON && shown(i) && i.text != BACK_TEXT)
         .collect();
     let style = buttons.first().map(|b| {
         let r = place(p, &b.rect);
@@ -125,12 +224,7 @@ fn bake_screen(
             .get(1)
             .map_or(r.h, |n| place(p, &n.rect).y - r.y)
             .max(1.0);
-        let font_name =
-            hud_iw4::font::ui_get_font_handle(b.font, p.scale_virtual_to_real[1], b.text_scale);
-        let font = fonts
-            .iter()
-            .position(|f| f.name.eq_ignore_ascii_case(font_name))
-            .unwrap_or(0) as u8;
+        let font = font_index(p, fonts, b.font, b.text_scale);
         let bar = if b.background.is_empty() {
             NONE
         } else {
@@ -156,11 +250,18 @@ fn bake_screen(
         name: name.to_owned(),
         quads,
         buttons: style,
+        labels,
+        back,
     }
 }
 
-/// Bake the fonts and screens. `tex(material)` adds that material's colour texture to the pack (`TEXT` index).
-pub fn bake(ui: &UiCapture, mut tex: impl FnMut(&str) -> Option<u16>) -> (UiPack, BakeReport) {
+/// Bake the fonts and screens. `tex(material)` adds that material's colour texture to the pack (`TEXT` index);
+/// `localize` gives MW2's strings for the menus' `@KEY` text.
+pub fn bake(
+    ui: &UiCapture,
+    localize: &HashMap<String, String>,
+    mut tex: impl FnMut(&str) -> Option<u16>,
+) -> (UiPack, BakeReport) {
     let mut report = BakeReport::default();
     let p = hud_iw4::ScreenPlacement::setup_fullscreen(640.0, 480.0, 1.0);
     let mut fonts = Vec::new();
@@ -200,13 +301,34 @@ pub fn bake(ui: &UiCapture, mut tex: impl FnMut(&str) -> Option<u16>) -> (UiPack
     }
     report.fonts = fonts.len();
     let mut screens = Vec::new();
-    for (ours, theirs) in SCREENS {
+    for (ours, theirs, dx) in SCREENS {
         if let Some(menu) = ui.menus.get(theirs) {
-            screens.push(bake_screen(ours, menu, &p, &fonts, &mut tex, &mut report));
+            let mut menu = menu.clone();
+            for item in &mut menu.items {
+                item.rect.x += dx;
+            }
+            let menu = &menu;
+            screens.push(bake_screen(
+                ours,
+                menu,
+                &p,
+                &fonts,
+                localize,
+                &mut tex,
+                &mut report,
+            ));
         }
     }
     report.screens = screens.len();
-    (UiPack { fonts, screens }, report)
+    let white = tex("white").unwrap_or(NONE);
+    (
+        UiPack {
+            fonts,
+            screens,
+            white,
+        },
+        report,
+    )
 }
 
 #[cfg(test)]
@@ -320,7 +442,7 @@ mod tests {
         let mut ui = UiCapture::default();
         ui.menus.insert("main_text".into(), menu);
         let mut names = Vec::new();
-        let (pack, r) = bake(&ui, |m| {
+        let (pack, r) = bake(&ui, &HashMap::new(), |m| {
             names.push(m.to_owned());
             Some(names.len() as u16 - 1)
         });
@@ -334,5 +456,79 @@ mod tests {
         assert!(names.iter().any(|n| n == "bar"));
         assert_eq!(b.align, 2);
         assert_eq!(r.missing_textures, 0);
+    }
+
+    #[test]
+    fn bakes_labels_slots_filled_rects_and_the_back_button() {
+        let mut title = item("", 0, 0, rect(0.0, 0.0, 272.0, 28.0, 1, 1), "", None);
+        title.text = "@TITLE_KEY".into();
+        let slot = item("", 0, 0, rect(-272.0, 48.0, 272.0, 18.0, 3, 1), "", None);
+        let mut filled = item(
+            "",
+            1,
+            0,
+            rect(-272.0, 28.0, -272.0, 20.0, 3, 1),
+            ",fade",
+            None,
+        );
+        filled.back_color = [1.0, 1.0, 1.0, 0.25];
+        let hidden = item(
+            "",
+            0,
+            0,
+            rect(0.0, 0.0, 10.0, 10.0, 0, 0),
+            "",
+            Some("op 16 op 81 s:61"),
+        );
+        let mut back = item(
+            "",
+            1,
+            1,
+            rect(-64.0, -20.0, 336.0, 20.0, 1, 3),
+            ",bar",
+            Some("op 16 s:40"),
+        );
+        back.text = BACK_TEXT.into();
+        let button = item(
+            "a",
+            1,
+            1,
+            rect(-64.0, 28.0, 336.0, 20.0, 1, 1),
+            ",bar",
+            None,
+        );
+        let cloud = item("", 3, 0, rect(0.0, 0.0, 1708.0, 480.0, 0, 0), "cloud", None);
+        let menu = Menu {
+            name: "m".into(),
+            window_background: String::new(),
+            fullscreen: 1,
+            rect: rect(0.0, 0.0, 640.0, 480.0, 0, 0),
+            focus_color: [1.0; 4],
+            items: vec![title, slot, filled, hidden, back, button, cloud],
+            scripts: Vec::new(),
+        };
+        let mut ui = UiCapture::default();
+        ui.menus.insert("changeclass".into(), menu);
+        let localize = HashMap::from([("TITLE_KEY".to_owned(), "CHOOSE".to_owned())]);
+        let mut names = Vec::new();
+        let (pack, _) = bake(&ui, &localize, |m| {
+            names.push(m.to_owned());
+            Some(names.len() as u16 - 1)
+        });
+        let s = pack.screen("class_select").expect("baked");
+        assert_eq!(s.title().map(|l| l.text.as_str()), Some("CHOOSE"));
+        // The filled header has a font, so it is a slot too.
+        assert!(s.slot(0).is_some() && s.slot(1).is_some() && s.slot(2).is_none());
+        assert_eq!(
+            s.quads.len(),
+            1,
+            "the filled header; the scrolling layer is left out"
+        );
+        assert_eq!(s.quads[0].rgba & 0xff, 64);
+        assert!(s.back.is_some());
+        let b = s.buttons.expect("buttons");
+        assert!(b.y < s.back.unwrap()[1], "the back button isn't the list");
+        assert_ne!(pack.white, NONE);
+        assert!(!names.iter().any(|n| n == "cloud"));
     }
 }

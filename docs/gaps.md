@@ -50,10 +50,15 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
 6. Finer telemetry: per-bot, trace counts, A* expansions, world draw stages, the end-of-frame split, GPU metrics.
 
 ## Menus like MW2's
-Done (2026-11-14): fonts and the main menu screen baked (`wpk::ui`, `UIPK`), drawn on the Wii as textured quads;
-every list uses the main menu's style. Not yet: the cloud layer (its material has no colour texture in the UI zones),
-the other screens' own layouts (class select `changeclass`, Create-a-Class `menu_cac_assault` and the `popup_cac_*`
-choosers, pause `class`, scoreboard), MW2's menu text (localized button names), animations, 16:9 layouts.
+Done (2026-11-14): fonts and the main menu screen baked (`wpk::ui`, `UIPK`), drawn on the Wii as textured quads.
+Then each screen's own layout: class select (`changeclass`), pause (`class`), Create-a-Class (`menu_cac_assault`) and
+the scoreboard (`page_scoreboard`), with MW2's localized title / header text, filled bars, the back button's place
+for the footer hint, and empty text slots filled live (the class panel: weapons, perks, equipment; the pause
+screen's map and mode). The layout code is shared by the Wii and the PC preview (`game_core::ui_page`).
+Not yet: weapon / perk icons in the class panel, the `popup_cac_*` choosers' own look (choices use the
+Create-a-Class screen), MW2's Create-a-Class grouping (attachments inside the weapon choice, killstreaks on their
+own page; ours lists every field), the scrolling cloud layers (left out: they are moved by scripts and are the
+costliest fills), animations, 16:9 layouts.
 
 ### Plan
 IW4L reads the real menu assets (`fastfile_iw4` hooks: `capture_menu_def`, `capture_menu_item_layout`, `capture_font`

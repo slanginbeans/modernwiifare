@@ -209,6 +209,35 @@ pub fn fix(c: &Catalog, l: &mut Loadout) {
     }
 }
 
+/// The class panel's slots, in the order of MW2's `changeclass` / `menu_cac_*` menus: class name, primary (with its
+/// attachments), secondary, perks 1 to 3, deathstreak, equipment, special grenade.
+pub fn panel(cat: &Catalog, c: &Loadout, out: &mut Vec<String>) {
+    use Field as F;
+    let gun = |f: F, atts: [u8; 2], att: fn(usize) -> F| {
+        let mut s = value(cat, c, f);
+        for (k, &a) in atts.iter().enumerate() {
+            if a != 0 {
+                s.push_str(" + ");
+                s.push_str(&value(cat, c, att(k)));
+            }
+        }
+        s
+    };
+    out.push(c.name.clone());
+    out.push(gun(F::Primary, c.primary_attachments, F::PrimaryAttachment));
+    out.push(gun(
+        F::Secondary,
+        c.secondary_attachments,
+        F::SecondaryAttachment,
+    ));
+    for k in 0..3 {
+        out.push(value(cat, c, F::Perk(k)));
+    }
+    out.push(value(cat, c, F::Deathstreak));
+    out.push(value(cat, c, F::Equipment));
+    out.push(value(cat, c, F::Offhand));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

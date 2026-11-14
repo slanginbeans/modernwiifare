@@ -35,6 +35,7 @@ pub mod nav;
 pub mod player;
 pub mod sky;
 pub mod telemetry;
+pub mod ui_page;
 pub mod ui_text;
 pub mod viewmodel;
 pub mod weapon_sound;

@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 /// The converter's output revision. 1: walk graphs, hit-location damage, per-weapon view files. 2: weapon movement
 /// scales (`WMOV`). 3: ADS zoom and aim-assist ranges (`WAIM`). 4: blend / cull of model materials whose technique set
 /// comes from another zone (lit models were additive: see-through). 5: menu fonts and screens (`UIPK`).
-pub const REVISION: u32 = 5;
+/// 6: class select, pause, Create-a-Class and scoreboard screens, with their text labels.
+pub const REVISION: u32 = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

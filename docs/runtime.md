@@ -26,11 +26,17 @@ By hand:
 
 ## Menus
 The menus use MW2's own look, converted from your copy into `common.wpk` (`converter/src/ui_bake.rs`): its fonts
-(glyph tables over their atlases), and its multiplayer main menu (`main_text`): background, soldier art, logo,
-gradients, the button column's position, font and text placement, and the selection bar. Every list (main menu, map
-and class choice, Create-a-Class, pause, scoreboard) is drawn in that style for now; each screen's own MW2 layout
-comes next. `mwf-convert menu-preview <common.wpk>` renders the main menu to `out/preview/menu_main.png` to check it
-on the PC. Without menu data in `common.wpk` the menus fall back to the block font.
+(glyph tables over their atlases) and five of its screens, each with its images, gradients, title and header text,
+button column (position, font, text placement, selection bar) and the back button's place:
+- main menu (`main_text`): also the map choice;
+- class select (`changeclass`): the class panel on the right shows the focused class's weapons, perks and equipment;
+- Create-a-Class (`menu_cac_assault`): the panel shows the class being edited, or previews the focused choice;
+- pause (`class`): with the map and the mode on the right;
+- scoreboard (`page_scoreboard`): MW2's columns (score, kills, assists, deaths); free-for-all scores 50 a kill.
+
+The layout is `game_core::ui_page`, shared with `mwf-convert menu-preview <common.wpk>`, which renders every screen
+with sample content to `out/preview/menu_<screen>.png` to check them on the PC. Without menu data in `common.wpk`
+the menus fall back to the block font.
 Every menu is a list: D-pad or main stick up / down, **A** chooses, **B** goes back.
 - **Main menu**: Play, Create a Class, Quit.
 - **Play** → choose a map → choose a class (your five custom classes, then MW2's five default classes) → the match.

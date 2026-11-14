@@ -92,17 +92,24 @@ fn run(args: &[String]) -> ExitCode {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
             };
-            let out = PathBuf::from("out/preview/menu_main.png");
             let result = std::fs::read(path)
                 .map_err(|e| format!("{path}: {e}"))
-                .and_then(|b| menu_preview::render(&b))
-                .and_then(|img| {
+                .and_then(|b| {
                     std::fs::create_dir_all("out/preview").map_err(|e| e.to_string())?;
-                    preview::write_png(&out, &img)
+                    let mut written = Vec::new();
+                    for screen in menu_preview::SCREENS {
+                        let img = menu_preview::render(&b, screen)?;
+                        let out = PathBuf::from(format!("out/preview/menu_{screen}.png"));
+                        preview::write_png(&out, &img)?;
+                        written.push(out);
+                    }
+                    Ok(written)
                 });
             match result {
-                Ok(()) => {
-                    println!("menu preview -> {}", out.display());
+                Ok(written) => {
+                    for out in written {
+                        println!("menu preview -> {}", out.display());
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -523,6 +530,7 @@ fn build_ui(
     }
     let mut zones = Vec::new();
     let mut ui = ui_capture::UiCapture::default();
+    let mut localize = HashMap::new();
     for z in ui_capture::UI_ZONES {
         let args = MapArgs {
             map: z.to_owned(),
@@ -547,6 +555,9 @@ fn build_ui(
         }
         let mut links = c.links;
         ui.absorb(std::mem::take(&mut links.ui));
+        for (k, v) in std::mem::take(&mut links.localize) {
+            localize.entry(k).or_insert(v);
+        }
         zones.push(Zone {
             links,
             dir,
@@ -558,6 +569,9 @@ fn build_ui(
     }
     // A material's colour texture, from the first zone that has the material.
     let lookup = |name: &str, tex: &mut pack::Textures| -> Option<u16> {
+        if name.eq_ignore_ascii_case("white") {
+            return Some(tex.add_white());
+        }
         zones.iter().find_map(|z| {
             let m = z.links.material_info.iter().position(|m| {
                 m.name
@@ -569,7 +583,7 @@ fn build_ui(
             tex.add_file(&z.dir, file, wpk::records::Wrap::Clamp).ok()
         })
     };
-    Some(ui_bake::bake(&ui, |name| lookup(name, tex)))
+    Some(ui_bake::bake(&ui, &localize, |name| lookup(name, tex)))
 }
 
 fn run_common(args: &[String]) -> ExitCode {

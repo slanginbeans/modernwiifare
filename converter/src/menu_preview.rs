@@ -1,13 +1,16 @@
-//! `mwf-convert menu-preview <common.wpk>`: a software render of the baked main menu (its images, the button list
-//! in MW2's font with the selection bar), laid out as the Wii's front end does (`wii/game/src/front.rs`
-//! `draw_mw2`), to check the menus without a Wii. Output: a 640 × 480 PNG.
+//! `mwf-convert menu-preview <common.wpk>`: software renders of the baked menu screens with sample content, laid out
+//! by the same code as the Wii's front end (`game_core::ui_page`), to check the menus without a Wii. Output: one
+//! 640 × 480 PNG per screen.
 
+use game_core::loadout::{self, FIELDS};
+use game_core::ui_page::{self, Page, PageLine, ScoreRow};
 use gx_texture::image::Image;
+use wpk::classes::Catalog;
 use wpk::records::{self, TextureRecord};
-use wpk::ui::{NONE, Quad, UiPack};
+use wpk::ui::{Quad, UiPack};
 
-/// The page title's left edge: inside MW2's 0.85 safe area (640 × 0.075).
-const TITLE_X: f32 = 48.0;
+/// The screens rendered (the names `ui_bake::SCREENS` gives them).
+pub const SCREENS: [&str; 5] = ["main", "class_select", "pause", "cac", "scoreboard"];
 
 /// Draw `q` over `img` (nearest texel, texture × colour, alpha blended).
 fn draw(img: &mut Image, textures: &[Option<Image>], q: &Quad) {
@@ -45,12 +48,28 @@ fn draw(img: &mut Image, textures: &[Option<Image>], q: &Quad) {
     }
 }
 
-pub fn render(common: &[u8]) -> Result<Image, String> {
+fn lines<'a>(texts: &'a [String], values: &'a [Option<String>]) -> Vec<PageLine<'a>> {
+    texts
+        .iter()
+        .enumerate()
+        .map(|(i, t)| PageLine {
+            text: t,
+            value: values.get(i).and_then(|v| v.as_deref()),
+            enabled: true,
+        })
+        .collect()
+}
+
+/// Render `screen` with sample content (the pack's own classes where the screen shows them).
+pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
     let pack = wpk::Pack::parse(common, true).map_err(|e| format!("{e:?}"))?;
     let ui = pack
         .section(wpk::tag::UI)
         .and_then(|s| UiPack::decode(s.data))
         .ok_or("no menu data in this pack (convert again)")?;
+    let cat = pack
+        .section(wpk::tag::CLASSES)
+        .and_then(|s| Catalog::decode(s.data).ok());
     let txda = pack
         .section(wpk::tag::TEXTURE_DATA)
         .map_or(&[][..], |s| s.data);
@@ -62,58 +81,82 @@ pub fn render(common: &[u8]) -> Result<Image, String> {
                 .collect()
         })
         .unwrap_or_default();
-    let mut img = Image::new(640, 480, [26, 30, 36, 255]);
-    let screen = ui.screen("main").ok_or("no main screen")?;
-    for q in &screen.quads {
-        draw(&mut img, &textures, q);
-    }
-    let Some(b) = screen.buttons else {
-        return Ok(img);
-    };
+    let classes: Vec<wpk::classes::Loadout> = cat
+        .as_ref()
+        .map(|c| c.customs.iter().chain(&c.defaults).cloned().collect())
+        .unwrap_or_default();
+    let s = |v: &[&str]| v.iter().map(|t| (*t).to_owned()).collect::<Vec<String>>();
+    let mut slots = Vec::new();
     let mut quads = Vec::new();
-    let text =
-        |font: usize, s: &str, x: f32, y: f32, scale: f32, rgba: u32, quads: &mut Vec<Quad>| {
-            if let Some(f) = ui.fonts.get(font) {
-                game_core::ui_text::quads(f, s, x, y, scale, rgba, quads);
+    let (title, texts, values, footer) = match screen {
+        "class_select" => {
+            if let (Some(c), Some(l)) = (&cat, classes.first()) {
+                loadout::panel(c, l, &mut slots);
             }
-        };
-    let big = ui.font("fonts/bigfont").unwrap_or(0);
-    let font = usize::from(b.font);
-    text(
-        big,
-        "MODERN WIIFARE",
-        TITLE_X,
-        b.y - 14.0,
-        0.5,
-        0xffffffff,
+            let names = classes.iter().map(|c| c.name.clone()).collect();
+            ("CHOOSE CLASS", names, Vec::new(), "A CHOOSE   B BACK")
+        }
+        "pause" => {
+            slots.extend(s(&["RUST", "FREE-FOR-ALL: FIRST TO 30 KILLS"]));
+            (
+                "PAUSED",
+                s(&["RESUME", "CHANGE CLASS", "END GAME"]),
+                Vec::new(),
+                "A SELECT   B RESUME",
+            )
+        }
+        "cac" => match (&cat, classes.first()) {
+            (Some(c), Some(l)) => {
+                loadout::panel(c, l, &mut slots);
+                let texts = FIELDS
+                    .iter()
+                    .map(|&f| loadout::label(f).to_owned())
+                    .collect();
+                let values = FIELDS
+                    .iter()
+                    .map(|&f| Some(loadout::value(c, l, f)))
+                    .collect();
+                ("EDIT CLASS", texts, values, "A CHANGE   B DONE")
+            }
+            _ => ("EDIT CLASS", Vec::new(), Vec::new(), "A CHANGE   B DONE"),
+        },
+        "scoreboard" => {
+            slots.push("A CONTINUE".to_owned());
+            ("YOU WIN", Vec::new(), Vec::new(), "")
+        }
+        _ => (
+            "MODERN WIIFARE",
+            s(&["PLAY", "CREATE A CLASS", "QUIT"]),
+            Vec::new(),
+            "A SELECT",
+        ),
+    };
+    let page_lines = lines(&texts, &values);
+    ui_page::layout(
+        &ui,
+        &Page {
+            screen,
+            title,
+            lines: &page_lines,
+            selected: 0,
+            footer,
+            slots: &slots,
+        },
         &mut quads,
     );
-    let text_h = b.text_scale * game_core::ui_text::TEXT_EM;
-    for (row, line) in ["PLAY", "CREATE A CLASS", "QUIT"].iter().enumerate() {
-        let y = b.y + row as f32 * b.step;
-        if row == 0 && b.bar != NONE {
-            quads.push(Quad {
-                x: b.x,
-                y,
-                w: b.w,
-                h: b.h,
-                uv: [0.0, 0.0, 1.0, 1.0],
-                rgba: b.bar_rgba,
-                texture: b.bar,
-            });
-        }
-        let w = ui
-            .fonts
-            .get(font)
-            .map_or(0.0, |f| game_core::ui_text::width(f, line, b.text_scale));
-        let x = match b.align {
-            1 => b.x + (b.w - w) * 0.5 + b.text_x,
-            2 => b.x + b.w - w + b.text_x,
-            _ => b.x + b.text_x,
-        };
-        let colour = if row == 0 { b.focus_rgba } else { b.rgba };
-        text(font, line, x, y + text_h, b.text_scale, colour, &mut quads);
+    if screen == "scoreboard" {
+        let rows: Vec<ScoreRow> = ["YOU", "BOT 1", "BOT 2", "BOT 3", "BOT 4", "BOT 5"]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| ScoreRow {
+                name: (*n).to_owned(),
+                cols: [(30 - i as i32 * 4) * 50, 30 - i as i32 * 4, 0, 5 + i as i32],
+                you: i == 0,
+            })
+            .collect();
+        ui_page::score_rows(&ui, &rows, &mut quads);
     }
+    let mut img = Image::new(640, 480, [26, 30, 36, 255]);
     for q in &quads {
         draw(&mut img, &textures, q);
     }

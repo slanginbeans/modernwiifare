@@ -10,6 +10,8 @@ use game_core::gfx::Gfx;
 use game_core::hud::{self, Rect};
 use game_core::loadout::{self, FIELDS};
 use game_core::menu::{self, Nav, Step};
+pub use game_core::ui_page::ScoreRow;
+use game_core::ui_page::{self, PageLine};
 use wpk::classes::{Catalog, Loadout};
 
 use crate::{AppPath, Shim, ffi};
@@ -64,6 +66,22 @@ const NORMAL: u32 = 0xb0b8c0ff;
 const SELECTED: u32 = 0xffd040ff;
 const DISABLED: u32 = 0x505860ff;
 
+/// Live text for a screen's empty slots (`wpk::ui::label_kind::SLOT`, in menu order) for the focused line.
+pub type Panel<'a> = &'a dyn Fn(usize, &mut Vec<String>);
+
+/// Which baked MW2 screen a list is drawn on, and what fills its slots.
+pub struct Page<'a> {
+    pub screen: &'a str,
+    pub panel: Option<Panel<'a>>,
+}
+
+impl Page<'_> {
+    pub const MAIN: Page<'static> = Page {
+        screen: "main",
+        panel: None,
+    };
+}
+
 /// Show a list until a line is chosen (`Accept`) or B (`Back`). `selected` keeps the cursor between calls.
 pub fn list(
     gfx: &mut Shim,
@@ -73,8 +91,22 @@ pub fn list(
     selected: &mut usize,
     footer: &str,
 ) -> Step {
+    list_on(gfx, input, &Page::MAIN, title, lines, selected, footer)
+}
+
+/// `list` on a given MW2 screen.
+pub fn list_on(
+    gfx: &mut Shim,
+    input: &mut Input,
+    page: &Page<'_>,
+    title: &str,
+    lines: &[Line],
+    selected: &mut usize,
+    footer: &str,
+) -> Step {
     let cam = Camera::new([0.0; 3], 0.0, 0.0);
     let mut rects: Vec<Rect> = Vec::with_capacity(4096);
+    let mut slots: Vec<String> = Vec::new();
     loop {
         let step = menu::step(selected, lines.len(), input.poll());
         match step {
@@ -84,7 +116,11 @@ pub fn list(
         }
         unsafe { ffi::mwf_frame_begin(&cam.view(), cam.fovy, 4.0, 100.0, 0x1a1e24ff) };
         if let Some(u) = crate::ui::get() {
-            draw_mw2(u, title, lines, *selected, footer);
+            slots.clear();
+            if let Some(p) = page.panel {
+                p(*selected, &mut slots);
+            }
+            draw_mw2(u, page.screen, title, lines, *selected, footer, &slots);
             gfx.frame_end();
             continue;
         }
@@ -118,59 +154,34 @@ pub fn list(
     }
 }
 
-/// A list in MW2's main-menu style: its background images, its button rects and font, the selection bar on the
-/// focused line (from the user's own `main_text` menu, baked by the converter).
-fn draw_mw2(u: &mut crate::ui::Ui, title: &str, lines: &[Line], selected: usize, footer: &str) {
-    u.screen("main");
-    let style = u.pack.screen("main").and_then(|s| s.buttons);
-    let Some(b) = style else {
-        return;
+/// A list drawn on one of MW2's screens (`game_core::ui_page`).
+fn draw_mw2(
+    u: &mut crate::ui::Ui,
+    screen: &str,
+    title: &str,
+    lines: &[Line],
+    selected: usize,
+    footer: &str,
+    slots: &[String],
+) {
+    let lines: Vec<PageLine<'_>> = lines
+        .iter()
+        .map(|l| PageLine {
+            text: &l.text,
+            value: l.value.as_deref(),
+            enabled: l.enabled,
+        })
+        .collect();
+    let page = ui_page::Page {
+        screen,
+        title,
+        lines: &lines,
+        selected,
+        footer,
+        slots,
     };
-    let big = u.font("fonts/bigfont");
-    let small = u.font("fonts/smallfont");
-    let font = usize::from(b.font);
-    // Title above the first button (MW2's menus put the page name there).
-    // Inside MW2's 0.85 safe area (640 × 0.075).
-    u.text(big, title, 48.0, b.y - 14.0, 0.5, 0xffffffff);
-    let rows = (((440.0 - b.y) / b.step) as usize).max(1);
-    let text_h = b.text_scale * game_core::ui_text::TEXT_EM;
-    for (row, i) in menu::window(selected, lines.len(), rows).enumerate() {
-        let l = &lines[i];
-        let y = b.y + row as f32 * b.step;
-        if i == selected && b.bar != wpk::ui::NONE {
-            u.draw(&[wpk::ui::Quad {
-                x: b.x,
-                y,
-                w: b.w,
-                h: b.h,
-                uv: [0.0, 0.0, 1.0, 1.0],
-                rgba: b.bar_rgba,
-                texture: b.bar,
-            }]);
-        }
-        let colour = if i == selected {
-            b.focus_rgba
-        } else if l.enabled {
-            b.rgba
-        } else {
-            (b.rgba & 0xffff_ff00) | 0x60
-        };
-        // IW4 text placement (`hud_iw4::item_text_origin`): right-aligned buttons sit text_x from the rect's right edge;
-        // the baseline is one text height below the rect's top.
-        let w = u.text_width(font, &l.text, b.text_scale);
-        let x = match b.align {
-            1 => b.x + (b.w - w) * 0.5 + b.text_x,
-            2 => b.x + b.w - w + b.text_x,
-            _ => b.x + b.text_x,
-        };
-        u.text(font, &l.text, x, y + text_h, b.text_scale, colour);
-        if let Some(v) = &l.value {
-            u.text(small, v, b.x + b.w + 12.0, y + text_h, 0.3, colour);
-        }
-    }
-    u.text(small, footer, 48.0, 456.0, 0.3, 0xc0c8d0ff);
+    u.page(|ui, q| ui_page::layout(ui, &page, q));
 }
-
 pub enum Main {
     Play,
     CreateAClass,
@@ -230,16 +241,35 @@ pub fn pick_map(
     }
 }
 
-/// Pick one of `classes` (custom first, then MW2's defaults); None = back.
+/// Pick one of `classes` (custom first, then MW2's defaults) on MW2's class screen, the focused class shown in its
+/// panel; None = back.
 pub fn pick_class(
     gfx: &mut Shim,
     input: &mut Input,
+    cat: Option<&Catalog>,
     title: &str,
     classes: &[Loadout],
     selected: &mut usize,
 ) -> Option<usize> {
     let lines: Vec<Line> = classes.iter().map(|c| Line::new(&c.name)).collect();
-    match list(gfx, input, title, &lines, selected, "A CHOOSE   B BACK") {
+    let panel = |i: usize, out: &mut Vec<String>| {
+        if let (Some(cat), Some(c)) = (cat, classes.get(i)) {
+            loadout::panel(cat, c, out);
+        }
+    };
+    let page = Page {
+        screen: "class_select",
+        panel: Some(&panel),
+    };
+    match list_on(
+        gfx,
+        input,
+        &page,
+        title,
+        &lines,
+        selected,
+        "A CHOOSE   B BACK",
+    ) {
         Step::Accept(i) => Some(i),
         _ => None,
     }
@@ -258,8 +288,21 @@ pub fn edit_class(gfx: &mut Shim, input: &mut Input, cat: &Catalog, class: &mut 
             })
             .collect();
         let title = alloc::format!("EDIT {}", class.name);
-        let Step::Accept(i) = list(gfx, input, &title, &lines, &mut field, "A CHANGE   B DONE")
-        else {
+        let shown = class.clone();
+        let panel = |_: usize, out: &mut Vec<String>| loadout::panel(cat, &shown, out);
+        let page = Page {
+            screen: "cac",
+            panel: Some(&panel),
+        };
+        let Step::Accept(i) = list_on(
+            gfx,
+            input,
+            &page,
+            &title,
+            &lines,
+            &mut field,
+            "A CHANGE   B DONE",
+        ) else {
             return;
         };
         let f = FIELDS[i];
@@ -284,9 +327,23 @@ pub fn edit_class(gfx: &mut Shim, input: &mut Input, cat: &Catalog, class: &mut 
             })
             .unwrap_or(0);
         let mut pick = current;
-        if let Step::Accept(k) = list(
+        // The panel previews the focused choice.
+        let base = class.clone();
+        let preview = |i: usize, out: &mut Vec<String>| {
+            let mut probe = base.clone();
+            if let Some(&v) = options.get(i) {
+                loadout::set(cat, &mut probe, f, v);
+            }
+            loadout::panel(cat, &probe, out);
+        };
+        let page = Page {
+            screen: "cac",
+            panel: Some(&preview),
+        };
+        if let Step::Accept(k) = list_on(
             gfx,
             input,
+            &page,
             loadout::label(f).trim_start(),
             &names,
             &mut pick,
@@ -338,9 +395,23 @@ pub enum Pause {
 pub fn pause(
     gfx: &mut Shim,
     input: &mut Input,
+    map: &str,
+    cat: Option<&Catalog>,
     classes: Option<&[Loadout]>,
     class_cursor: &mut usize,
 ) -> Pause {
+    // MW2's pause screen names the map and the mode in its right-hand slots.
+    let info = |_: usize, out: &mut Vec<String>| {
+        out.push(map.trim_start_matches("mp_").to_ascii_uppercase());
+        out.push(alloc::format!(
+            "FREE-FOR-ALL: FIRST TO {} KILLS",
+            game_core::arena::KILL_LIMIT
+        ));
+    };
+    let page = Page {
+        screen: "pause",
+        panel: Some(&info),
+    };
     let mut sel = 0usize;
     loop {
         let mut lines = [
@@ -349,9 +420,10 @@ pub fn pause(
             Line::new("END GAME"),
         ];
         lines[1].enabled = classes.is_some();
-        match list(
+        match list_on(
             gfx,
             input,
+            &page,
             "PAUSED",
             &lines,
             &mut sel,
@@ -359,7 +431,7 @@ pub fn pause(
         ) {
             Step::Accept(1) => {
                 if let Some(c) = classes
-                    && let Some(i) = pick_class(gfx, input, "CHANGE CLASS", c, class_cursor)
+                    && let Some(i) = pick_class(gfx, input, cat, "CHANGE CLASS", c, class_cursor)
                 {
                     return Pause::ChangeClass(i);
                 }
@@ -367,5 +439,28 @@ pub fn pause(
             Step::Accept(2) => return Pause::EndGame,
             _ => return Pause::Resume,
         }
+    }
+}
+
+/// The end-of-match scoreboard on MW2's scoreboard page (its frame and column headers), until A or B. False when
+/// the pack has no scoreboard page (the caller shows a plain list).
+pub fn scoreboard(gfx: &mut Shim, input: &mut Input, title: &str, rows: &[ScoreRow]) -> bool {
+    let has_page = crate::ui::get().is_some_and(|u| u.pack.screen("scoreboard").is_some());
+    if !has_page {
+        return false;
+    }
+    let cam = Camera::new([0.0; 3], 0.0, 0.0);
+    let footer = [String::from("A CONTINUE")];
+    loop {
+        let nav = input.poll();
+        if nav.accept || nav.back {
+            return true;
+        }
+        unsafe { ffi::mwf_frame_begin(&cam.view(), cam.fovy, 4.0, 100.0, 0x1a1e24ff) };
+        if let Some(u) = crate::ui::get() {
+            draw_mw2(u, "scoreboard", title, &[], 0, "", &footer);
+            u.page(|ui, q| ui_page::score_rows(ui, rows, q));
+        }
+        gfx.frame_end();
     }
 }

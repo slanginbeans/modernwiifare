@@ -475,6 +475,28 @@ fn draw_match_hud(
 fn scoreboard(gfx: &mut Shim, input: &mut front::Input, a: &Arena) {
     let mut order: Vec<usize> = (0..a.fighters.len()).collect();
     order.sort_by_key(|&i| core::cmp::Reverse(a.fighters[i].kills));
+    let title = if order.first() == Some(&0) {
+        "YOU WIN"
+    } else {
+        "MATCH OVER"
+    };
+    // MW2's free-for-all scores 50 a kill; there are no assists without teams.
+    let rows: Vec<front::ScoreRow> = order
+        .iter()
+        .map(|&i| front::ScoreRow {
+            name: alloc::string::String::from(fighter_name(i).as_str()),
+            cols: [
+                a.fighters[i].kills as i32 * 50,
+                a.fighters[i].kills as i32,
+                0,
+                a.fighters[i].life.deaths as i32,
+            ],
+            you: i == 0,
+        })
+        .collect();
+    if front::scoreboard(gfx, input, title, &rows) {
+        return;
+    }
     let lines: Vec<front::Line> = order
         .iter()
         .map(|&i| {
@@ -489,11 +511,6 @@ fn scoreboard(gfx: &mut Shim, input: &mut front::Input, a: &Arena) {
         })
         .collect();
     let mut sel = order.iter().position(|&i| i == 0).unwrap_or(0);
-    let title = if order.first() == Some(&0) {
-        "YOU WIN"
-    } else {
-        "MATCH OVER"
-    };
     front::list(gfx, input, title, &lines, &mut sel, "A CONTINUE");
 }
 
@@ -781,6 +798,8 @@ fn run_map(
             match front::pause(
                 gfx,
                 input,
+                name,
+                loadouts.catalog,
                 (!loadouts.classes.is_empty()).then_some(loadouts.classes),
                 loadouts.cursor,
             ) {
@@ -1221,6 +1240,7 @@ pub extern "C" fn mwf_game_main() -> i32 {
                 while let Some(i) = front::pick_class(
                     &mut gfx,
                     &mut input,
+                    Some(cat),
                     "CREATE A CLASS",
                     &custom,
                     &mut edit_sel,
@@ -1244,6 +1264,7 @@ pub extern "C" fn mwf_game_main() -> i32 {
                         match front::pick_class(
                             &mut gfx,
                             &mut input,
+                            catalog.as_ref(),
                             "CHOOSE CLASS",
                             &classes,
                             &mut class_sel,

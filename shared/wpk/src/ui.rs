@@ -78,17 +78,70 @@ pub struct ButtonStyle {
     pub bar_rgba: u32,
 }
 
+/// A text item of a menu, placed on the screen: MW2's own text (`text`), or an empty slot the front end fills with
+/// live text (the class panel's weapon and perk names, the map name).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Label {
+    /// The item's rect (screen pixels).
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub font: u8,
+    pub text_scale: f32,
+    /// IW4 text alignment: bits 0..1 horizontal (0 left, 1 centre, 2 right), bits 2..3 vertical.
+    pub align: u8,
+    pub text_x: f32,
+    pub text_y: f32,
+    pub rgba: u32,
+    pub text: String,
+}
+
+/// What a label is for on its screen.
+pub mod label_kind {
+    /// MW2's text, drawn as is.
+    pub const TEXT: u8 = 0;
+    /// The page title (the front end may draw its own title in it).
+    pub const TITLE: u8 = 1;
+    /// An empty slot for live text.
+    pub const SLOT: u8 = 2;
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Screen {
     pub name: String,
     pub quads: Vec<Quad>,
     pub buttons: Option<ButtonStyle>,
+    /// Labels with their kind (`label_kind`), in menu order.
+    pub labels: Vec<(u8, Label)>,
+    /// The back button's rect (bottom left in MW2's menus), when the menu has one.
+    pub back: Option<[f32; 4]>,
+}
+
+impl Screen {
+    pub fn title(&self) -> Option<&Label> {
+        self.labels
+            .iter()
+            .find(|(k, _)| *k == label_kind::TITLE)
+            .map(|(_, l)| l)
+    }
+
+    /// The `n`th empty slot.
+    pub fn slot(&self, n: usize) -> Option<&Label> {
+        self.labels
+            .iter()
+            .filter(|(k, _)| *k == label_kind::SLOT)
+            .nth(n)
+            .map(|(_, l)| l)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UiPack {
     pub fonts: Vec<Font>,
     pub screens: Vec<Screen>,
+    /// The plain white texture (`TEXT` index or `NONE`), for filled rects.
+    pub white: u16,
 }
 
 struct Reader<'a> {
@@ -141,6 +194,40 @@ fn put_style(o: &mut Vec<u8>, s: &ButtonStyle) {
     o.u32(s.focus_rgba);
     o.u16(s.bar);
     o.u32(s.bar_rgba);
+}
+
+fn put_label(o: &mut Vec<u8>, kind: u8, l: &Label) {
+    o.push(kind);
+    for v in [l.x, l.y, l.w, l.h] {
+        o.f32(v);
+    }
+    o.push(l.font);
+    o.f32(l.text_scale);
+    o.push(l.align);
+    o.f32(l.text_x);
+    o.f32(l.text_y);
+    o.u32(l.rgba);
+    put_str(o, &l.text);
+}
+
+fn get_label(r: &mut Reader<'_>) -> Option<(u8, Label)> {
+    let kind = r.u8()?;
+    Some((
+        kind,
+        Label {
+            x: r.f32()?,
+            y: r.f32()?,
+            w: r.f32()?,
+            h: r.f32()?,
+            font: r.u8()?,
+            text_scale: r.f32()?,
+            align: r.u8()?,
+            text_x: r.f32()?,
+            text_y: r.f32()?,
+            rgba: r.u32()?,
+            text: r.str()?,
+        },
+    ))
 }
 
 fn get_style(r: &mut Reader<'_>) -> Option<ButtonStyle> {
@@ -204,7 +291,21 @@ impl UiPack {
                 }
                 None => o.push(0),
             }
+            o.u16(s.labels.len() as u16);
+            for (k, l) in &s.labels {
+                put_label(&mut o, *k, l);
+            }
+            match s.back {
+                Some(b) => {
+                    o.push(1);
+                    for v in b {
+                        o.f32(v);
+                    }
+                }
+                None => o.push(0),
+            }
         }
+        o.u16(self.white);
         o
     }
 
@@ -267,13 +368,29 @@ impl UiPack {
                 1 => Some(get_style(&mut r)?),
                 _ => None,
             };
+            let nl = r.u16()?;
+            let mut labels = Vec::with_capacity(usize::from(nl));
+            for _ in 0..nl {
+                labels.push(get_label(&mut r)?);
+            }
+            let back = match r.u8()? {
+                1 => Some([r.f32()?, r.f32()?, r.f32()?, r.f32()?]),
+                _ => None,
+            };
             screens.push(Screen {
                 name,
                 quads,
                 buttons,
+                labels,
+                back,
             });
         }
-        Some(UiPack { fonts, screens })
+        let white = r.u16()?;
+        Some(UiPack {
+            fonts,
+            screens,
+            white,
+        })
     }
 
     pub fn screen(&self, name: &str) -> Option<&Screen> {
@@ -344,12 +461,38 @@ mod tests {
                     bar: 2,
                     bar_rgba: 0xffffffff,
                 }),
+                labels: vec![
+                    (
+                        label_kind::TITLE,
+                        Label {
+                            x: 0.0,
+                            y: 0.0,
+                            w: 272.0,
+                            h: 28.0,
+                            font: 1,
+                            text_scale: 0.5,
+                            align: 6,
+                            text_x: -60.0,
+                            text_y: 0.0,
+                            rgba: 0xffffffff,
+                            text: "TITLE".into(),
+                        },
+                    ),
+                    (label_kind::SLOT, Label::default()),
+                ],
+                back: Some([1.0, 2.0, 3.0, 4.0]),
             }],
+            white: 5,
         };
         let back = UiPack::decode(&p.encode()).expect("decodes");
         assert_eq!(back, p);
         assert_eq!(back.fonts[0].glyph(65).map(|g| g.dx), Some(12));
         assert!(back.fonts[0].glyph(67).is_none());
+        assert_eq!(
+            back.screens[0].title().map(|l| l.text.as_str()),
+            Some("TITLE")
+        );
+        assert!(back.screens[0].slot(0).is_some() && back.screens[0].slot(1).is_none());
         assert_eq!(back.font("FONTS/TEST"), Some(0));
         assert!(UiPack::decode(&p.encode()[..10]).is_none());
     }

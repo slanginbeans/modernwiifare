@@ -338,6 +338,29 @@ impl Textures {
         (self.records.len() - 1) as u16
     }
 
+    /// A plain white texture (8 × 8 I8, made here: MW2's `white` material has no converted image), once.
+    pub(crate) fn add_white(&mut self) -> u16 {
+        const KEY: &str = "<white>";
+        if let Some(&i) = self.by_file.get(KEY) {
+            return i;
+        }
+        let c = gx_texture::Converted {
+            format: gx_texture::TexFormat::I8,
+            width: 8,
+            height: 8,
+            levels: 1,
+            traits: gx_texture::policy::Traits {
+                grey: true,
+                alpha: gx_texture::policy::Alpha::Opaque,
+            },
+            data: vec![0xff; 64],
+            alpha_plane: None,
+        };
+        let i = self.add(&c, Wrap::Clamp);
+        self.by_file.insert(KEY.to_owned(), i);
+        i
+    }
+
     /// Add a converted `.gxt` from the texture folder (once per file).
     pub(crate) fn add_file(&mut self, dir: &Path, file: &str, wrap: Wrap) -> Result<u16, String> {
         if let Some(&i) = self.by_file.get(file) {

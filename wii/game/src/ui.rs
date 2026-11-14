@@ -5,7 +5,6 @@
 use alloc::vec::Vec;
 
 use game_core::gfx::{Gfx, TexDesc};
-use game_core::ui_text;
 use wpk::records::{self, TextureRecord, texture_flags};
 use wpk::ui::{NONE, Quad, UiPack};
 
@@ -122,37 +121,12 @@ impl Ui {
         }
     }
 
-    /// The font named `name` (e.g. `fonts/normalfont`), or the first one.
-    pub fn font(&self, name: &str) -> usize {
-        self.pack.font(name).unwrap_or(0)
-    }
-
-    pub fn text_width(&self, font: usize, text: &str, scale: f32) -> f32 {
-        self.pack
-            .fonts
-            .get(font)
-            .map_or(0.0, |f| ui_text::width(f, text, scale))
-    }
-
-    /// Draw `text` with its pen at `x` on baseline `y`.
-    pub fn text(&mut self, font: usize, text: &str, x: f32, y: f32, scale: f32, rgba: u32) {
-        let Some(f) = self.pack.fonts.get(font) else {
-            return;
-        };
+    /// Lay quads out with `f` (from the pack) and draw them.
+    pub fn page(&mut self, f: impl FnOnce(&UiPack, &mut Vec<Quad>)) {
         let mut q = core::mem::take(&mut self.quads);
         q.clear();
-        ui_text::quads(f, text, x, y, scale, rgba, &mut q);
+        f(&self.pack, &mut q);
         self.draw(&q);
         self.quads = q;
-    }
-
-    /// Draw a baked screen's images.
-    pub fn screen(&mut self, name: &str) {
-        let Some(i) = self.pack.screens.iter().position(|s| s.name == name) else {
-            return;
-        };
-        let q = core::mem::take(&mut self.pack.screens[i].quads);
-        self.draw(&q);
-        self.pack.screens[i].quads = q;
     }
 }

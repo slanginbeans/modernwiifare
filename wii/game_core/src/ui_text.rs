@@ -3,7 +3,7 @@
 
 use alloc::vec::Vec;
 
-use wpk::ui::{Font, Quad};
+use wpk::ui::{Font, Label, Quad};
 
 /// IW4 `R_TEXT_EM`: a text scale of 1 is 48 virtual pixels high.
 pub const TEXT_EM: f32 = 48.0;
@@ -34,6 +34,22 @@ pub fn width(font: &Font, text: &str, text_scale: f32) -> f32 {
     letters(text)
         .map(|l| font.glyph(l).map_or(0.0, |g| f32::from(g.dx) * s))
         .sum()
+}
+
+/// Where IW4 puts a menu item's text: the pen x and baseline y (IW4L `hud_iw4::font::item_text_origin`).
+pub fn label_origin(font: &Font, l: &Label, text: &str) -> (f32, f32) {
+    let w = width(font, text, l.text_scale);
+    hud_iw4::font::item_text_origin(
+        l.x,
+        l.y,
+        l.w,
+        l.h,
+        i32::from(l.align),
+        l.text_x,
+        l.text_y,
+        w,
+        l.text_scale * TEXT_EM,
+    )
 }
 
 /// Glyph quads for `text` with its pen starting at `x` on baseline `y`.
