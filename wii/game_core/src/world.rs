@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 
 use wpk::records::{
     self, BatchRecord, Blend, InstanceRecord, MaterialRecord, ModelRecord, NONE, Skybox,
-    SpawnRecord, TextureRecord, texture_flags,
+    SpawnRecord, TextureRecord, material_flags, texture_flags,
 };
 use wpk::{Pack, ParseError, tag};
 
@@ -219,7 +219,7 @@ impl<'a> World<'a> {
         }
     }
 
-    /// Draw one frame from `cam` (frame begin/end included).
+    /// Draw the world for one frame from `cam` (frame begin included; the caller draws its HUD and ends the frame).
     pub fn draw(&mut self, gfx: &mut impl Gfx, cam: &Camera) -> FrameStats {
         let mut stats = FrameStats::default();
         gfx.frame_begin(&cam.view(), cam.fovy, ZNEAR, ZFAR, CLEAR);
@@ -292,9 +292,10 @@ impl<'a> World<'a> {
 
         let view = cam.view();
         let mut last_state: Option<DrawState> = None;
-        // Bound vertex block: (model vertices?, base). Loaded matrix: instance, or u32::MAX for the view itself.
+        // Bound vertex block: (model vertices?, base). Loaded matrix: (instance or u32::MAX for the view, polygon
+        // offset level); the view alone is loaded by frame_begin.
         let mut last_base = (false, u32::MAX);
-        let mut last_inst = u32::MAX;
+        let mut last_mtx = (u32::MAX, 0u8);
         for &(_, _, d) in &self.order {
             let (b, verts, inst) = if d & MODEL_DRAW != 0 {
                 let (ii, si) = self.model_draws[(d & !MODEL_DRAW) as usize];
@@ -306,13 +307,19 @@ impl<'a> World<'a> {
             } else {
                 (&self.batches[d as usize], self.vertices, None)
             };
-            let want = inst.map_or(u32::MAX, u32::from);
-            if want != last_inst {
-                last_inst = want;
-                match inst {
-                    Some(ii) => gfx.pos_matrix(&mul34(&view, &self.instances[usize::from(ii)].mtx)),
-                    None => gfx.pos_matrix(&view),
-                }
+            let offset =
+                self.materials[usize::from(b.material)].flags & material_flags::POLYGON_OFFSET;
+            let want = (inst.map_or(u32::MAX, u32::from), offset);
+            if want != last_mtx {
+                last_mtx = want;
+                let mut m = match inst {
+                    Some(ii) => mul34(&view, &self.instances[usize::from(ii)].mtx),
+                    None => view,
+                };
+                // Decals: pull towards the eye along each view ray (same pixels, smaller depth).
+                let pull = material_flags::depth_pull(offset);
+                m.iter_mut().flatten().for_each(|v| *v *= pull);
+                gfx.pos_matrix(&m);
             }
             if (inst.is_some(), b.vertex_base) != last_base {
                 last_base = (inst.is_some(), b.vertex_base);
@@ -332,7 +339,6 @@ impl<'a> World<'a> {
             stats.batches += 1;
             stats.triangles += b.tri_count;
         }
-        gfx.frame_end();
         stats
     }
 }
@@ -394,6 +400,7 @@ mod tests {
         fn pos_matrix(&mut self, m: &crate::gfx::Mtx34) {
             self.calls.push(Call::Mtx(m[2][3] as i32));
         }
+        fn hud_rects(&mut self, _: &[crate::hud::Rect], _: u32) {}
         fn frame_end(&mut self) {
             self.calls.push(Call::End);
         }
@@ -511,7 +518,6 @@ mod tests {
             Call::State(blended),
             Call::Dl(64),
             Call::Dl(0),
-            Call::End,
         ]);
         assert_eq!(gfx.calls, expect);
     }

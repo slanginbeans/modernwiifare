@@ -37,6 +37,17 @@ pub const NONE: u16 = 0xFFFF;
 
 // ---- textures ------------------------------------------------------------------------------------------------------
 
+pub mod material_flags {
+    /// IW4 polygon offset level (0 none, 1..3): decals that lie on other surfaces. The renderer pulls them towards
+    /// the eye by [`depth_pull`] so they win the depth test without moving on screen.
+    pub const POLYGON_OFFSET: u8 = 3;
+
+    /// Eye-space scale for polygon offset `level`: positions are multiplied by this (1 for level 0).
+    pub fn depth_pull(level: u8) -> f32 {
+        1.0 - f32::from(level & POLYGON_OFFSET) / 2048.0
+    }
+}
+
 pub mod texture_flags {
     /// An I4 alpha plane follows (CMPR colour + I4 alpha; see `gx_texture::policy::Converted`).
     pub const ALPHA_PLANE: u8 = 1;

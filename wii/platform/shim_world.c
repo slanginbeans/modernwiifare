@@ -106,7 +106,7 @@ int32_t mwf_tex_create(const mwf_tex_desc *d) {
 
 /* ---- frame --------------------------------------------------------------------------------------------------- */
 
-enum { MODE_NONE, MODE_SKY, MODE_WORLD };
+enum { MODE_NONE, MODE_SKY, MODE_WORLD, MODE_HUD };
 static int mode = MODE_NONE;
 static const void *world_base = NULL;
 
@@ -304,6 +304,63 @@ void mwf_pos_matrix(const float m[3][4]) {
     GX_LoadPosMtxImm((f32(*)[4])m, GX_PNMTX0);
 }
 
-void mwf_frame_end(void) {
+/* ---- HUD ------------------------------------------------------------------------------------------------------ */
+
+static void hud_mode(void) {
+    if (mode == MODE_HUD) return;
+    mode = MODE_HUD;
+    world_base = NULL;
+    Mtx44 ortho;
+    guOrtho(ortho, 0, 480, 0, 640, -1, 1);
+    GX_LoadProjectionMtx(ortho, GX_ORTHOGRAPHIC);
+    Mtx id;
+    guMtxIdentity(id);
+    GX_LoadPosMtxImm(id, GX_PNMTX2);
+    GX_SetCurrentMtx(GX_PNMTX2);
+    GX_ClearVtxDesc();
+    GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
+    GX_SetVtxAttrFmt(GX_VTXFMT2, GX_VA_POS, GX_POS_XY, GX_S16, 0);
+    GX_SetNumChans(1);
+    GX_SetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_REG, GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
+    GX_SetNumTexGens(0);
+    GX_SetNumTevStages(1);
+    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+    GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+    GX_SetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_CLEAR);
+    GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+    GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+    GX_SetCullMode(GX_CULL_NONE);
+}
+
+void mwf_hud_rects(const int16_t (*r)[4], uint32_t count, uint32_t rgba) {
+    if (count == 0) return;
+    hud_mode();
+    GXColor c = {(u8)(rgba >> 24), (u8)(rgba >> 16), (u8)(rgba >> 8), (u8)rgba};
+    GX_SetChanMatColor(GX_COLOR0A0, c);
+    /* One draw of up to 16383 quads at a time (vertex count is a u16). */
+    while (count > 0) {
+        uint32_t n = count > 16383 ? 16383 : count;
+        GX_Begin(GX_QUADS, GX_VTXFMT2, (u16)(n * 4));
+        for (uint32_t i = 0; i < n; i++) {
+            s16 x = r[i][0], y = r[i][1], w = r[i][2], h = r[i][3];
+            GX_Position2s16(x, y);
+            GX_Position2s16(x + w, y);
+            GX_Position2s16(x + w, y + h);
+            GX_Position2s16(x, y + h);
+        }
+        GX_End();
+        r += n;
+        count -= n;
+    }
+}
+
+uint32_t mwf_frame_end(void) {
+    /* mwf_gx_end_frame waits for the GPU (GX_DrawDone) and then for vsync; time the GPU part. */
+    GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
+    GX_SetColorUpdate(GX_TRUE);
+    uint32_t t0 = mwf_us();
+    GX_DrawDone();
+    uint32_t waited = mwf_us() - t0;
     mwf_gx_end_frame();
+    return waited;
 }

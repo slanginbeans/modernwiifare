@@ -8,7 +8,9 @@
 
 Controls, walking (IW4L movement and the map's collision): main stick move, C-stick look, **A** jump, **B** crouch
 (held), **Z** sprint, **L** ADS. **D-pad up** toggles free fly (main stick, C-stick, L/R triggers down/up, B fast);
-leaving free fly drops the player where the camera is. **Y** next spawn point, **START** exits. A pack without a
+leaving free fly drops the player where the camera is. **Y** next spawn point, **D-pad down** toggles the
+performance overlay (fps, frame / CPU / GPU-wait ms, triangles, draws, models, position; see `docs/perf.md`),
+**START** exits. A pack without a
 `CLIP` section starts in free fly.
 
 Solid colour screens: red = SD or pack not found, magenta = the pack failed its checks, orange = out of memory or

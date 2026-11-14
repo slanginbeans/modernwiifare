@@ -43,6 +43,7 @@ typedef struct {
 void mwf_sys_init(void);
 int mwf_should_exit(void); /* reset button pressed */
 uint32_t mwf_ms(void);     /* monotonic milliseconds, wraps */
+uint32_t mwf_us(void);     /* monotonic microseconds, wraps */
 void mwf_video_init(void); /* video + text console on framebuffer 0 */
 void mwf_vsync(void);      /* flush stdout, wait for vertical sync */
 void mwf_print(const char *s, size_t len);
@@ -114,8 +115,10 @@ void mwf_pos_matrix(const float m[3][4]);
 void mwf_call_dl(const void *dl, uint32_t len);
 /* Draw one skybox face: 4 corners (x,y,z relative to the eye) with texcoords (s,t), textured with `tex`. */
 void mwf_sky_face(const float view_rot[3][4], const float corners[4][5], int32_t tex);
-/* Copy to the XFB and flip. Returns GPU+CPU milliseconds of the frame. */
-void mwf_frame_end(void);
+/* Solid screen-space rectangles (x, y, w, h in 640x480 pixels, origin top left), drawn over the frame. */
+void mwf_hud_rects(const int16_t (*rects)[4], uint32_t count, uint32_t rgba);
+/* Copy to the XFB and flip. Returns the microseconds the CPU waited for the GPU to finish the frame. */
+uint32_t mwf_frame_end(void);
 
 /* ---- network (shim_net.c) ---- all addresses are numeric a.b.c.d == network order on the Wii */
 int mwf_net_init(char ip[16], char mask[16], char gw[16]);

@@ -236,8 +236,12 @@ pub struct PackReport {
     pub textures: usize,
     pub lightmaps: usize,
     pub materials: usize,
+    /// Materials with an IW4 polygon offset (decals), by level 1..3.
+    pub polygon_offset_materials: [usize; 3],
     pub world_vertices: usize,
     pub world_triangles: u64,
+    /// Vertices the world's display lists send (strips: about one per triangle; lists: three).
+    pub world_dl_vertices: u64,
     pub batches: usize,
     pub vertex_groups: usize,
     pub sky_surfaces_dropped: usize,
@@ -257,6 +261,7 @@ pub struct StaticModelReport {
     pub surfaces: usize,
     pub vertices: usize,
     pub triangles: u64,
+    pub dl_vertices: u64,
     /// Triangles if every instance were drawn (what world-space baking would cost).
     pub placed_triangles: u64,
     pub unresolved: usize,
@@ -420,7 +425,14 @@ pub fn build(
                 } as u8,
                 colour,
                 sort: info.sort_key,
-                flags: 0,
+                // Layers drawn over coplanar geometry (blend, add, multiply: no depth write) get at least the smallest
+                // depth pull, so they never lose the depth test to their own base surface (PC relies on identical
+                // vertices giving identical depth; GX strips and the preview rotate triangles).
+                flags: if matches!(blend, Blend::Opaque | Blend::AlphaTest) {
+                    info.polygon_offset
+                } else {
+                    info.polygon_offset.max(1)
+                } & records::material_flags::POLYGON_OFFSET,
             });
             let i = (materials.len() - 1) as u16;
             material_index.insert(m, i);
@@ -430,6 +442,7 @@ pub fn build(
     // Vertex groups: consecutive surfaces whose vertices span under 65,536.
     struct Draw {
         group_base: u32,
+        blended: bool,
         indices: Vec<u16>,
         min: [f32; 3],
         max: [f32; 3],
@@ -472,6 +485,7 @@ pub fn build(
             .entry((group_base, cell.0, cell.1, mat, lightmap))
             .or_insert(Draw {
                 group_base,
+                blended: matches!(links.material_info[m].blend, BlendMode::Blend),
                 indices: Vec::new(),
                 min: [f32::MAX; 3],
                 max: [f32::MIN; 3],
@@ -502,7 +516,13 @@ pub fn build(
         if d.indices.is_empty() {
             continue;
         }
-        let dl = records::world_display_list(&d.indices);
+        let dl = display_list(d.blended, &d.indices);
+        if !wpk::strips::same_triangles(
+            wpk::strips::dl_triangles(&dl).into_iter(),
+            d.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]),
+        ) {
+            return Err("display list self-check: triangles changed".into());
+        }
         let max_rel = *d.indices.iter().max().unwrap_or(&0) as u32;
         batches.push(BatchRecord {
             vertex_base: d.group_base,
@@ -516,6 +536,7 @@ pub fn build(
             bounds_max: d.max,
         });
         report.world_triangles += (d.indices.len() / 3) as u64;
+        report.world_dl_vertices += wpk::strips::dl_vertex_count(&dl) as u64;
         dls.extend_from_slice(&dl);
     }
     report.batches = batches.len();
@@ -558,7 +579,17 @@ pub fn build(
                     smax[k] = smax[k].max(v.pos[k]);
                 }
             }
-            let dl = records::world_display_list(&surf.indices);
+            let dl = display_list(
+                matches!(links.material_info[mat].blend, BlendMode::Blend),
+                &surf.indices,
+            );
+            if !wpk::strips::same_triangles(
+                wpk::strips::dl_triangles(&dl).into_iter(),
+                surf.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]),
+            ) {
+                return Err("display list self-check: triangles changed".into());
+            }
+            r.dl_vertices += wpk::strips::dl_vertex_count(&dl) as u64;
             model_surfaces.push(BatchRecord {
                 vertex_base: model_vertices.len() as u32,
                 vertex_count: surf.vertices.len() as u32,
@@ -640,6 +671,12 @@ pub fn build(
     report.spawns = spawns.len();
     report.textures = tex.records.len();
     report.materials = materials.len();
+    for m in &materials {
+        let level = m.flags & records::material_flags::POLYGON_OFFSET;
+        if level > 0 {
+            report.polygon_offset_materials[usize::from(level) - 1] += 1;
+        }
+    }
 
     let mut b = wpk::PackBuilder::new(map);
     b.section(
@@ -724,6 +761,16 @@ pub fn build(
     Ok((bytes, report))
 }
 
+/// Strips for order-independent materials; alpha-blended ones keep their authored triangle order (it is their
+/// layering order).
+fn display_list(blended: bool, tris: &[u16]) -> Vec<u8> {
+    if blended {
+        records::world_display_list(tris)
+    } else {
+        wpk::strips::display_list(tris)
+    }
+}
+
 pub fn render_text(r: &PackReport) -> String {
     let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
     let mut s = format!(
@@ -736,7 +783,7 @@ pub fn render_text(r: &PackReport) -> String {
         s.push_str(&format!("  {k} {:>9.2} MiB\n", mib(*v)));
     }
     s.push_str(&format!(
-        "textures {} (lightmaps {}), materials {} ({} without texture), world {} vertices, {} triangles in {} batches \
+        "textures {} (lightmaps {}), materials {} ({} without texture), world {} vertices, {} triangles ({} display-list vertices) in {} batches \
          ({} vertex groups), sky surfaces dropped {}, surfaces without material {}, skybox {}, spawns {}\n",
         r.textures,
         r.lightmaps,
@@ -744,6 +791,7 @@ pub fn render_text(r: &PackReport) -> String {
         r.materials_without_texture,
         r.world_vertices,
         r.world_triangles,
+        r.world_dl_vertices,
         r.batches,
         r.vertex_groups,
         r.sky_surfaces_dropped,

@@ -20,6 +20,7 @@ extern crate alloc;
 pub mod be;
 pub mod clip;
 pub mod records;
+pub mod strips;
 
 use alloc::vec::Vec;
 

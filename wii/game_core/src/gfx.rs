@@ -42,5 +42,7 @@ pub trait Gfx {
     fn call_dl(&mut self, dl: &[u8]);
     /// One sky face: 4 corners `[x, y, z, s, t]` around the eye, drawn with the rotation-only view.
     fn sky_face(&mut self, view_rot: &Mtx34, corners: &[[f32; 5]; 4], tex: i32);
+    /// Solid screen-space rectangles (640×480, origin top left) over everything drawn so far.
+    fn hud_rects(&mut self, rects: &[crate::hud::Rect], rgba: u32);
     fn frame_end(&mut self);
 }

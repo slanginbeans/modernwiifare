@@ -14,3 +14,4 @@ doctest = false
 [dependencies]
 game_core = { path = "../game_core" }
 wpk = { path = "../../shared/wpk" }
+libm = "0.2"

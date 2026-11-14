@@ -742,6 +742,7 @@ name = "mwf_game"
 version = "0.1.0"
 dependencies = [
  "game_core",
+ "libm",
  "wpk",
 ]
 

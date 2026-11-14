@@ -2,6 +2,7 @@
 
 use core::ffi::c_char;
 
+pub const BTN_DOWN: u16 = 0x0004;
 pub const BTN_UP: u16 = 0x0008;
 pub const BTN_Z: u16 = 0x0010;
 pub const BTN_L: u16 = 0x0040;
@@ -57,6 +58,7 @@ type Mtx34 = [[f32; 4]; 3];
 unsafe extern "C" {
     pub fn mwf_should_exit() -> i32;
     pub fn mwf_ms() -> u32;
+    pub fn mwf_us() -> u32;
     pub fn mwf_input_scan();
     pub fn mwf_pad_read(chan: i32, out: *mut Pad);
     pub fn mwf_panic(msg: *const u8, len: usize) -> !;
@@ -78,11 +80,16 @@ unsafe extern "C" {
     pub fn mwf_pos_matrix(m: *const Mtx34);
     pub fn mwf_call_dl(dl: *const u8, len: u32);
     pub fn mwf_sky_face(view_rot: *const Mtx34, corners: *const [[f32; 5]; 4], tex: i32);
-    pub fn mwf_frame_end();
+    pub fn mwf_hud_rects(rects: *const [i16; 4], count: u32, rgba: u32);
+    pub fn mwf_frame_end() -> u32;
 }
 
 pub fn ms() -> u32 {
     unsafe { mwf_ms() }
+}
+
+pub fn us() -> u32 {
+    unsafe { mwf_us() }
 }
 
 pub fn should_exit() -> bool {

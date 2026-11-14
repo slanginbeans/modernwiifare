@@ -61,6 +61,15 @@ With static models (same day): 22.7 MiB. 3,356 instances of 76 models: 97,932 mo
 distance and the view frustum leave 180-375k triangles (world + models) per view in the preview, which is the next
 performance problem (model LODs, visibility cells).
 
+## Display lists
+- Opaque, alpha-tested, additive and multiply surfaces are stripped (`wpk::strips`, greedy, winding-preserving); the
+  pack build decodes every list again and checks every triangle and its winding. Alpha-blended surfaces keep a plain
+  triangle list in the authored order, which is their layering order.
+- Depth pull (`MaterialRecord.flags & POLYGON_OFFSET`): decals (IW4 polygon offset) and every layer drawn over
+  coplanar geometry without writing depth (blend, add, multiply) are pulled towards the eye by a factor of
+  `1 - level / 2048` in eye space. Same pixels, slightly smaller depth. GX has no polygon offset, and PC's layering
+  relies on bit-identical depth from identical vertices, which strips (rotated triangles) don't keep.
+
 ## Static models (`converter/src/static_models.rs`)
 - Instances come from `GfxWorld` static model draw instances (origin, axis, scale, model, draw distance).
 - Each model's LOD 0 surfaces: packed vertices (position, colour, half-float UV) and triangle lists; material from

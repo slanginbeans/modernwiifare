@@ -86,6 +86,8 @@ pub struct MaterialInfo {
     pub blend: BlendMode,
     /// Faces culled: 0 none, 1 back, 2 front (IW4 state bits).
     pub cull: u8,
+    /// Polygon offset level 0..3 (IW4 state bits word 1); decals use it.
+    pub polygon_offset: u8,
     /// (semantic, image slot) per texture.
     textures: Vec<(u8, Ptr)>,
     pub users: BTreeSet<Owner>,
@@ -302,6 +304,10 @@ impl Links {
                     asset_iw4::state_bits::Gfxs0CullFace::Back => 1,
                     asset_iw4::state_bits::Gfxs0CullFace::Front => 2,
                 }
+            }),
+            polygon_offset: pass_rows.first().map_or(0, |r| {
+                ((r[1] & asset_iw4::GFXS1_POLYGON_OFFSET_MASK)
+                    >> asset_iw4::GFXS1_POLYGON_OFFSET_SHIFT) as u8
             }),
             textures,
             users: BTreeSet::new(),
@@ -877,6 +883,7 @@ mod tests {
             name: None,
             blend: BlendMode::Opaque,
             cull: 0,
+            polygon_offset: 0,
             camera_region,
             sort_key: 0,
             techset: Some(techset.into()),

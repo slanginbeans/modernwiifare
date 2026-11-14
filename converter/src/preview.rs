@@ -230,16 +230,19 @@ fn clip_near(tri: [CV; 3]) -> Vec<CV> {
     out
 }
 
-/// Parse a world display list into vertex-index triangles (relative to the batch's vertex base).
+/// Parse a world display list (triangle lists and strips) into vertex-index triangles in their GX winding
+/// (relative to the batch's vertex base).
 pub fn display_list_triangles(dl: &[u8]) -> Result<Vec<u16>, String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < dl.len() {
         match dl[i] {
             0x00 => i += 1,
-            op if op & 0xF8 == 0x90 => {
+            op if op & 0xF8 == 0x90 || op & 0xF8 == 0x98 => {
+                let strip = op & 0xF8 == 0x98;
                 let n = usize::from(u16::from_be_bytes([dl[i + 1], dl[i + 2]]));
                 i += 3;
+                let mut verts = Vec::with_capacity(n);
                 for v in 0..n {
                     let at = i + v * 2 * records::WORLD_DL_ATTRS;
                     let idx = u16::from_be_bytes([dl[at], dl[at + 1]]);
@@ -249,7 +252,12 @@ pub fn display_list_triangles(dl: &[u8]) -> Result<Vec<u16>, String> {
                             return Err("display list attribute indices differ".into());
                         }
                     }
-                    out.push(idx);
+                    verts.push(idx);
+                }
+                if strip {
+                    out.extend(wpk::strips::strip_triangles(&verts).flatten());
+                } else {
+                    out.extend_from_slice(&verts);
                 }
                 i += n * 2 * records::WORLD_DL_ATTRS;
             }
@@ -336,7 +344,10 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
     let place = |m: &[[f32; 4]; 3], p: [f32; 3]| -> [f32; 3] {
         std::array::from_fn(|r| m[r][0] * p[0] + m[r][1] * p[1] + m[r][2] * p[2] + m[r][3])
     };
-    for inst in records::iter::<InstanceRecord>(section(tag::MODEL_INSTANCES)) {
+    let no_models = std::env::var_os("MWF_PREVIEW_NOMODELS").is_some();
+    for inst in
+        records::iter::<InstanceRecord>(section(tag::MODEL_INSTANCES)).filter(|_| !no_models)
+    {
         let Some(model) = models.get(usize::from(inst.model)) else {
             continue;
         };
@@ -423,6 +434,7 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
             .and_then(Option::as_ref);
         let lit = Recipe::from_u8(m.recipe) == Recipe::Lightmapped && lm.is_some();
         let tint = it.tint;
+        let pull = records::material_flags::depth_pull(m.flags);
         let dl = dls
             .get(b.dl_off as usize..(b.dl_off + b.dl_len) as usize)
             .ok_or("batch display list out of range")?;
@@ -445,7 +457,7 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
                 let scale = 1.0 / (1u32 << records::LM_FRAC) as f32;
                 let pos = it.mtx.as_ref().map_or(wv.pos, |m| place(m, wv.pos));
                 v[k] = CV {
-                    c: cam.to_cam(pos),
+                    c: cam.to_cam(pos).map(|x| x * pull),
                     uv: wv.uv,
                     lm: [f32::from(wv.lm[0]) * scale, f32::from(wv.lm[1]) * scale],
                     rgba: [
