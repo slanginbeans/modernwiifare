@@ -13,7 +13,13 @@ use weapon_iw4::{
     WeaponHandState, WeaponTickEvent, add_aim_spread_fire, adjust_aim_spread_scale,
     fire_weapon_spread_degrees, get_spread_for_weapon, spawn_weapon_hand, weapon_ordinary,
 };
-use wpk::weapon::WeaponRecord;
+use weapon_iw4::{
+    CAMERA_LIMIT_DEGREES, CAMERA_PEAK_SECONDS, FireRecoilPsScales, GunKickRange,
+    GunRecoilPlacementState, GunRecoilResponse, MODEL_PEAK_SECONDS, RecoilAxis, ViewKickRange,
+    calculate_weapon_position_gun_recoil, fire_recoil_gun_range, fire_recoil_view_range,
+    recoil_ads_weight, weapon_fire_recoil,
+};
+use wpk::weapon::{KickRecord, WeaponRecord};
 
 use crate::collision::MapClip;
 
@@ -63,6 +69,12 @@ pub struct Gun {
     rng: u32,
     /// ADS fraction of the last frame.
     ads_frac: f32,
+    /// Recoil numbers, when the pack has them.
+    kick: Option<KickRecord>,
+    /// Camera kick springs (pitch, yaw, roll) and their angles in degrees; gun (viewmodel) kick.
+    camera: [RecoilAxis; 3],
+    pub kick_angles: [f32; 3],
+    gun_recoil: GunRecoilPlacementState,
 }
 
 impl Gun {
@@ -92,6 +104,10 @@ impl Gun {
             spread_degrees: 0.0,
             rng: 0x1234_5678 ^ index,
             ads_frac: 0.0,
+            kick: None,
+            camera: Default::default(),
+            kick_angles: [0.0; 3],
+            gun_recoil: GunRecoilPlacementState::default(),
         })
     }
 
@@ -131,6 +147,102 @@ impl Gun {
     /// IW4 weapon state (0 ready, 1 raising, 5 firing, 8.. reloading; see `weapon_iw4::WeaponState`).
     pub fn state(&self) -> i32 {
         self.hand.weaponstate
+    }
+
+    /// Recoil numbers for this weapon (`KICK` record); without them the gun has no recoil.
+    pub fn set_kick(&mut self, kick: Option<KickRecord>) {
+        self.kick = kick;
+    }
+
+    /// Viewmodel kick, degrees (pitch, yaw).
+    pub fn gun_kick(&self) -> [f32; 2] {
+        self.gun_recoil.angles
+    }
+
+    /// A shot's recoil impulse (IW4L `ViewKickState::seed_fire_scaled`).
+    fn seed_recoil(&mut self) {
+        let Some(k) = self.kick else {
+            return;
+        };
+        let frac = self.ads_frac;
+        let four = |v: [f32; 4]| (v[0], v[1], v[2], v[3]);
+        let (a, b, c, d) = four(k.hip_view);
+        let (e, f, g, h) = four(k.ads_view);
+        let view = fire_recoil_view_range(
+            frac,
+            ViewKickRange {
+                pitch_min: a,
+                pitch_max: b,
+                yaw_min: c,
+                yaw_max: d,
+            },
+            ViewKickRange {
+                pitch_min: e,
+                pitch_max: f,
+                yaw_min: g,
+                yaw_max: h,
+            },
+        );
+        let (a, b, c, d) = four(k.hip_gun);
+        let (e, f, g, h) = four(k.ads_gun);
+        let gun = fire_recoil_gun_range(
+            frac,
+            GunKickRange {
+                pitch_min: a,
+                pitch_max: b,
+                yaw_min: c,
+                yaw_max: d,
+            },
+            GunKickRange {
+                pitch_min: e,
+                pitch_max: f,
+                yaw_min: g,
+                yaw_max: h,
+            },
+        );
+        let reduce = self.hand.weapon_restrict_kick_time > 0;
+        let t = recoil_ads_weight(frac);
+        let ps = FireRecoilPsScales {
+            reduce_window_active: reduce,
+            reduced_percent: if reduce {
+                k.hip_reduced_percent * (1.0 - t) + k.ads_reduced_percent * t
+            } else {
+                0.0
+            },
+            weap_flags: 0,
+            recoil_scale: 0,
+        };
+        let samples = [self.random(), self.random(), self.random(), self.random()];
+        let impulse = weapon_fire_recoil(view, gun, ps, samples);
+        for (axis, amplitude) in self.camera.iter_mut().zip(impulse.camera_peak) {
+            axis.add_peak(f64::from(amplitude), CAMERA_PEAK_SECONDS);
+        }
+        for (axis, amplitude) in self.gun_recoil.axes.iter_mut().zip(impulse.model_peak) {
+            axis.add_peak(f64::from(amplitude), MODEL_PEAK_SECONDS);
+        }
+    }
+
+    /// Let the recoil springs settle for `dt` seconds (IW4L `ViewKickState::advance`).
+    fn advance_recoil(&mut self, dt: f32) {
+        let Some(k) = self.kick else {
+            return;
+        };
+        if dt <= 0.0 {
+            return;
+        }
+        for (axis, out) in self.camera.iter_mut().zip(&mut self.kick_angles) {
+            axis.advance(f64::from(dt), CAMERA_PEAK_SECONDS);
+            *out = axis.bounded(CAMERA_LIMIT_DEGREES) as f32;
+        }
+        calculate_weapon_position_gun_recoil(
+            &mut self.gun_recoil,
+            dt,
+            self.ads_frac,
+            true,
+            GunRecoilResponse::default(),
+            GunRecoilResponse::default(),
+            [k.gun_max_pitch, k.gun_max_yaw],
+        );
     }
 
     /// Update aim spread for this frame (IW4L `adjust_aim_spread_scale`) and the current cone.
@@ -214,6 +326,7 @@ impl Gun {
             ..WeaponCmd::default()
         };
         self.old_buttons = btn;
+        self.advance_recoil(msec as f32 / 1000.0);
         let event = weapon_ordinary(&mut self.hand, &self.facts, &mut cmd);
         let shot = match event {
             Some(WeaponTickEvent::ShotAccepted { .. }) => {
@@ -227,6 +340,7 @@ impl Gun {
                 let d: [f32; 3] = core::array::from_fn(|k| dir[k] + right[k] * x + up[k] * y);
                 let len = libm::sqrtf(d.iter().map(|v| v * v).sum::<f32>()).max(1e-6);
                 let shot = self.trace_bullet(clip, eye, d.map(|v| v / len));
+                self.seed_recoil();
                 add_aim_spread_fire(
                     &mut self.spread.aim_spread_scale,
                     self.ads_frac,
@@ -426,6 +540,45 @@ mod tests {
             g.update_spread(16, &input);
         }
         assert!(g.spread_degrees < widest, "and it recovers");
+    }
+
+    #[test]
+    fn recoil_kicks_the_view_up_and_settles() {
+        let c = wall();
+        let clip = MapClip::new(&c);
+        let mut g = Gun::new(&rifle()).expect("usable");
+        g.set_kick(Some(KickRecord {
+            hip_view: [20.0, 30.0, -5.0, 5.0],
+            hip_gun: [5.0, 8.0, -2.0, 2.0],
+            gun_max_pitch: 6.0,
+            gun_max_yaw: 6.0,
+            ..KickRecord::default()
+        }));
+        let (eye, x) = ([0.0, 0.0, 60.0], [1.0, 0.0, 0.0]);
+        for _ in 0..40 {
+            g.update(&clip, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        assert_eq!(g.kick_angles, [0.0; 3]);
+        let fire = GunInput {
+            fire: true,
+            ..GunInput::default()
+        };
+        let mut peak = 0.0f32;
+        for _ in 0..30 {
+            g.update(&clip, 16, &fire, eye, x, Y, Z);
+            peak = peak.min(g.kick_angles[0]);
+        }
+        // IW4 pitch up is negative; bounded by the 8 degree camera limit.
+        assert!((-8.0..-0.1).contains(&peak), "pitch kick {peak}");
+        assert!(g.gun_kick()[0].abs() > 0.0);
+        for _ in 0..120 {
+            g.update(&clip, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        assert!(
+            g.kick_angles[0].abs() < 0.05,
+            "settles: {:?}",
+            g.kick_angles
+        );
     }
 
     #[test]

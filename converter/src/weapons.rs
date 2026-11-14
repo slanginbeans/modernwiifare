@@ -11,6 +11,41 @@ use weapon_iw4::{CapturedCombatInput, EmptyReloadPolicy, LOCATION_DAMAGE_IDENTIT
 /// IW4 `WEAPCLASS_ROCKETLAUNCHER`: rocket launchers can't hold breath even with an overlay.
 const WEAPCLASS_ROCKETLAUNCHER: i32 = 11;
 
+/// Recoil numbers (IW4L `WeaponKickFacts` from the same capture).
+pub fn kick(g: &WeaponGeometry) -> wpk::weapon::KickRecord {
+    let k = &g.kick;
+    wpk::weapon::KickRecord {
+        hip_view: [
+            k.hip_view_kick_pitch_min,
+            k.hip_view_kick_pitch_max,
+            k.hip_view_kick_yaw_min,
+            k.hip_view_kick_yaw_max,
+        ],
+        ads_view: [
+            k.ads_view_kick_pitch_min,
+            k.ads_view_kick_pitch_max,
+            k.ads_view_kick_yaw_min,
+            k.ads_view_kick_yaw_max,
+        ],
+        hip_gun: [
+            k.hip_gun_kick_pitch_min,
+            k.hip_gun_kick_pitch_max,
+            k.hip_gun_kick_yaw_min,
+            k.hip_gun_kick_yaw_max,
+        ],
+        ads_gun: [
+            k.ads_gun_kick_pitch_min,
+            k.ads_gun_kick_pitch_max,
+            k.ads_gun_kick_yaw_min,
+            k.ads_gun_kick_yaw_max,
+        ],
+        hip_reduced_percent: k.hip_gun_kick_reduced_kick_percent,
+        ads_reduced_percent: k.ads_gun_kick_reduced_kick_percent,
+        gun_max_pitch: k.gun_max_pitch,
+        gun_max_yaw: k.gun_max_yaw,
+    }
+}
+
 pub fn captured(g: &WeaponGeometry) -> CapturedCombatInput {
     let segmented_reload = g.segmented_reload && g.reload_start_time_ms > 0;
     let reload_ammo_add = if g.reload_ammo_add > 0 {

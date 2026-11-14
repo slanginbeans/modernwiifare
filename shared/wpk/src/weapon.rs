@@ -196,6 +196,56 @@ impl crate::records::Record for WeaponRecord {
     }
 }
 
+/// A weapon's recoil numbers (`KICK` section, one per `WEAP` record in the same order): view and gun kick ranges
+/// (pitch min, pitch max, yaw min, yaw max) for hip and ADS, the reduced-kick percentages and the gun's maximum
+/// pitch / yaw (IW4 `WeaponDef` kick fields, as IW4L's `WeaponKickFacts`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct KickRecord {
+    pub hip_view: [f32; 4],
+    pub ads_view: [f32; 4],
+    pub hip_gun: [f32; 4],
+    pub ads_gun: [f32; 4],
+    pub hip_reduced_percent: f32,
+    pub ads_reduced_percent: f32,
+    pub gun_max_pitch: f32,
+    pub gun_max_yaw: f32,
+}
+
+impl crate::records::Record for KickRecord {
+    const LEN: usize = 80;
+    fn write(&self, o: &mut Vec<u8>) {
+        for v in self
+            .hip_view
+            .iter()
+            .chain(&self.ads_view)
+            .chain(&self.hip_gun)
+            .chain(&self.ads_gun)
+            .chain(&[
+                self.hip_reduced_percent,
+                self.ads_reduced_percent,
+                self.gun_max_pitch,
+                self.gun_max_yaw,
+            ])
+        {
+            o.f32(*v);
+        }
+    }
+    fn read(b: &[u8]) -> Self {
+        let f = |i: usize| be::f32(b, i * 4);
+        let four = |at: usize| [f(at), f(at + 1), f(at + 2), f(at + 3)];
+        KickRecord {
+            hip_view: four(0),
+            ads_view: four(4),
+            hip_gun: four(8),
+            ads_gun: four(12),
+            hip_reduced_percent: f(16),
+            ads_reduced_percent: f(17),
+            gun_max_pitch: f(18),
+            gun_max_yaw: f(19),
+        }
+    }
+}
+
 /// The record named `name` in a `WEAP` section, with its index.
 pub fn find_indexed(section: &[u8], name: &str) -> Option<(u32, WeaponRecord)> {
     section.chunks_exact(LEN).enumerate().find_map(|(i, r)| {

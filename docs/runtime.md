@@ -50,7 +50,10 @@ like IW4 (every 5th frame at 60 fps), 30-round magazine, 2.03 s / 2.36 s (empty)
 the map (IW4 `MASK_SHOT`); impacts show as yellow markers for 400 ms. HUD: crosshair, magazine / reserve, weapon.
 Aim spread is IW4L's: the cone grows while firing, moving or turning and decays at rest, by stance and ADS; each
 bullet leaves in a random direction inside it, and the crosshair ticks sit on the cone's edge.
-Not yet: recoil / view kick, muzzle flash, sounds, damage to players, other weapons and attachments.
+Recoil is IW4L's model with each weapon's own kick numbers (`KICK` in `common.wpk`): every shot kicks the view
+(capped at 8°, settling over ~80 ms springs; later shots follow the kicked view, so the gun climbs as in MW2) and
+the viewmodel (gun kick within the weapon's maximum pitch / yaw).
+Not yet: muzzle flash, sounds, damage to players, other weapons and attachments.
 
 ## First-person model
 The M4A1's view hands and gun (`common.wpk`, 8.4k triangles, 101 bones, 17 animations), posed and skinned on the CPU

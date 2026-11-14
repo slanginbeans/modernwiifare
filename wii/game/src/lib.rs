@@ -541,8 +541,17 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
     cam.aspect = aspect;
     let mut player = clip.as_ref().map(|c| spawn_player(&world, c, spawn));
     // The gun (when common.wpk is on the SD card): the M4A1, as in MW2's first default class.
+    let kicks = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::KICK))
+        .map_or(&[][..], |s| s.data);
     let new_gun = || {
-        wpk::weapon::find_indexed(weapons, DEFAULT_WEAPON).and_then(|(i, r)| Gun::with_index(&r, i))
+        let (i, r) = wpk::weapon::find_indexed(weapons, DEFAULT_WEAPON)?;
+        let mut g = Gun::with_index(&r, i)?;
+        g.set_kick(wpk::records::get::<wpk::weapon::KickRecord>(
+            kicks, i as usize,
+        ));
+        Some(g)
     };
     let mut gun = new_gun();
     // Its first-person model (textures created after this map's texture reset).
@@ -620,6 +629,11 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
                     msec as i32,
                 );
                 cam = p.camera(aspect);
+                // Recoil kicks the view (IW4: kick angles on top of the view; shots follow the kicked view).
+                if let Some(g) = &gun {
+                    cam.pitch += g.kick_angles[0];
+                    cam.yaw += g.kick_angles[1];
+                }
                 if fall > 0 {
                     life.damage(fall, now);
                 }
@@ -685,7 +699,7 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
             && let (Some(v), Some(g)) = (view.as_mut(), gun.as_ref())
         {
             let (slot, restart) = g.anim();
-            v.draw(gfx, slot, restart, now);
+            v.draw(gfx, slot, restart, now, g.gun_kick());
         }
         if !flying {
             if let Some(g) = gun.as_ref().filter(|_| life.alive()) {

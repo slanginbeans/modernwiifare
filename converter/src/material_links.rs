@@ -226,6 +226,8 @@ pub struct Links {
     pub weapons: Vec<String>,
     /// Combat numbers of each weapon (parallel to `weapons`).
     pub weapon_combat: Vec<weapon_iw4::CapturedCombatInput>,
+    /// Recoil of each weapon (parallel to `weapons`).
+    pub weapon_kick: Vec<wpk::weapon::KickRecord>,
     /// First-person models and animations of each weapon (parallel to `weapons`).
     pub weapon_views: Vec<WeaponView>,
     /// Every XAnim loaded, by name, read again after the walk (`viewmodel.rs`).
@@ -396,6 +398,7 @@ impl Links {
         let index = self.weapons.len();
         self.weapons.push(w.name.and_then(text).unwrap_or_default());
         self.weapon_combat.push(crate::weapons::captured(&w));
+        self.weapon_kick.push(crate::weapons::kick(&w));
         let anims = w.sz_xanims.map_or_else(Vec::new, |arr| {
             (0..asset_iw4::size::WEAPON_ANIM_COUNT)
                 .map(|i| match s.ptr_at(arr, i * s.pointer_bytes()) {

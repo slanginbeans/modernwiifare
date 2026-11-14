@@ -475,20 +475,28 @@ fn run_common(args: &[String]) -> ExitCode {
         }
     };
     let links = &collector.links;
-    let mut weapons: Vec<wpk::weapon::WeaponRecord> = links
+    // Weapons with their recoil, sorted by name, first of each name kept.
+    let mut both: Vec<(wpk::weapon::WeaponRecord, wpk::weapon::KickRecord)> = links
         .weapons
         .iter()
         .zip(&links.weapon_combat)
-        .filter(|(n, _)| !n.is_empty())
-        .map(|(n, c)| wpk::weapon::WeaponRecord::new(n, *c))
+        .zip(&links.weapon_kick)
+        .filter(|((n, _), _)| !n.is_empty())
+        .map(|((n, c), k)| (wpk::weapon::WeaponRecord::new(n, *c), *k))
         .collect();
-    weapons.sort_by_key(|w| w.name);
-    weapons.dedup_by(|x, y| x.name == y.name);
+    both.sort_by_key(|(w, _)| w.name);
+    both.dedup_by(|x, y| x.0.name == y.0.name);
+    let (weapons, kicks): (Vec<_>, Vec<_>) = both.into_iter().unzip();
     let mut b = wpk::PackBuilder::new("common");
     b.section(
         wpk::tag::WEAPONS,
         weapons.len() as u32,
         wpk::records::encode(&weapons),
+    );
+    b.section(
+        wpk::tag::KICK,
+        kicks.len() as u32,
+        wpk::records::encode(&kicks),
     );
     b.section(
         wpk::tag::TEXTURES,

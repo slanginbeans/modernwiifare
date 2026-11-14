@@ -77,6 +77,8 @@ pub mod tag {
     /// First-person model and animations of a weapon (`view::ViewModel`, in `common.wpk`); `count` = weapon index
     /// in `WEAP` it belongs to.
     pub const VIEWMODEL: Tag = *b"VIEW";
+    /// Recoil of every weapon (`weapon::KickRecord`, parallel to `WEAP`).
+    pub const KICK: Tag = *b"KICK";
     /// Weapons (`weapon::WeaponRecord`): combat numbers of every weapon (in `common.wpk`).
     pub const WEAPONS: Tag = *b"WEAP";
     /// World visibility (`vis::Vis`): cell BSP, cells, portals.

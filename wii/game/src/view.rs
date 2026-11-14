@@ -136,7 +136,15 @@ impl View {
     }
 
     /// Pose for the gun's animation (`slot`, restart toggle) at `now_ms`, skin, and draw. Call after the world.
-    pub fn draw(&mut self, gfx: &mut impl Gfx, slot: u8, restart: bool, now_ms: u32) {
+    /// `gun_kick`: the gun's recoil (pitch up, yaw left, degrees), turning the model about the eye.
+    pub fn draw(
+        &mut self,
+        gfx: &mut impl Gfx,
+        slot: u8,
+        restart: bool,
+        now_ms: u32,
+        gun_kick: [f32; 2],
+    ) {
         if (slot, restart) != (self.playing.0, self.playing.1) {
             self.playing = (slot, restart, now_ms);
         }
@@ -157,9 +165,16 @@ impl View {
             ffi::mwf_view_begin(FOVY, ZNEAR, ZFAR);
             ffi::mwf_view_arrays(self.positions.as_ptr().cast(), self.attributes);
         }
-        gfx.pos_matrix(&vmod::eye_from_model(
-            &self.world[usize::from(self.vm.view_bone)],
-        ));
+        let (p, y) = (gun_kick[0].to_radians(), gun_kick[1].to_radians());
+        let (sp, cp, sy, cy) = (libm::sinf(p), libm::cosf(p), libm::sinf(y), libm::cosf(y));
+        // Eye space: yaw about +y (left positive), then pitch about +x (muzzle up positive).
+        let kick: Mtx34 = [
+            [cy, 0.0, sy, 0.0],
+            [sp * sy, cp, -sp * cy, 0.0],
+            [-cp * sy, sp, cp * cy, 0.0],
+        ];
+        let eye = vmod::eye_from_model(&self.world[usize::from(self.vm.view_bone)]);
+        gfx.pos_matrix(&vmod::mul(&kick, &eye));
         let mut last: Option<DrawState> = None;
         for d in &self.draws {
             if last != Some(d.state) {
