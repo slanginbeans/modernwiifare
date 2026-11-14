@@ -75,6 +75,8 @@ GPU-wait ms, triangles (of which static models), draws, state changes, visible c
 
 Domination (Game Setup): the map's flags (`OBJS`) are taken as `_gameobjects.gsc` takes a proximity objective: the first team inside one it may take claims it, the claim fills at `min(players, 4)` times real time while nobody else is inside, and is lost when they all leave; a full claim (`dom.gsc`'s use time) gives the flag to the team and the capture points to the first in. Every score tick each held flag adds a point to its team; kills don't. Bots without an enemy to chase head for the nearest flag their team doesn't hold and wait inside it. The HUD line shows each flag's holder and your capture progress.
 
+Counter-UAV (a class killstreak, D-pad left): up as long as a UAV (`_uav.gsc`), it jams your enemies' radar: theirs dims and shows nothing but themselves, and bots under it lose their UAV's knowledge. An enemy's jams yours the same way.
+
 Footsteps: each player's bob cycle wrapping is a step (IW4L), sounding `step_<gait>[_plr]_<surface>` (sprint, run, walk / crouch, prone; the surface under the feet; `_default` when a surface has none; `STEP` in `common.wpk`); yours as you hear them, others' where they are.
 
 Grenades: your class's frag-type equipment (frag, semtex) is thrown through IW4L's offhand states (pull back, cook

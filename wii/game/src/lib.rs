@@ -546,7 +546,9 @@ fn draw_minimap(
     let Some(f) = Frame::new(m, rect, cam.eye, cam.yaw) else {
         return;
     };
-    let verts = f.map_quad(0xffff_ffff);
+    // An enemy Counter-UAV jams your radar: a dimmed map and no pings but you.
+    let jammed = arena.is_some_and(|a| a.radar_blocked(0, now));
+    let verts = f.map_quad(if jammed { 0x5050_50ff } else { 0xffff_ffff });
     unsafe { ffi::mwf_ui_verts(*handle, verts.as_ptr(), 1) };
     let enemy = u.pack.icon("compassping_enemy");
     let firing = u.pack.icon("compassping_enemyfiring").or(enemy);
@@ -560,7 +562,7 @@ fn draw_minimap(
             q.extend_from_slice(&s.quads);
         }
         let alpha = |a: f32| 0xffff_ff00 | (a.clamp(0.0, 1.0) * 255.0) as u32;
-        if let Some(a) = arena {
+        if let Some(a) = arena.filter(|_| !jammed) {
             for (i, fi) in a.fighters.iter().enumerate().skip(1) {
                 if !fi.life.alive() {
                     continue;
@@ -597,7 +599,7 @@ fn draw_minimap(
             }
         }
         // Grenades in the air or on the ground, and recent explosions (MW2's compass pings).
-        if let Some(a) = arena {
+        if let Some(a) = arena.filter(|_| !jammed) {
             for g in &a.grenades {
                 if let Some(t) = grenade {
                     q.push(Frame::icon(
@@ -1132,6 +1134,12 @@ fn run_map(
             if r == "uav" {
                 radar.activate(now, rules.uav_time_ms);
                 reward_note = Some(("UAV ONLINE", now));
+            } else if r == "counter_uav"
+                && let Some(a) = arena.as_mut()
+            {
+                // `_uav.gsc`: up as long as a UAV, jamming the enemies' radar.
+                a.fighters[0].counter_uav_until = Some(now.wrapping_add(rules.uav_time_ms));
+                reward_note = Some(("COUNTER-UAV ONLINE", now));
             } else {
                 reward_note = Some(("THAT KILLSTREAK IS NOT IN THIS BUILD YET", now));
             }

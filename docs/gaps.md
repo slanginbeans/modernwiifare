@@ -33,8 +33,8 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
    the other takes the hand and raises (first raise once a life); refused mid-melee, cancelled by asking again.
 3. **Melee**: done without the lunge. The melee button goes through IW4L's hand driver (`weapon_hands`:
    `weapon_try_melee`, swing and hit times); the hit is IW4L `fire_weapon_melee`'s nine traces (64 units) against
-   the players' boxes, melee damage plus 0..4. Bots swing when you're within reach. Not yet: the lunge
-   (`melee_charge` target and `movement_iw4::melee_charge_move`).
+   the players' boxes, melee damage plus 0..4. Bots swing when you're within reach. The lunge: done (IW4L's client `melee_charge_target`,
+   the weapon step's charge start, pmove's `melee_charge_move`).
 4. ~~Players block each other~~ done: pmove's traces sweep against every other living player's hull with
    `clipmap_iw4::transformed_temp_capsule_trace` (bullets and sight still see the world only).
 5. ~~Health regeneration~~ done: MW2's `_healthoverlay.gsc` loop step by step (`life::Life::regen`), the numbers
@@ -48,8 +48,8 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
 9. ~~Crouch as MW2's console toggle; prone~~ done (tap / hold, IW4L's stance button). Footsteps done. Not yet: Ninja's quieter steps, bots hearing steps.
 13. **Team deathmatch**: done (teams, team score, friendly fire off, team spawns, Game Setup with the scripts'
     limits). The stock script limits are low (500 points, 5 kills); MW2's retail playlists aren't readable from
-    the install (`mp_playlists_dlc2`'s playlist is empty), so Game Setup offers longer limits. Not yet: the other
-    modes (Domination, Search and Destroy, Headquarters, Sabotage, Demolition, Capture the Flag), team start spawns
+    the install (`mp_playlists_dlc2`'s playlist is empty), so Game Setup offers longer limits. Domination: done (the map's flags from ``OBJS``; ``_gameobjects.gsc``'s proximity capture, ``min(players, 4)`` times real time, paused while contested; ``dom.gsc``'s limits, capture points, use time and score tick; bots head for flags they don't hold; HUD flag status). Not in Domination yet: MW2's flag-weighted spawns (TDM spawns are used), flag models, defend / assault points. Not yet: the other
+    modes (Search and Destroy, Headquarters, Sabotage, Demolition, Capture the Flag), team start spawns
     for the first spawn, team killstreaks shared by the team (the UAV is yours alone).
 12. **Grenades**: frag, semtex, the throwing knife (its hit, stick and pickup), claymore (trip and cone) and C4 (double-tap detonation) (lethal), flashbang, stun and smoke (tactical; the smoke's sight blocking) done (`game_core::grenade`, IW4L's throw /
     bounce / fuse / blast and flashbang amounts, the scripts' flash and stun durations, the shock files' white-out
@@ -58,8 +58,8 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
     danger indicator; Danger Close.
 11. **Minimap and killstreaks**: the HUD minimap (map pack `MINI`: MW2's `setupMiniMap` frame, the script's
     `compassmaxrange`; turned with the view; firing pings), kill streaks with your class's streak costs, the UAV
-    (radar sweep and ping fade from IW4L's compass, duration from `_uav.gsc`), bots' UAVs. Not yet: the other
-    streaks (care package, predator, sentry, harrier, airstrike, helicopters, AC-130, EMP, nuke), Counter-UAV,
+    (radar sweep and ping fade from IW4L's compass, duration from `_uav.gsc`), bots' UAVs. Counter-UAV: done (``_uav.gsc``: as long as a UAV, jams the enemies' radar: your minimap dims and shows nothing but you; bots under it lose their UAV's knowledge). Not yet: the other
+    streaks (care package, predator, sentry, harrier, airstrike, helicopters, AC-130, EMP, nuke), bots calling Counter-UAVs,
     Cold-Blooded / Scrambler on the radar, the minimap's fading edge and scan-line pass order.
 10. **Perks** (`game_core::perks`): a class's three perks and their Pro perks (perkTable's upgrade column;
     everything unlocked) become IW4's `ps.perks` bits that IW4L's movement and weapon code read (Marathon,

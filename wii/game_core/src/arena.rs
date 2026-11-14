@@ -54,6 +54,8 @@ pub struct Fighter {
     pub shock: Option<Shock>,
     /// A bot's UAV: until when it knows where everyone is.
     pub uav_until: Option<u32>,
+    /// This fighter's Counter-UAV: until when its enemies' radar is jammed (`_uav.gsc`).
+    pub counter_uav_until: Option<u32>,
     /// Bot stepping: when the next step is due, steps taken, the decision being carried out, and the position
     /// before the last step (with its time) for drawing in between.
     next_step_ms: Option<u32>,
@@ -84,6 +86,7 @@ impl Fighter {
             streak: 0,
             shock: None,
             uav_until: None,
+            counter_uav_until: None,
             next_step_ms: None,
             steps: 0,
             act: Act::default(),
@@ -1126,6 +1129,16 @@ impl Arena {
         }
     }
 
+    /// Whether fighter `me`'s radar is jammed at `now`: an enemy's Counter-UAV is up (`_uav.gsc`: a team's radar is
+    /// blocked while the other team has one; in free-for-all, anyone else's).
+    pub fn radar_blocked(&self, me: usize, now: u32) -> bool {
+        self.fighters.iter().enumerate().any(|(i, f)| {
+            self.enemies(me, i)
+                && f.counter_uav_until
+                    .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
+        })
+    }
+
     /// Footsteps since the last call: a fighter on the ground whose bob cycle wrapped (IW4L `bob_cycle_wrapped`)
     /// steps, by its gait (prone, sprinting, walking or crouched, else running) on the surface under its feet.
     pub fn footsteps(&mut self, clip: &MapClip<'_>, out: &mut Vec<Event>) {
@@ -1205,6 +1218,7 @@ impl Arena {
     /// What fighter `me` perceives of the others.
     fn contacts(&self, clip: &MapClip<'_>, me: usize, now: u32) -> Vec<Contact> {
         let f = &self.fighters[me];
+        let jammed = self.radar_blocked(me, now);
         let eye = f.player.eye();
         let (_, yaw) = f.player.view();
         self.fighters
@@ -1231,7 +1245,8 @@ impl Arena {
                 // Under its UAV a bot knows where everyone is (as the radar shows them).
                 let uav = f
                     .uav_until
-                    .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0);
+                    .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
+                    && !jammed;
                 let heard = uav
                     || o.last_fire_ms.is_some_and(|t| {
                         now.wrapping_sub(t) < 1500
@@ -1600,6 +1615,25 @@ mod tests {
         );
         assert_eq!(a.fighters[0].kills, 1);
         assert!(a.grenades.is_empty());
+    }
+
+    #[test]
+    fn a_counter_uav_jams_the_other_teams_radar() {
+        let clip = boxes(&[([-4000.0, -4000.0, -64.0], [4000.0, 4000.0, 0.0])]);
+        let mc = MapClip::new(&clip);
+        let spawns = [
+            ([0.0, 0.0, 0.0], 0.0),
+            ([300.0, 0.0, 0.0], 180.0),
+            ([600.0, 0.0, 0.0], 0.0),
+        ];
+        let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+        let mut a = Arena::new(&mc, &spawns, 2, human, Rules::default(), |_| Some(rifle()));
+        a.set_mode(Mode::Tdm, Limits::of(&Rules::default(), Mode::Tdm));
+        // Bot 1 is the other team, bot 2 your teammate.
+        a.fighters[1].counter_uav_until = Some(31_000);
+        assert!(a.radar_blocked(0, 1000) && a.radar_blocked(2, 1000));
+        assert!(!a.radar_blocked(1, 1000), "not your own");
+        assert!(!a.radar_blocked(0, 31_000), "over");
     }
 
     #[test]
