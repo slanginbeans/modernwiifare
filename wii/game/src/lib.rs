@@ -21,6 +21,7 @@ use game_core::fly::{self, PadInput};
 use game_core::gfx::{DrawState, Gfx, Mtx34, TexDesc};
 use game_core::gun::{Gun, GunInput};
 use game_core::hud::{self, Rect, heapless_str::Str};
+use game_core::life::{self, Life, MatchClock};
 use game_core::player::{MovePad, Player};
 use game_core::world::World;
 use game_core::world::{FrameStats, VisData};
@@ -204,6 +205,45 @@ fn spawn_camera(world: &World<'_>, i: usize) -> Camera {
         Some(s) => Camera::new([s.origin[0], s.origin[1], s.origin[2] + 60.0], s.yaw, 0.0),
         None => Camera::new([0.0, 0.0, 200.0], 0.0, 0.0),
     }
+}
+
+/// Damage vignette, death screen, match clock and deaths.
+fn draw_life_hud(gfx: &mut Shim, rects: &mut Vec<Rect>, life: &Life, clock: &MatchClock, now: u32) {
+    let hurt = life.hurt(now);
+    if hurt > 0.01 {
+        let a = (hurt * 200.0) as u32;
+        let edge = 48;
+        rects.clear();
+        rects.extend_from_slice(&[
+            [0, 0, 640, edge],
+            [0, 480 - edge, 640, edge],
+            [0, edge, edge, 480 - 2 * edge],
+            [640 - edge, edge, edge, 480 - 2 * edge],
+        ]);
+        gfx.hud_rects(rects, 0xa0000000 | a);
+    }
+    if !life.alive() {
+        gfx.hud_rects(&[[0, 0, 640, 480]], 0x20000080);
+        let mut line = Str::default();
+        line.push_str("YOU DIED\nRESPAWN IN ");
+        line.num(life.respawn_in(now).div_ceil(1000));
+        rects.clear();
+        hud::text(rects, 236, 200, 6, line.as_str());
+        gfx.hud_rects(rects, 0xf0e8d0ff);
+    }
+    let left = clock.remaining_ms(now) / 1000;
+    let mut line = Str::default();
+    line.num(left / 60);
+    line.push(':');
+    if left % 60 < 10 {
+        line.push('0');
+    }
+    line.num(left % 60);
+    line.push_str("   DEATHS ");
+    line.num(life.deaths);
+    rects.clear();
+    hud::text(rects, 24, 452, 2, line.as_str());
+    gfx.hud_rects(rects, 0xd0d8e0c0);
 }
 
 /// The weapon a player spawns with (MW2's first default class carries the M4A1).
@@ -470,6 +510,15 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, weapons: &[u8]
     let mut impacts: [(Option<[f32; 3]>, u32); 8] = [(None, 0); 8];
     let mut next_impact = 0usize;
     let mut hud_rects: Vec<Rect> = Vec::with_capacity(512);
+    let mut life = Life::default();
+    let clock = MatchClock::start(ffi::ms());
+    // Below the lowest spawn point by this much is out of the world.
+    let floor_z = world
+        .spawns
+        .iter()
+        .map(|s| s.origin[2])
+        .fold(f32::MAX, f32::min)
+        - life::OUT_OF_WORLD_DEPTH;
     let mut flying = player.is_none();
     let mut last = ffi::ms();
     let mut show_overlay = true;
@@ -513,8 +562,8 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, weapons: &[u8]
             }
         }
         match (&mut player, &clip) {
-            (Some(p), Some(c)) if !flying => {
-                p.update(
+            (Some(p), Some(c)) if !flying && life.alive() => {
+                let fall = p.update(
                     c,
                     &MovePad {
                         sx: pad.sx,
@@ -529,7 +578,13 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, weapons: &[u8]
                     msec as i32,
                 );
                 cam = p.camera(aspect);
-                if let Some(g) = gun.as_mut() {
+                if fall > 0 {
+                    life.damage(fall, now);
+                }
+                if p.ps.origin[2] < floor_z {
+                    life.damage(life.max_health, now);
+                }
+                if let Some(g) = gun.as_mut().filter(|_| life.alive()) {
                     let (_, shot) = g.update(
                         c,
                         msec as i32,
@@ -547,6 +602,15 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, weapons: &[u8]
                     }
                 }
             }
+            (Some(_), Some(c)) if !flying => {
+                // Dead: the view stays where the player fell until the respawn.
+                if life.ready_to_respawn(now) {
+                    spawn += 1;
+                    player = Some(spawn_player(&world, c, spawn));
+                    gun = new_gun();
+                    life.respawn();
+                }
+            }
             _ => fly::update(
                 &mut cam,
                 &PadInput {
@@ -562,8 +626,11 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, weapons: &[u8]
             ),
         }
         let stats = world.draw(gfx, &cam, scratch);
-        if !flying && let Some(g) = &gun {
-            draw_gun_hud(gfx, &mut hud_rects, g, &cam, &impacts, now);
+        if !flying {
+            if let Some(g) = gun.as_ref().filter(|_| life.alive()) {
+                draw_gun_hud(gfx, &mut hud_rects, g, &cam, &impacts, now);
+            }
+            draw_life_hud(gfx, &mut hud_rects, &life, &clock, now);
         }
         if show_overlay {
             overlay(gfx, &mut rects, &timing, &stats, cam.eye);

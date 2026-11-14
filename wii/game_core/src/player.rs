@@ -143,8 +143,8 @@ impl Player {
         }
     }
 
-    /// Run one frame of `msec` milliseconds.
-    pub fn update(&mut self, clip: &MapClip<'_>, pad: &MovePad, msec: i32) {
+    /// Run one frame of `msec` milliseconds. Returns the fall damage of a landing this frame (IW4L's crash land).
+    pub fn update(&mut self, clip: &MapClip<'_>, pad: &MovePad, msec: i32) -> i32 {
         let dt = msec as f32 / 1000.0;
         self.yaw -= axis(pad.cx) * LOOK_YAW_RATE * dt;
         self.yaw -= libm::floorf(self.yaw / 360.0) * 360.0;
@@ -178,7 +178,7 @@ impl Player {
             rightmove: to_move(pad.sx),
             ..UserCmd::default()
         };
-        let _ = pmove(
+        let result = pmove(
             &mut self.ps,
             &mut cmd,
             context(self.old_buttons),
@@ -187,6 +187,7 @@ impl Player {
             &ZeroMantleRootDelta,
         );
         self.old_buttons = btn;
+        result.pml.fall_damage
     }
 
     /// First-person camera at the player's eye.

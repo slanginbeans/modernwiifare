@@ -441,6 +441,7 @@ version = "0.1.0"
 dependencies = [
  "clipmap_iw4",
  "dpvs_iw4",
+ "gamemode_iw4",
  "libm",
  "movement_iw4",
  "playerstate_iw4",

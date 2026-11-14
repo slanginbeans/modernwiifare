@@ -19,6 +19,7 @@ pub mod fly;
 pub mod gfx;
 pub mod gun;
 pub mod hud;
+pub mod life;
 pub mod player;
 pub mod sky;
 pub mod world;

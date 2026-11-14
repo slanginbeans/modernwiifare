@@ -48,6 +48,14 @@ like IW4 (every 5th frame at 60 fps), 30-round magazine, 2.03 s / 2.36 s (empty)
 the map (IW4 `MASK_SHOT`); impacts show as yellow markers for 400 ms. HUD: crosshair, magazine / reserve, weapon.
 Not yet: spread, recoil, the viewmodel, sounds, damage to players, other weapons and attachments.
 
+## Life and match
+Health 100; fall damage from IW4L's crash land (falls under 128 units are free, 300 and over kill); dropping 2048
+units below the lowest spawn point kills (MW2 uses trigger volumes). A death shows "YOU DIED", then you respawn at
+the next spawn point after 3 s, with a fresh gun. A red vignette shows missing health and flashes on damage; the
+bottom left shows the match clock (10 minutes, IW4L's FFA limit) and deaths.
+Placeholders until MW2's game-type scripts run (GSC, ADR 0002): the 3 s respawn (MW2: death cam / killcam flow) and
+no health regeneration.
+
 ## Movement status
 - `pmove` is IW4L's, unchanged; the context uses MW2's MP dvar defaults (190 speed, 800 gravity, jump 39, sprint ×1.5).
 - Traces: world brushes through the BSP plus the triangle mesh (`clipmap_iw4::trace_brush_and_mesh`). Glass is
