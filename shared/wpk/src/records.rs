@@ -406,6 +406,71 @@ impl Record for SpawnRecord {
     }
 }
 
+/// A static model: a run of `MSRF` surfaces (BatchRecords over `MVTX`, display lists in `WDLS`, bounds in model
+/// space) and a bounding sphere in model space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModelRecord {
+    pub first_surface: u32,
+    pub surface_count: u32,
+    pub centre: [f32; 3],
+    pub radius: f32,
+}
+
+impl Record for ModelRecord {
+    const LEN: usize = 24;
+    fn write(&self, o: &mut Vec<u8>) {
+        o.u32(self.first_surface);
+        o.u32(self.surface_count);
+        for v in self.centre {
+            o.f32(v);
+        }
+        o.f32(self.radius);
+    }
+    fn read(b: &[u8]) -> Self {
+        ModelRecord {
+            first_surface: be::u32(b, 0),
+            surface_count: be::u32(b, 4),
+            centre: [be::f32(b, 8), be::f32(b, 12), be::f32(b, 16)],
+            radius: be::f32(b, 20),
+        }
+    }
+}
+
+/// One placed static model: model-to-world matrix (rows; axis × scale and origin), the light-grid colour it is lit
+/// with (RGBA8, half intensity: the GPU doubles it, like lightmaps) and its draw distance (0 = always).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InstanceRecord {
+    pub model: u16,
+    pub cull_dist: u16,
+    pub light: u32,
+    pub mtx: [[f32; 4]; 3],
+}
+
+impl Record for InstanceRecord {
+    const LEN: usize = 56;
+    fn write(&self, o: &mut Vec<u8>) {
+        o.u16(self.model);
+        o.u16(self.cull_dist);
+        o.u32(self.light);
+        for v in self.mtx.iter().flatten() {
+            o.f32(*v);
+        }
+    }
+    fn read(b: &[u8]) -> Self {
+        let f = |i: usize| be::f32(b, 8 + 4 * i);
+        InstanceRecord {
+            model: be::u16(b, 0),
+            cull_dist: be::u16(b, 2),
+            light: be::u32(b, 4),
+            mtx: [
+                [f(0), f(1), f(2), f(3)],
+                [f(4), f(5), f(6), f(7)],
+                [f(8), f(9), f(10), f(11)],
+            ],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,6 +485,22 @@ mod tests {
 
     #[test]
     fn records_roundtrip_at_their_length() {
+        roundtrip(ModelRecord {
+            first_surface: 3,
+            surface_count: 2,
+            centre: [1.0, -2.0, 3.5],
+            radius: 40.0,
+        });
+        roundtrip(InstanceRecord {
+            model: 7,
+            cull_dist: 2500,
+            light: 0x8070_60ff,
+            mtx: [
+                [1.0, 0.0, 0.0, 10.0],
+                [0.0, 1.0, 0.0, -20.0],
+                [0.0, 0.0, 1.0, 30.0],
+            ],
+        });
         roundtrip(TextureRecord {
             format: 14,
             levels: 6,

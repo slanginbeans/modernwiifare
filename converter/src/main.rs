@@ -28,11 +28,13 @@ use std::process::ExitCode;
 
 mod collision;
 mod inventory;
+mod light_grid;
 mod map_walk;
 mod material_links;
 mod pack;
 mod pixel_decode;
 mod preview;
+mod static_models;
 mod texture;
 mod zone_textures;
 
@@ -554,7 +556,7 @@ fn run_preview(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
     println!(
-        "{} from ({:.0}, {:.0}, {:.0}) yaw {:.0}: {} batches drawn, {} culled, {} triangles, {} pixels, {} ms",
+        "{} from ({:.0}, {:.0}, {:.0}) yaw {:.0}: {} batches drawn, {} culled, {} models past draw distance, {} triangles, {} pixels, {} ms",
         out.display(),
         eye[0],
         eye[1],
@@ -562,6 +564,7 @@ fn run_preview(args: &[String]) -> ExitCode {
         view_yaw,
         stats.batches_drawn,
         stats.batches_culled,
+        stats.models_culled,
         stats.triangles,
         stats.pixels_drawn,
         t.elapsed().as_millis()

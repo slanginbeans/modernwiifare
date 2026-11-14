@@ -53,6 +53,14 @@ pub mod tag {
     pub const SKYBOX: Tag = *b"SKYB";
     /// Player spawn points ([`crate::records::SpawnRecord`]).
     pub const SPAWNS: Tag = *b"SPWN";
+    /// Static model vertices (`WorldVertex`, model space, lightmap UV unused).
+    pub const MODEL_VERTICES: Tag = *b"MVTX";
+    /// Static model surfaces (`BatchRecord` over `MVTX`; display lists in `WDLS`).
+    pub const MODEL_SURFACES: Tag = *b"MSRF";
+    /// Static models (`ModelRecord`).
+    pub const MODELS: Tag = *b"MODL";
+    /// Placed static models (`InstanceRecord`).
+    pub const MODEL_INSTANCES: Tag = *b"SMDL";
     /// Collision (`clip::Clip`), one blob.
     pub const CLIP: Tag = *b"CLIP";
 }

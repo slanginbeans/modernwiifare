@@ -202,6 +202,18 @@ void mwf_world_state(const mwf_draw_state *s) {
         st++;
     }
 
+    if (s->tint != 0) {
+        /* Static model light: colour x konst x 2 (the konst holds half the light, like lightmaps). */
+        GXColor k = {(u8)(s->tint >> 24), (u8)(s->tint >> 16), (u8)(s->tint >> 8), 0xff};
+        GX_SetTevKColor(GX_KCOLOR0, k);
+        GX_SetTevKColorSel(st, GX_TEV_KCSEL_K0);
+        GX_SetTevOrder(st, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLORNULL);
+        GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_CPREV, GX_CC_KONST, GX_CC_ZERO);
+        GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
+        stage_ops(st, GX_CS_SCALE_2);
+        st++;
+    }
+
     if (has_plane) {
         GX_LoadTexObj(&tex_alpha[s->tex], GX_TEXMAP2);
         GX_SetTevOrder(st, GX_TEXCOORD0, GX_TEXMAP2, GX_COLOR0A0);
@@ -286,6 +298,10 @@ void mwf_sky_face(const float view_rot[3][4], const float c[4][5], int32_t tex) 
     }
     GX_End();
     GX_SetCurrentMtx(GX_PNMTX0);
+}
+
+void mwf_pos_matrix(const float m[3][4]) {
+    GX_LoadPosMtxImm((f32(*)[4])m, GX_PNMTX0);
 }
 
 void mwf_frame_end(void) {

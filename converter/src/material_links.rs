@@ -199,8 +199,13 @@ pub struct Links {
     pub material_info: Vec<MaterialInfo>,
     xmodels: SlotMap,
     pub models: Vec<ModelInfo>,
+    /// Each model's geometry pointers (parallel to `models`), read again after the walk for static models.
+    pub model_geometry: Vec<fastfile_iw4::XModelGeometry>,
     /// Model name pointers by slot, for IW4L's weapon loader.
     xmodel_names: HashMap<Ptr, Ptr>,
+    /// XModelSurfs (LOD surface sets) by insert slot: surface array and name, for models that share them.
+    xmodel_surfaces: HashMap<Ptr, Ptr>,
+    xmodel_surface_names: HashMap<Ptr, Ptr>,
     /// Gun and hand model names → the weapons that list them.
     viewmodel_names: HashMap<String, BTreeSet<usize>>,
     /// Third-person (world) model names → the weapons that list them.
@@ -334,6 +339,7 @@ impl Links {
             .unwrap_or_default()
             .to_owned();
         let index = self.models.len();
+        self.model_geometry.push(g);
         self.models.push(ModelInfo {
             name,
             human,
@@ -373,6 +379,11 @@ impl Links {
     }
 
     /// The material a zone pointer slot (e.g. `GfxSurface.material`) refers to.
+    /// The model (index into `models`) loaded or aliased into `slot`.
+    pub fn resolve_model(&self, slot: Ptr) -> Option<usize> {
+        self.xmodels.resolve(slot)
+    }
+
     pub fn resolve_material(&self, slot: Ptr) -> Option<usize> {
         self.materials.resolve(slot)
     }
@@ -445,6 +456,20 @@ impl Links {
         for s in std::iter::once(slot).chain(insert_slot) {
             self.xmodel_names.insert(s, name);
         }
+    }
+
+    /// Hooks for IW4L's shared XModelSurfs (a later model's LOD points at a set an earlier model loaded).
+    pub fn remember_xmodel_surfaces(&mut self, slot: Ptr, surfaces: Ptr) {
+        self.xmodel_surfaces.insert(slot, surfaces);
+    }
+    pub fn remember_xmodel_surface_name(&mut self, slot: Ptr, name: Ptr) {
+        self.xmodel_surface_names.insert(slot, name);
+    }
+    pub fn xmodel_surfaces(&self, slot: Ptr) -> Option<Ptr> {
+        self.xmodel_surfaces.get(&slot).copied()
+    }
+    pub fn xmodel_surface_name(&self, slot: Ptr) -> Option<Ptr> {
+        self.xmodel_surface_names.get(&slot).copied()
     }
 
     /// Hook for `AssetLinkSink::xmodel_name_ptr`.

@@ -176,6 +176,22 @@ impl AssetLinkSink for Collector {
         self.links.xmodel_name_ptr(slot)
     }
 
+    fn remember_xmodel_surfaces(&mut self, slot: Ptr, surfaces: Ptr) {
+        self.links.remember_xmodel_surfaces(slot, surfaces);
+    }
+
+    fn remember_xmodel_surface_name(&mut self, slot: Ptr, name: Ptr) {
+        self.links.remember_xmodel_surface_name(slot, name);
+    }
+
+    fn xmodel_surfaces(&self, slot: Ptr) -> Option<Ptr> {
+        self.links.xmodel_surfaces(slot)
+    }
+
+    fn xmodel_surface_name(&self, slot: Ptr) -> Option<Ptr> {
+        self.links.xmodel_surface_name(slot)
+    }
+
     fn capture_string_table(
         &mut self,
         s: &ZoneStream<'_>,

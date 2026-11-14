@@ -77,7 +77,9 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
       *`mp_rust`: 768 KiB sky; the map is 7.2 MiB. The renderer draws the skybox from the six faces.*
 - [x] Materials → TEV recipe table; world → cell-chunked display lists + lightmaps (first version, `docs/pack.md`).
 - [x] clipmap → pack collision (`CLIP`, unsimplified, IW4L's IW4 extraction); spawns.
-- [ ] Fixed-point vertices, visibility cells, static models (render + collision); weapon defs (lossless); GSC IR.
+- [x] Static models: instanced (model-space surfaces + placement matrices), lit from the light grid, drawn by the
+      preview and the Wii runtime. Their bullet collision comes with weapons.
+- [ ] Fixed-point vertices, visibility cells, model LODs; weapon defs (lossless); GSC IR.
 - [ ] `out/report.json` budget report. The build fails when over budget. Deterministic output.
 - **Exit:** one small map's pack fits its budget and loads into a Wii viewer.
 

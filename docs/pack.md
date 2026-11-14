@@ -21,6 +21,10 @@ MEM2 (after `DCFlushRange`).
 | `WDLS` | – | GX display lists: `0x90` (triangles, VTXFMT0), u16 count, per vertex u16 indices for POS/CLR0/TEX0/TEX1 (all the same, relative to the batch's vertex base), NOP-padded to 32 |
 | `SKYB` | `Skybox` (16 B) | six sky face textures, D3D cube order |
 | `SPWN` | `SpawnRecord` (24 B) | origin, yaw, kind (TDM / DM), team, initial flag |
+| `MVTX` | `WorldVertex` (28 B) | static model vertices in model space (same format as `WVTX`; lightmap UV unused) |
+| `MSRF` | `BatchRecord` (48 B) | static model surfaces: vertex range in `MVTX`, material, display list in `WDLS`, model-space bounds |
+| `MODL` | `ModelRecord` (24 B) | a model's run of `MSRF` surfaces and its model-space bounding sphere |
+| `SMDL` | `InstanceRecord` (56 B) | a placed static model: model, draw distance, light-grid colour (RGBA8 at half intensity), model-to-world 3x4 matrix |
 | `CLIP` | one blob (`wpk::clip::Clip`) | collision, unsimplified: a table of 16 arrays (count, offset), then pooled brush planes + surface flags, brushes (contents, glass), BSP nodes, leaves, leaf brushes, mesh vertices / triangles / walkable-edge bits / triangle flags / AABB trees / partitions / borders / roots, brush models. Decoded and validated at load into the `clipmap_iw4` types IW4L traces with |
 
 ## How the world is built (`converter/src/pack.rs`)
@@ -51,3 +55,19 @@ static models, collision.
 With collision (same day): 17.1 MiB. `CLIP` is 2.6 MiB: 2,668 brushes (19,959 planes), 704 BSP nodes, 723 leaves,
 68,408 mesh triangles, 18 brush models. The host test `game_core::player::tests::spawns_stand_on_the_real_map`
 puts a player on each of the 51 spawns with IW4L `pmove`: all land, and all run forward without falling through.
+
+With static models (same day): 22.7 MiB. 3,356 instances of 76 models: 97,932 model-space vertices (2.6 MiB) and
+79,102 triangles stored once, 727,810 triangles if every instance were drawn. Instancing keeps the pack small; draw
+distance and the view frustum leave 180-375k triangles (world + models) per view in the preview, which is the next
+performance problem (model LODs, visibility cells).
+
+## Static models (`converter/src/static_models.rs`)
+- Instances come from `GfxWorld` static model draw instances (origin, axis, scale, model, draw distance).
+- Each model's LOD 0 surfaces: packed vertices (position, colour, half-float UV) and triangle lists; material from
+  the model's handle array. A model can reuse an XModelSurfs set an earlier model loaded; the zone walk keeps those
+  through IW4L's `remember_xmodel_surfaces` / `xmodel_surfaces` hooks.
+- Light: IW4 lights static models from the world light grid. `light_grid.rs` (IW4L's sampler) samples it at each
+  instance's lighting origin; the linear result for a white surface goes back to gamma (square root) and is stored
+  at half intensity, multiplied ×2 on the GPU like lightmaps.
+- Static model collision (XModel coll surfaces) is for bullet and sight traces only; player clip for props is
+  compiled into the clipMap, which `CLIP` already carries. It comes with weapons.

@@ -23,6 +23,8 @@ pub struct DrawState {
     pub blend: u8,
     pub alpha_ref: u8,
     pub cull: u8,
+    /// Light colour RGBA8 at half intensity to multiply by (x2), or 0 for none (static models).
+    pub tint: u32,
 }
 
 /// A GX 3x4 matrix, row-major, multiplying column vectors.
@@ -35,6 +37,8 @@ pub trait Gfx {
     /// Point the world vertex arrays at `vertices` (interleaved, stride 28).
     fn world_arrays(&mut self, vertices: *const u8);
     fn world_state(&mut self, state: &DrawState);
+    /// Load the position matrix for the following draws (the view, or view x a model's placement).
+    fn pos_matrix(&mut self, m: &Mtx34);
     fn call_dl(&mut self, dl: &[u8]);
     /// One sky face: 4 corners `[x, y, z, s, t]` around the eye, drawn with the rotation-only view.
     fn sky_face(&mut self, view_rot: &Mtx34, corners: &[[f32; 5]; 4], tex: i32);

@@ -14,8 +14,8 @@ use gx_texture::format::TexFormat;
 use gx_texture::image::Image;
 use gx_texture::policy::{Alpha, Traits};
 use wpk::records::{
-    self, BatchRecord, Blend, MaterialRecord, NONE, Recipe, Skybox, SpawnRecord, TextureRecord,
-    WORLD_VERTEX_LEN, WorldVertex, texture_flags,
+    self, BatchRecord, Blend, InstanceRecord, MaterialRecord, ModelRecord, NONE, Recipe, Skybox,
+    SpawnRecord, TextureRecord, WORLD_VERTEX_LEN, WorldVertex, texture_flags,
 };
 use wpk::{Pack, tag};
 
@@ -33,6 +33,8 @@ pub struct View {
 pub struct Stats {
     pub batches_drawn: usize,
     pub batches_culled: usize,
+    /// Static model instances beyond their draw distance.
+    pub models_culled: usize,
     pub triangles: u64,
     pub pixels_drawn: u64,
 }
@@ -307,33 +309,92 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
         }
     }
 
-    // Opaque and alpha-tested first, then blended (back to front by batch), like the GX renderer.
-    let mut order: Vec<usize> = (0..batches.len()).collect();
-    let class = |b: &BatchRecord| {
+    // Draw items: world batches, then each visible static model instance's surfaces (placed by its matrix, lit by its
+    // light-grid colour). Opaque and alpha-tested first, then blended back to front, like the GX renderer.
+    struct Item<'a> {
+        b: BatchRecord,
+        vtx: &'a [u8],
+        mtx: Option<[[f32; 4]; 3]>,
+        tint: Option<[f32; 3]>,
+        min: [f32; 3],
+        max: [f32; 3],
+    }
+    let mut items: Vec<Item> = batches
+        .iter()
+        .map(|b| Item {
+            b: *b,
+            vtx,
+            mtx: None,
+            tint: None,
+            min: b.bounds_min,
+            max: b.bounds_max,
+        })
+        .collect();
+    let mvtx = section(tag::MODEL_VERTICES);
+    let msrf: Vec<BatchRecord> = records::iter(section(tag::MODEL_SURFACES)).collect();
+    let models: Vec<ModelRecord> = records::iter(section(tag::MODELS)).collect();
+    let place = |m: &[[f32; 4]; 3], p: [f32; 3]| -> [f32; 3] {
+        std::array::from_fn(|r| m[r][0] * p[0] + m[r][1] * p[1] + m[r][2] * p[2] + m[r][3])
+    };
+    for inst in records::iter::<InstanceRecord>(section(tag::MODEL_INSTANCES)) {
+        let Some(model) = models.get(usize::from(inst.model)) else {
+            continue;
+        };
+        let origin = [inst.mtx[0][3], inst.mtx[1][3], inst.mtx[2][3]];
+        let d = sub(origin, cam.eye);
+        if inst.cull_dist != 0 && dot(d, d) > f32::from(inst.cull_dist).powi(2) {
+            stats.models_culled += 1;
+            continue;
+        }
+        let l = inst.light.to_be_bytes();
+        let tint = [0, 1, 2].map(|k| f32::from(l[k]) / 255.0 * 2.0);
+        let first = model.first_surface as usize;
+        for b in msrf.iter().skip(first).take(model.surface_count as usize) {
+            let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for c in 0..8 {
+                let p = [0, 1, 2].map(|k| {
+                    if c & (1 << k) != 0 {
+                        b.bounds_max[k]
+                    } else {
+                        b.bounds_min[k]
+                    }
+                });
+                let w = place(&inst.mtx, p);
+                for k in 0..3 {
+                    min[k] = min[k].min(w[k]);
+                    max[k] = max[k].max(w[k]);
+                }
+            }
+            items.push(Item {
+                b: *b,
+                vtx: mvtx,
+                mtx: Some(inst.mtx),
+                tint: Some(tint),
+                min,
+                max,
+            });
+        }
+    }
+    let class = |it: &Item| {
         materials
-            .get(usize::from(b.material))
+            .get(usize::from(it.b.material))
             .map_or(0, |m| u8::from(Blend::from_u8(m.blend) >= Blend::Blend))
     };
-    let dist = |b: &BatchRecord| {
-        let c = [
-            (b.bounds_min[0] + b.bounds_max[0]) / 2.0,
-            (b.bounds_min[1] + b.bounds_max[1]) / 2.0,
-            (b.bounds_min[2] + b.bounds_max[2]) / 2.0,
-        ];
+    let dist = |it: &Item| {
+        let c = [0, 1, 2].map(|k| (it.min[k] + it.max[k]) / 2.0);
         dot(sub(c, cam.eye), cam.fwd)
     };
-    order.sort_by(|&a, &b| {
-        let (ba, bb) = (&batches[a], &batches[b]);
-        class(ba).cmp(&class(bb)).then(if class(ba) == 1 {
-            dist(bb).total_cmp(&dist(ba))
+    items.sort_by(|a, b| {
+        class(a).cmp(&class(b)).then(if class(a) == 1 {
+            dist(b).total_cmp(&dist(a))
         } else {
             std::cmp::Ordering::Equal
         })
     });
 
-    for bi in order {
-        let b = &batches[bi];
-        if !cam.sees_box(b.bounds_min, b.bounds_max) {
+    for it in &items {
+        let b = &it.b;
+        if !cam.sees_box(it.min, it.max) {
             stats.batches_culled += 1;
             continue;
         }
@@ -361,6 +422,7 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
             .flatten()
             .and_then(Option::as_ref);
         let lit = Recipe::from_u8(m.recipe) == Recipe::Lightmapped && lm.is_some();
+        let tint = it.tint;
         let dl = dls
             .get(b.dl_off as usize..(b.dl_off + b.dl_len) as usize)
             .ok_or("batch display list out of range")?;
@@ -374,12 +436,16 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
             }; 3];
             for (k, &i) in t.iter().enumerate() {
                 let at = (b.vertex_base as usize + usize::from(i)) * WORLD_VERTEX_LEN;
-                let wv = records::get::<WorldVertex>(&vtx[at..at + WORLD_VERTEX_LEN], 0)
+                let wv = it
+                    .vtx
+                    .get(at..at + WORLD_VERTEX_LEN)
+                    .and_then(|r| records::get::<WorldVertex>(r, 0))
                     .ok_or("vertex out of range")?;
                 let c = wv.rgba.to_be_bytes();
                 let scale = 1.0 / (1u32 << records::LM_FRAC) as f32;
+                let pos = it.mtx.as_ref().map_or(wv.pos, |m| place(m, wv.pos));
                 v[k] = CV {
-                    c: cam.to_cam(wv.pos),
+                    c: cam.to_cam(pos),
                     uv: wv.uv,
                     lm: [f32::from(wv.lm[0]) * scale, f32::from(wv.lm[1]) * scale],
                     rgba: [
@@ -405,7 +471,9 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
                         let base = tex.map_or([1.0, 1.0, 1.0, 1.0], |img| {
                             sample(img, cv.uv[0], cv.uv[1], tex_clamp)
                         });
-                        let light = if lit {
+                        let light = if let Some(t) = tint {
+                            [cv.rgba[0] * t[0], cv.rgba[1] * t[1], cv.rgba[2] * t[2]]
+                        } else if lit {
                             let l = sample(lm.unwrap(), cv.lm[0], cv.lm[1], true);
                             [l[0] * 2.0, l[1] * 2.0, l[2] * 2.0]
                         } else {

@@ -90,7 +90,8 @@ typedef struct {
     uint8_t alpha_ref;
     uint8_t cull;
     uint8_t _pad;
-} mwf_draw_state; /* 12 bytes */
+    uint32_t tint;          /* RGBA8 light at half intensity, multiplied in x2 (static models); 0 = none */
+} mwf_draw_state; /* 16 bytes */
 
 /* Allocate from MEM2 (bump allocator over the MEM2 arena; never freed). NULL when out of memory. */
 void *mwf_mem2_alloc(uint32_t size, uint32_t align);
@@ -107,6 +108,8 @@ void mwf_frame_begin(const float view[3][4], float fovy_deg, float znear, float 
 void mwf_world_arrays(const void *vertices);
 /* Set TEV, blend, alpha test, Z and cull for one world draw. */
 void mwf_world_state(const mwf_draw_state *s);
+/* Load the position matrix (GX_PNMTX0) for the following world / model draws: the view, or view x placement. */
+void mwf_pos_matrix(const float m[3][4]);
 /* Call a prebuilt display list (32-byte aligned, length a multiple of 32). */
 void mwf_call_dl(const void *dl, uint32_t len);
 /* Draw one skybox face: 4 corners (x,y,z relative to the eye) with texcoords (s,t), textured with `tex`. */

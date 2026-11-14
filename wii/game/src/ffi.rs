@@ -45,11 +45,12 @@ pub struct DrawState {
     pub alpha_ref: u8,
     pub cull: u8,
     pub _pad: u8,
+    pub tint: u32,
 }
 
 const _: () = assert!(core::mem::size_of::<Pad>() == 12);
 const _: () = assert!(core::mem::size_of::<TexDesc>() == 16);
-const _: () = assert!(core::mem::size_of::<DrawState>() == 12);
+const _: () = assert!(core::mem::size_of::<DrawState>() == 16);
 
 type Mtx34 = [[f32; 4]; 3];
 
@@ -74,6 +75,7 @@ unsafe extern "C" {
     );
     pub fn mwf_world_arrays(vertices: *const u8);
     pub fn mwf_world_state(s: *const DrawState);
+    pub fn mwf_pos_matrix(m: *const Mtx34);
     pub fn mwf_call_dl(dl: *const u8, len: u32);
     pub fn mwf_sky_face(view_rot: *const Mtx34, corners: *const [[f32; 5]; 4], tex: i32);
     pub fn mwf_frame_end();

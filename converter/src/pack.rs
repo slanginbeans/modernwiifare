@@ -21,8 +21,8 @@ use gx_texture::image::Image;
 use gx_texture::policy::{Role, convert};
 use serde::Serialize;
 use wpk::records::{
-    self, BatchRecord, Blend, Cull, MaterialRecord, NONE, Recipe, Skybox, SpawnRecord,
-    TextureRecord, WorldVertex, Wrap, spawn_kind, spawn_team, texture_flags,
+    self, BatchRecord, Blend, Cull, InstanceRecord, MaterialRecord, ModelRecord, NONE, Recipe,
+    Skybox, SpawnRecord, TextureRecord, WorldVertex, Wrap, spawn_kind, spawn_team, texture_flags,
 };
 
 use crate::material_links::{BlendMode, Links};
@@ -59,6 +59,7 @@ pub struct WorldData {
     entity_string: String,
     /// Collision, or why it could not be read.
     clip: Result<wpk::clip::Clip, String>,
+    models: crate::static_models::StaticModels,
 }
 
 /// Read the world after a zone walk (the stream still holds its blocks).
@@ -105,6 +106,7 @@ pub fn read_world(s: &ZoneStream<'_>, links: &Links) -> Result<WorldData, String
         .map(|b| String::from_utf8_lossy(b).trim_end_matches('\0').to_owned())
         .unwrap_or_default();
     let clip = crate::collision::read_clip(s);
+    let models = crate::static_models::read(s, links)?;
     Ok(WorldData {
         vertices,
         indices,
@@ -112,6 +114,7 @@ pub fn read_world(s: &ZoneStream<'_>, links: &Links) -> Result<WorldData, String
         lightmap_count,
         entity_string,
         clip,
+        models,
     })
 }
 
@@ -243,7 +246,24 @@ pub struct PackReport {
     pub skybox: bool,
     pub spawns: usize,
     pub collision: crate::collision::ClipReport,
+    pub static_models: StaticModelReport,
     pub content_hash: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct StaticModelReport {
+    pub instances: usize,
+    pub models: usize,
+    pub surfaces: usize,
+    pub vertices: usize,
+    pub triangles: u64,
+    /// Triangles if every instance were drawn (what world-space baking would cost).
+    pub placed_triangles: u64,
+    pub unresolved: usize,
+    pub unreadable: usize,
+    pub unreadable_why: BTreeMap<String, usize>,
+    pub unlit: usize,
+    pub surfaces_without_material: usize,
 }
 
 /// Texture data accumulated into `TXDA`.
@@ -500,6 +520,104 @@ pub fn build(
     }
     report.batches = batches.len();
 
+    // Static models: model-space vertices and display lists per surface, placed by instance matrices.
+    let sm = &world.models;
+    let mut model_index: HashMap<usize, u16> = HashMap::new();
+    let mut model_records: Vec<ModelRecord> = Vec::new();
+    let mut model_surfaces: Vec<BatchRecord> = Vec::new();
+    let mut model_vertices: Vec<WorldVertex> = Vec::new();
+    let mut model_tris: HashMap<u16, u64> = HashMap::new();
+    let mut r = StaticModelReport {
+        unresolved: sm.unresolved,
+        unreadable: sm.unreadable,
+        unreadable_why: sm
+            .unreadable_why
+            .iter()
+            .map(|(k, v)| (k.to_string(), *v))
+            .collect(),
+        unlit: sm.unlit,
+        ..StaticModelReport::default()
+    };
+    for (&m, surfaces) in &sm.meshes {
+        let first_surface = model_surfaces.len() as u32;
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        let mut tris = 0u64;
+        for surf in surfaces {
+            let Some(mat) = surf.material else {
+                r.surfaces_without_material += 1;
+                continue;
+            };
+            if surf.indices.is_empty() {
+                continue;
+            }
+            let material = material_for(mat, &mut tex, &mut report)?;
+            let (mut smin, mut smax) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for v in &surf.vertices {
+                for k in 0..3 {
+                    smin[k] = smin[k].min(v.pos[k]);
+                    smax[k] = smax[k].max(v.pos[k]);
+                }
+            }
+            let dl = records::world_display_list(&surf.indices);
+            model_surfaces.push(BatchRecord {
+                vertex_base: model_vertices.len() as u32,
+                vertex_count: surf.vertices.len() as u32,
+                material,
+                lightmap: NONE,
+                dl_off: dls.len() as u32,
+                dl_len: dl.len() as u32,
+                tri_count: (surf.indices.len() / 3) as u32,
+                bounds_min: smin,
+                bounds_max: smax,
+            });
+            dls.extend_from_slice(&dl);
+            model_vertices.extend_from_slice(&surf.vertices);
+            tris += (surf.indices.len() / 3) as u64;
+            for k in 0..3 {
+                lo[k] = lo[k].min(smin[k]);
+                hi[k] = hi[k].max(smax[k]);
+            }
+        }
+        let surface_count = model_surfaces.len() as u32 - first_surface;
+        if surface_count == 0 {
+            continue;
+        }
+        let centre = std::array::from_fn(|k| (lo[k] + hi[k]) * 0.5);
+        let radius = (0..3)
+            .map(|k| (hi[k] - lo[k]) * 0.5)
+            .map(|h| h * h)
+            .sum::<f32>()
+            .sqrt();
+        let idx = model_records.len() as u16;
+        model_records.push(ModelRecord {
+            first_surface,
+            surface_count,
+            centre,
+            radius,
+        });
+        model_index.insert(m, idx);
+        model_tris.insert(idx, tris);
+        r.triangles += tris;
+    }
+    let mut instances: Vec<InstanceRecord> = Vec::new();
+    for inst in &sm.instances {
+        let Some(&model) = model_index.get(&inst.model) else {
+            continue;
+        };
+        instances.push(InstanceRecord {
+            model,
+            cull_dist: inst.cull_dist,
+            light: inst.light_rgba(),
+            mtx: inst.matrix(),
+        });
+        r.placed_triangles += model_tris[&model];
+    }
+    r.instances = instances.len();
+    r.models = model_records.len();
+    r.surfaces = model_surfaces.len();
+    r.vertices = model_vertices.len();
+    report.static_models = r;
+
     // Skybox: the six faces converted from the sky material's cube image.
     let mut skybox = None;
     if let Some(entries) = sky_image.and_then(|img| files_by_image.get(&img)) {
@@ -546,6 +664,26 @@ pub fn build(
         records::encode(&batches),
     );
     b.section(wpk::tag::WORLD_DISPLAY_LISTS, 0, dls);
+    b.section(
+        wpk::tag::MODEL_VERTICES,
+        model_vertices.len() as u32,
+        records::encode(&model_vertices),
+    );
+    b.section(
+        wpk::tag::MODEL_SURFACES,
+        model_surfaces.len() as u32,
+        records::encode(&model_surfaces),
+    );
+    b.section(
+        wpk::tag::MODELS,
+        model_records.len() as u32,
+        records::encode(&model_records),
+    );
+    b.section(
+        wpk::tag::MODEL_INSTANCES,
+        instances.len() as u32,
+        records::encode(&instances),
+    );
     if let Some(sky) = skybox {
         b.section(wpk::tag::SKYBOX, 1, records::encode(&[sky]));
     }
@@ -569,6 +707,10 @@ pub fn build(
         wpk::tag::SKYBOX,
         wpk::tag::SPAWNS,
         wpk::tag::CLIP,
+        wpk::tag::MODEL_VERTICES,
+        wpk::tag::MODEL_SURFACES,
+        wpk::tag::MODELS,
+        wpk::tag::MODEL_INSTANCES,
     ] {
         if let Some(s) = pack.section(t) {
             report.sections.insert(
@@ -608,6 +750,13 @@ pub fn render_text(r: &PackReport) -> String {
         r.surfaces_without_material,
         r.skybox,
         r.spawns
+    ));
+    let m = &r.static_models;
+    s.push_str(&format!(
+        "static models: {} instances of {} models ({} surfaces, {} vertices, {} triangles; {} placed),          unresolved {}, unreadable {}, unlit {}, surfaces without material {}
+",
+        m.instances, m.models, m.surfaces, m.vertices, m.triangles, m.placed_triangles, m.unresolved,
+        m.unreadable, m.unlit, m.surfaces_without_material
     ));
     let c = &r.collision;
     s.push_str(&format!(

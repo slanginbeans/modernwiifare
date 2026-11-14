@@ -22,7 +22,9 @@ texture slots.
 | `wii/platform/shim_world.c` | MEM2 bump allocator, SD loading (libfat) with `DCFlushRange`, GX texture objects (+ I4 alpha planes), world vertex format (index16, lightmap UV u16 frac 15), TEV recipes, blend / alpha test / Z, display-list calls, skybox quads |
 
 Per frame: one `pmove` with the frame's milliseconds, then the skybox (Z off), visible opaque and alpha-tested
-batches grouped by material and lightmap, then blended batches back to front. The pack is loaded once into MEM2 and
+world batches grouped by material and lightmap, then static model instances (each within its draw distance and in
+view: view × placement loaded into the position matrix, its surfaces' display lists, its light-grid colour as a TEV
+konst ×2), then blended world and model surfaces back to front. The pack is loaded once into MEM2 and
 used in place; collision is decoded once into the MEM1 heap (about 2.6 MiB for `mp_rust`), where traces are fastest.
 
 ## Movement status
@@ -35,7 +37,7 @@ used in place; collision is decoded once into the MEM1 heap (about 2.6 MiB for `
 ## Not verified on hardware yet
 - GX front-face winding: `MWF_GX_CULL_BACK` in `shim_world.c` assumes GX's back faces match IW4's (D3D, clockwise
   front). If walls vanish and their insides show, swap the two defines.
-- Draw cost of ~180k triangles per view (`mwf-convert preview` reports the count); visibility cells and fixed-point
+- Draw cost of 180-375k triangles per view (world + static models) (`mwf-convert preview` reports the count); visibility cells and fixed-point
   vertices are the next performance steps.
 - Trace cost on Broadway: on the host one `pmove` on `mp_rust` takes about 20 µs, so a 750CL should stay well under
   a millisecond, but this is unmeasured.

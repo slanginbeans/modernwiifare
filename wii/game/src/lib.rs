@@ -54,8 +54,12 @@ impl Gfx for Shim {
             alpha_ref: s.alpha_ref,
             cull: s.cull,
             _pad: 0,
+            tint: s.tint,
         };
         unsafe { ffi::mwf_world_state(&st) }
+    }
+    fn pos_matrix(&mut self, m: &Mtx34) {
+        unsafe { ffi::mwf_pos_matrix(m) }
     }
     fn call_dl(&mut self, dl: &[u8]) {
         unsafe { ffi::mwf_call_dl(dl.as_ptr(), dl.len() as u32) }
