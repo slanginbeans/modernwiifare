@@ -256,6 +256,9 @@ pub struct PackReport {
     pub materials_without_texture: usize,
     pub skybox: bool,
     pub spawns: usize,
+    /// Bot walk graph: floor points and moves.
+    pub nav_nodes: usize,
+    pub nav_edges: usize,
     pub collision: crate::collision::ClipReport,
     pub static_models: StaticModelReport,
     pub visibility: VisReport,
@@ -902,6 +905,12 @@ pub fn build(
     let clip = world.clip.as_ref().map_err(|e| format!("collision: {e}"))?;
     report.collision = crate::collision::ClipReport::of(clip);
     b.section(wpk::tag::CLIP, 1, clip.encode());
+    // The bots' walk graph, flooded out from the spawn points over the collision.
+    let seeds: Vec<[f32; 3]> = spawns.iter().map(|s| s.origin).collect();
+    let nav = game_core::nav::bake(&game_core::collision::MapClip::new(clip), &seeds);
+    report.nav_nodes = nav.nodes.len();
+    report.nav_edges = nav.edges.len();
+    b.section(wpk::tag::NAV, nav.nodes.len() as u32, nav.encode());
     let bytes = b.finish();
     let pack = wpk::Pack::parse(&bytes, true).map_err(|e| format!("pack self-check: {e:?}"))?;
     for t in [
@@ -925,6 +934,7 @@ pub fn build(
         wpk::tag::VIS,
         wpk::tag::BATCH_CELLS,
         wpk::tag::INSTANCE_CELLS,
+        wpk::tag::NAV,
     ] {
         if let Some(s) = pack.section(t) {
             report.sections.insert(
@@ -1023,6 +1033,11 @@ pub fn render_text(r: &PackReport) -> String {
         r.surfaces_without_material,
         r.skybox,
         r.spawns
+    ));
+    s.push_str(&format!(
+        "bot walk graph: {} points, {} moves
+",
+        r.nav_nodes, r.nav_edges
     ));
     let m = &r.static_models;
     s.push_str(&format!(

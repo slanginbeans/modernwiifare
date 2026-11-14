@@ -95,6 +95,9 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
 - [ ] Weapons (IW4L `weapon_iw4` driven by converted defs), damage, hit boxes, skinned characters, anim, audio banks.
 - [ ] GSC runtime on the Wii running `war` (TDM).
 - [ ] Bots (IW4L `bots`, lifted off Bevy) so a match can be played on one Wii. Measure their CPU cost.
+      Started (2026-11-13): free-for-all against 5 bots (walk graph baked into packs, IW4L's bot motor, A*),
+      bullet damage with IW4L's falloff and MW2's location table, kills, scores, spawns away from enemies. Still to
+      do: CPU cost on hardware, character models (bots are boxes), mantles / ladders / doors, grenades, knifing.
 - **Exit:** a full TDM match against bots on one Wii, with feel traces matching IW4L exactly and the 360 reference within tolerance.
 
 ## Phase 4: Game breadth (single Wii)

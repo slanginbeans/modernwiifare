@@ -31,6 +31,7 @@ Version 3 (2026-11-13): fixed-point vertices. Version 2: LOD tables in `ModelRec
 | `WBQZ` / `MSQZ` | `QuantRecord` (16 B) per batch / model surface | which array and GX vertex format its vertices use, and the origin the renderer adds through the position matrix |
 | `VISD` | one blob (`wpk::vis::Vis`) | IW4 visibility: dpvs planes and node stream (point → cell), cells (bounds, portal run), portals (plane, neighbour, vertices, hull axis) |
 | `WBCL` / `SMCL` | u16 per batch / instance | the visibility cell of each `WBAT` batch and `SMDL` instance (`0xFFFF`: none, drawn when in the frustum) |
+| `NAVG` | one blob (`wpk::nav::NavGraph`), decoded at load | the bots' walk graph: floor points (feet positions) and moves (target, cost, walk or one-way drop), baked from the collision by `game_core::nav::bake` |
 | `CLIP` | one blob (`wpk::clip::Clip`) | collision, unsimplified: a table of 16 arrays (count, offset), then pooled brush planes + surface flags, brushes (contents, glass), BSP nodes, leaves, leaf brushes, mesh vertices / triangles / walkable-edge bits / triangle flags / AABB trees / partitions / borders / roots, brush models. Decoded and validated at load into the `clipmap_iw4` types IW4L traces with |
 
 ## `common.wpk` and `views/*.wpk` (`mwf-convert common`)

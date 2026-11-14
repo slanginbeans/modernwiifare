@@ -20,6 +20,7 @@ extern crate alloc;
 pub mod be;
 pub mod classes;
 pub mod clip;
+pub mod nav;
 pub mod quant;
 pub mod records;
 pub mod sound;
@@ -101,6 +102,8 @@ pub mod tag {
     pub const INSTANCE_CELLS: Tag = *b"SMCL";
     /// Collision (`clip::Clip`), one blob.
     pub const CLIP: Tag = *b"CLIP";
+    /// Bot walk graph ([`crate::nav::NavGraph`]); decoded at load.
+    pub const NAV: Tag = *b"NAVG";
 }
 
 /// FNV-1a 64-bit, the pack's content hash (also what both Wiis compare in the system-link handshake).
@@ -283,8 +286,14 @@ impl<'a> Pack<'a> {
 
 /// Sections the runtime decodes into its own memory at load and never reads in place. The converter writes them
 /// last, so a loader can keep only the bytes before them ([`Pack::in_place_len`]).
-pub const fn decoded_at_load() -> [Tag; 4] {
-    [tag::VIS, tag::BATCH_CELLS, tag::INSTANCE_CELLS, tag::CLIP]
+pub const fn decoded_at_load() -> [Tag; 5] {
+    [
+        tag::VIS,
+        tag::BATCH_CELLS,
+        tag::INSTANCE_CELLS,
+        tag::CLIP,
+        tag::NAV,
+    ]
 }
 
 /// Builds a pack in memory. Sections are written in the order they are added.

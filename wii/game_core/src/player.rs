@@ -15,6 +15,19 @@ use crate::camera::Camera;
 use crate::collision::{MASK_PLAYER_SOLID, MapClip, PLAYER_MAXS, PLAYER_MINS};
 use crate::fly::axis;
 
+/// One frame of movement with absolute view angles (degrees) and IW4 move amounts (-127..127).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Steer {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub forward: i8,
+    pub right: i8,
+    pub jump: bool,
+    pub crouch: bool,
+    pub sprint: bool,
+    pub ads: bool,
+}
+
 /// Pad state for one frame, already mapped from the GameCube controller.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MovePad {
@@ -35,6 +48,7 @@ pub const LOOK_PITCH_RATE: f32 = 140.0;
 /// Units per degree in IW4's 16-bit angles.
 const ANGLE2SHORT: f32 = 65536.0 / 360.0;
 
+#[derive(Clone)]
 pub struct Player {
     pub ps: PlayerState,
     server_time: i32,
@@ -153,24 +167,42 @@ impl Player {
     /// Run one frame of `msec` milliseconds. Returns the fall damage of a landing this frame (IW4L's crash land).
     pub fn update(&mut self, clip: &MapClip<'_>, pad: &MovePad, msec: i32) -> i32 {
         let dt = msec as f32 / 1000.0;
-        self.yaw -= axis(pad.cx) * LOOK_YAW_RATE * dt;
-        self.yaw -= libm::floorf(self.yaw / 360.0) * 360.0;
-        self.pitch = (self.pitch - axis(pad.cy) * LOOK_PITCH_RATE * dt).clamp(-85.0, 85.0);
+        let yaw = self.yaw - axis(pad.cx) * LOOK_YAW_RATE * dt;
+        let pitch = self.pitch - axis(pad.cy) * LOOK_PITCH_RATE * dt;
+        let to_move = |v: i8| (axis(v) * 127.0) as i8;
+        self.steer(
+            clip,
+            &Steer {
+                yaw,
+                pitch,
+                forward: to_move(pad.sy),
+                right: to_move(pad.sx),
+                jump: pad.jump,
+                crouch: pad.crouch,
+                sprint: pad.sprint,
+                ads: pad.ads,
+            },
+            msec,
+        )
+    }
 
+    /// Run one frame with absolute view angles and move amounts (bots). Same as [`Player::update`] otherwise.
+    pub fn steer(&mut self, clip: &MapClip<'_>, st: &Steer, msec: i32) -> i32 {
+        self.yaw = st.yaw - libm::floorf(st.yaw / 360.0) * 360.0;
+        self.pitch = st.pitch.clamp(-85.0, 85.0);
         let mut btn = 0;
-        if pad.jump {
+        if st.jump {
             btn |= buttons::JUMP;
         }
-        if pad.crouch {
+        if st.crouch {
             btn |= buttons::CROUCH;
         }
-        if pad.sprint {
+        if st.sprint {
             btn |= buttons::SPRINT;
         }
-        if pad.ads {
+        if st.ads {
             btn |= buttons::ADS;
         }
-        let to_move = |v: i8| (axis(v) * 127.0) as i8;
         self.server_time += msec;
         let short = |deg: f32| (deg * ANGLE2SHORT) as i32 & 0xffff;
         let mut cmd = UserCmd {
@@ -181,8 +213,8 @@ impl Player {
                 short(self.yaw).wrapping_sub(short(self.ps.delta_angles[1])),
                 0,
             ],
-            forwardmove: to_move(pad.sy),
-            rightmove: to_move(pad.sx),
+            forwardmove: st.forward,
+            rightmove: st.right,
             ..UserCmd::default()
         };
         self.old_cmd_angles = self.cmd_angles;
@@ -210,6 +242,22 @@ impl Player {
         );
         cam.aspect = aspect;
         cam
+    }
+
+    /// View angles (pitch, yaw) in degrees.
+    pub fn view(&self) -> (f32, f32) {
+        (self.pitch, self.yaw)
+    }
+
+    /// Eye position.
+    pub fn eye(&self) -> [f32; 3] {
+        let o = self.ps.origin;
+        [o[0], o[1], o[2] + self.ps.view_height_current]
+    }
+
+    /// Whether crouched (IW4 `PMF_DUCKED`).
+    pub fn crouched(&self) -> bool {
+        self.ps.pm_flags & playerstate_iw4::pm_flags::CROUCH != 0
     }
 
     pub fn on_ground(&self) -> bool {

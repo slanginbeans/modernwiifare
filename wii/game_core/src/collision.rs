@@ -54,3 +54,45 @@ impl CollisionBackend for MapClip<'_> {
         MapClip::trace(self, i.start, i.end, i.mins, i.maxs, i.tracemask)
     }
 }
+
+/// Synthetic maps for tests (axis-aligned box brushes).
+#[cfg(test)]
+pub mod test_clips {
+    use wpk::clip::Clip;
+
+    pub fn boxes(list: &[([f32; 3], [f32; 3])]) -> Clip {
+        let mut c = Clip::default();
+        for (min, max) in list {
+            c.push_brush(
+                &[
+                    [1.0, 0.0, 0.0, max[0]],
+                    [-1.0, 0.0, 0.0, -min[0]],
+                    [0.0, 1.0, 0.0, max[1]],
+                    [0.0, -1.0, 0.0, -min[1]],
+                    [0.0, 0.0, 1.0, max[2]],
+                    [0.0, 0.0, -1.0, -min[2]],
+                ],
+                &[0; 6],
+                1,
+                0,
+            );
+        }
+        c
+    }
+
+    /// An 800 × 800 floor (top at z 0) with a wall across the middle (x -8..8, y -100..100, 200 high).
+    pub fn floor_with_wall() -> Clip {
+        boxes(&[
+            ([-400.0, -400.0, -64.0], [400.0, 400.0, 0.0]),
+            ([-8.0, -100.0, 0.0], [8.0, 100.0, 200.0]),
+        ])
+    }
+
+    /// A 64-unit ledge: high floor for x < 0, low floor for x > 0.
+    pub fn ledge() -> Clip {
+        boxes(&[
+            ([-400.0, -200.0, -64.0], [0.0, 200.0, 64.0]),
+            ([0.0, -200.0, -64.0], [400.0, 200.0, 0.0]),
+        ])
+    }
+}

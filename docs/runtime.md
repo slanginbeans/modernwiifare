@@ -91,11 +91,34 @@ conversion. Lighting is flat for now (MW2 lights it from the light grid). Check 
 `mwf-convert preview <map.wpk> --viewmodel out/packs/common.wpk [--anim <slot> --time <s>]` (slot 9 = reload).
 Not measured yet: the CPU cost of skinning 7.6k vertices per frame on Broadway.
 
+## Bots and damage (free-for-all)
+A match is a free-for-all against 5 bots (`BOTS` in `wii/game/src/lib.rs`), first to 30 kills or the 10-minute
+clock (MW2 FFA's defaults), then a scoreboard. The top right shows your kills and the leader's, the left side a kill
+feed, and hits show MW2's hitmarker.
+- **Damage** is each weapon's own: IW4L's range falloff (full damage to its max-damage range, down to its minimum at
+  its min-damage range) times the hit location's multiplier from MW2's `mp_lochit_dmgtable` (read from your copy and
+  baked into each weapon by the converter, as IW4L does). Bullets hit the first player in their path before the wall
+  behind. Players' hit volumes are a stack of boxes (head, neck, upper and lower torso, arms, upper and lower legs)
+  sized from IW4's hull and view heights, standing or crouched, until the character models are converted: where a
+  shot lands on the body is approximated, the damage numbers are not.
+- **Bots** play with the same IW4L movement and weapon code as you, their guns from MW2's five default classes. They
+  see in front of them (150°) with a clear line, hear gunfire within 2000 units, react after about a third of a
+  second, turn at limited speed (IW4L's bot motor), fire inside an 8° cone with a small aim error that settles,
+  strafe while fighting, chase what they saw or heard, and otherwise roam the map. They walk a graph the converter
+  bakes from the map's collision (`NAVG` in the pack, flooded out from the spawn points on a 48-unit grid) with A*
+  routes, and jump when stuck. Not yet: mantling, ladders, doors, grenades, knifing, their weapon sounds, and other
+  players blocking movement (players pass through each other).
+- **Bodies**: bots are drawn as shaded boxes, one per hit volume (skin-coloured head and neck), until the character
+  models are converted.
+- Spawns: the free-for-all spawn point furthest from everyone alive.
+- Maps converted before this need converting again for the walk graph; without one, bots stand and fight.
+
 ## Life and match
 Health 100; fall damage from IW4L's crash land (falls under 128 units are free, 300 and over kill); dropping 2048
 units below the lowest spawn point kills (MW2 uses trigger volumes). A death shows "YOU DIED", then you respawn at
 the next spawn point after 3 s, with a fresh gun. A red vignette shows missing health and flashes on damage; the
-bottom left shows the match clock (10 minutes, IW4L's FFA limit) and deaths.
+bottom left shows the match clock (10 minutes, IW4L's FFA limit) and deaths. A free-flying player (D-pad up) is out
+of the match: the bots ignore it.
 Placeholders until MW2's game-type scripts run (GSC, ADR 0002): the 3 s respawn (MW2: death cam / killcam flow) and
 no health regeneration.
 

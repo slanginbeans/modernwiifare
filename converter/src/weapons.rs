@@ -11,6 +11,46 @@ use weapon_iw4::{CapturedCombatInput, EmptyReloadPolicy, LOCATION_DAMAGE_IDENTIT
 /// IW4 `WEAPCLASS_ROCKETLAUNCHER`: rocket launchers can't hold breath even with an overlay.
 const WEAPCLASS_ROCKETLAUNCHER: i32 = 11;
 
+/// The rawfile holding MW2's per-hit-location damage multipliers.
+pub const LOCHIT_RAWFILE: &str = "info/mp_lochit_dmgtable";
+
+/// `LOCDMGTABLE\<location>\<scale>...` (IW4L `asset_game::lochit::parse_lochit_info_string`, Apache-2.0, rev
+/// `acc57a5`): unknown keys, odd pairs or bad numbers reject the table.
+pub fn parse_lochit(data: &[u8], zlib_compressed: bool) -> Option<[f32; weapon_iw4::HITLOC_COUNT]> {
+    let mut bytes = if zlib_compressed {
+        asset_transport::inflate_zlib(data).ok()?
+    } else {
+        data.to_vec()
+    };
+    if bytes.last() == Some(&0) {
+        bytes.pop();
+    }
+    let text = core::str::from_utf8(&bytes).ok()?.trim();
+    let rest = text.strip_prefix("LOCDMGTABLE")?;
+    let mut table = LOCATION_DAMAGE_IDENTITY;
+    let mut parts = rest.split('\\').filter(|p| !p.is_empty());
+    while let Some(key) = parts.next() {
+        let value: f32 = parts.next()?.parse().ok()?;
+        let slot = weapon_iw4::HITLOC_NAMES.iter().position(|n| *n == key)?;
+        table[slot] = value;
+    }
+    weapon_iw4::location_damage_is_valid(&table).then_some(table)
+}
+
+/// Bake the global location table into a weapon's (IW4L `bake_location_damage`: bullets only, not turrets).
+pub fn with_global_location(
+    mut c: CapturedCombatInput,
+    global: Option<[f32; weapon_iw4::HITLOC_COUNT]>,
+) -> CapturedCombatInput {
+    c.location_damage = weapon_iw4::bake_location_damage(
+        c.weap_type,
+        c.weap_class,
+        global.unwrap_or(LOCATION_DAMAGE_IDENTITY),
+        Some(c.location_damage),
+    );
+    c
+}
+
 /// Recoil numbers (IW4L `WeaponKickFacts` from the same capture).
 pub fn kick(g: &WeaponGeometry) -> wpk::weapon::KickRecord {
     let k = &g.kick;
@@ -144,5 +184,23 @@ pub fn captured(g: &WeaponGeometry) -> CapturedCombatInput {
         ads_gun_kick_reduced_kick_bullets: g.kick.ads_gun_kick_reduced_kick_bullets,
         hip_gun_kick_reduced_kick_bullets: g.kick.hip_gun_kick_reduced_kick_bullets,
         location_damage: g.location_damage_mult.unwrap_or(LOCATION_DAMAGE_IDENTITY),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn location_table_parses_and_rejects_junk() {
+        let mut text = br"LOCDMGTABLE\head\1.5\torso_upper\1.2".to_vec();
+        text.push(0);
+        let t = parse_lochit(&text, false).expect("parses");
+        assert_eq!(t[2], 1.5);
+        assert_eq!(t[4], 1.2);
+        assert_eq!(t[0], 1.0);
+        assert!(parse_lochit(br"LOCDMGTABLE\elbow\2", false).is_none());
+        assert!(parse_lochit(br"LOCDMGTABLE\head", false).is_none());
+        assert!(parse_lochit(b"something", false).is_none());
     }
 }

@@ -128,6 +128,11 @@ impl Gun {
         self.hand.stock = stock;
     }
 
+    /// The weapon's combat numbers (damage, ranges, location multipliers ...).
+    pub fn facts(&self) -> &WeaponCombatFacts {
+        &self.facts
+    }
+
     /// Rounds in the magazine and in reserve.
     pub fn ammo(&self) -> (i32, i32) {
         (self.hand.clip, self.hand.stock)

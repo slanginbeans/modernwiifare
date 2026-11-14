@@ -20,6 +20,7 @@ mod view;
 use alloc::vec::Vec;
 
 use dpvs_iw4::WalkScratch;
+use game_core::arena::{self, Arena, Event};
 use game_core::camera::Camera;
 use game_core::collision::MapClip;
 use game_core::fly::{self, PadInput};
@@ -388,7 +389,102 @@ fn list_maps(buf: &mut [u8; 2048]) -> Vec<&str> {
 
 /// Load `<app folder>/maps/<name>.wpk` and play it until START (menu) or RESET (quit). Everything the map
 /// allocates in MEM2 is released by the caller (`mwf_mem2_release`); the MEM1 parts drop here.
-/// The classes a match can spawn with.
+/// Bots in a free-for-all (MW2 FFA takes up to 18 players; the Wii's CPU budget starts at 5 bots, see
+/// docs/perf.md).
+const BOTS: usize = 5;
+
+fn fighter_name(i: usize) -> Str {
+    let mut s = Str::default();
+    if i == 0 {
+        s.push_str("YOU");
+    } else {
+        s.push_str("BOT ");
+        s.num(i as u32);
+    }
+    s
+}
+
+/// Kills (yours and the leader's), the kill feed (4 s) and the hitmarker (150 ms).
+fn draw_match_hud(
+    gfx: &mut Shim,
+    rects: &mut Vec<Rect>,
+    a: &Arena,
+    feed: &[(Option<(usize, usize)>, u32)],
+    hitmarker_ms: Option<u32>,
+    now: u32,
+) {
+    let mut line = Str::default();
+    line.push_str("KILLS ");
+    line.num(a.fighters[0].kills);
+    line.push_str("  LEADER ");
+    let (who, k) = a.leader();
+    line.push_str(fighter_name(who).as_str());
+    line.push(' ');
+    line.num(k);
+    line.push_str(" / ");
+    line.num(arena::KILL_LIMIT);
+    rects.clear();
+    hud::text(rects, 360, 24, 2, line.as_str());
+    gfx.hud_rects(rects, 0xf0e8d0e0);
+    for (row, (e, t)) in feed.iter().enumerate() {
+        let Some((killer, victim)) = e else {
+            continue;
+        };
+        if now.wrapping_sub(*t) > 4000 {
+            continue;
+        }
+        let mut l = Str::default();
+        if killer == victim {
+            l.push_str(fighter_name(*victim).as_str());
+            l.push_str(" DIED");
+        } else {
+            l.push_str(fighter_name(*killer).as_str());
+            l.push_str(" KILLED ");
+            l.push_str(fighter_name(*victim).as_str());
+        }
+        rects.clear();
+        hud::text(rects, 24, 300 + row as i16 * 14, 2, l.as_str());
+        let mine = *killer == 0 || *victim == 0;
+        gfx.hud_rects(rects, if mine { 0xffd040e0 } else { 0xc0c8d0c0 });
+    }
+    if hitmarker_ms.is_some_and(|t| now.wrapping_sub(t) < 150) {
+        // MW2's hitmarker: four short diagonal ticks around the crosshair (drawn as small squares).
+        rects.clear();
+        for (dx, dy) in [(-1, -1), (1, -1), (-1, 1), (1, 1)] {
+            for k in 0..3i16 {
+                rects.push([320 + dx * (6 + k * 2) - 1, 240 + dy * (6 + k * 2) - 1, 2, 2]);
+            }
+        }
+        gfx.hud_rects(rects, 0xffffffff);
+    }
+}
+
+/// End of match: everyone's kills, highest first, until A (or B).
+fn scoreboard(gfx: &mut Shim, input: &mut front::Input, a: &Arena) {
+    let mut order: Vec<usize> = (0..a.fighters.len()).collect();
+    order.sort_by_key(|&i| core::cmp::Reverse(a.fighters[i].kills));
+    let lines: Vec<front::Line> = order
+        .iter()
+        .map(|&i| {
+            let mut l = front::Line::new(fighter_name(i).as_str());
+            let mut v = Str::default();
+            v.num(a.fighters[i].kills);
+            v.push_str(" KILLS  ");
+            v.num(a.fighters[i].life.deaths);
+            v.push_str(" DEATHS");
+            l.value = Some(alloc::string::String::from(v.as_str()));
+            l
+        })
+        .collect();
+    let mut sel = order.iter().position(|&i| i == 0).unwrap_or(0);
+    let title = if order.first() == Some(&0) {
+        "YOU WIN"
+    } else {
+        "MATCH OVER"
+    };
+    front::list(gfx, input, title, &lines, &mut sel, "A CONTINUE");
+}
+
 struct Loadouts<'a> {
     catalog: Option<&'a wpk::classes::Catalog>,
     classes: &'a [wpk::classes::Loadout],
@@ -440,7 +536,7 @@ fn run_map(
     }
     let bytes: &[u8] = unsafe { core::slice::from_raw_parts(ptr, in_place) };
     // The tail (visibility, cell tables, collision) is decoded into MEM1 from a temporary buffer.
-    let (vis, clip_data) = {
+    let (vis, clip_data, nav) = {
         let mut tail: Vec<u8> = Vec::new();
         if tail.try_reserve_exact(file_len - in_place).is_err() {
             return fail(0xe08020ff);
@@ -462,7 +558,8 @@ fn run_map(
             sec(wpk::tag::INSTANCE_CELLS),
         );
         let clip = sec(wpk::tag::CLIP).and_then(|d| wpk::clip::Clip::decode(d).ok());
-        (vis, clip)
+        let nav = sec(wpk::tag::NAV).and_then(wpk::nav::NavGraph::decode);
+        (vis, clip, nav)
     };
     let mut world = match World::load(bytes, vis.as_ref(), gfx) {
         Ok(w) => w,
@@ -492,6 +589,54 @@ fn run_map(
         arsenal.equip(gfx, weapons, kicks, loadouts.catalog, l);
     };
     equip(&mut arsenal, gfx, class);
+    // Free-for-all against bots (MW2's FFA spawns when the map has them).
+    let spawn_list: Vec<([f32; 3], f32)> = {
+        let dm: Vec<_> = world
+            .spawns
+            .iter()
+            .filter(|s| s.kind == wpk::records::spawn_kind::DM)
+            .map(|s| (s.origin, s.yaw))
+            .collect();
+        if dm.is_empty() {
+            world.spawns.iter().map(|s| (s.origin, s.yaw)).collect()
+        } else {
+            dm
+        }
+    };
+    // Bot i carries the primary of MW2's default class i (Grenadier, First Recon ...), else the fallback.
+    let bot_gun = |i: usize| -> Option<Gun> {
+        let names = loadouts
+            .catalog
+            .and_then(|c| {
+                let l = c
+                    .defaults
+                    .get((i + c.defaults.len().max(1) - 1) % c.defaults.len().max(1))?;
+                let mut n = c.weapon_names(l.primary, l.primary_attachments);
+                n.push(alloc::format!(
+                    "{}_mp",
+                    c.weapons.get(usize::from(l.primary))?.name
+                ));
+                Some(n)
+            })
+            .unwrap_or_else(|| alloc::vec![alloc::string::String::from("m4_mp")]);
+        names.iter().find_map(|n| {
+            let (index, rec) = wpk::weapon::find_indexed(weapons, n)?;
+            Gun::with_index(&rec, index)
+        })
+    };
+    let mut arena = match (&clip, &player) {
+        (Some(c), Some(p)) if !spawn_list.is_empty() => {
+            Some(Arena::new(c, &spawn_list, BOTS, p.clone(), |i| {
+                if i == 0 { None } else { bot_gun(i) }
+            }))
+        }
+        _ => None,
+    };
+    let mut events: Vec<Event> = Vec::with_capacity(32);
+    let mut feed: [(Option<(usize, usize)>, u32); 4] = [(None, 0); 4];
+    let mut hitmarker_ms: Option<u32> = None;
+    let mut boxes: Vec<[f32; 6]> = Vec::with_capacity(BOTS * 10);
+    let mut box_colours: Vec<u32> = Vec::with_capacity(BOTS * 10);
     let mut impacts: [(Option<[f32; 3]>, u32); 8] = [(None, 0); 8];
     let mut last_shot_ms: Option<u32> = None;
     let mut next_impact = 0usize;
@@ -594,6 +739,10 @@ fn run_map(
                 if p.ps.origin[2] < floor_z {
                     life.damage(life.max_health, now);
                 }
+                if let Some(a) = arena.as_mut() {
+                    a.fighters[0].player = p.clone();
+                    a.fighters[0].life = life;
+                }
                 let a = arsenal.active;
                 if let (Some(g), true) = (arsenal.guns[a].as_mut(), life.alive()) {
                     g.update_spread(
@@ -619,8 +768,13 @@ fn run_map(
                         cam.right(),
                         cam.up(),
                     );
-                    if shot.is_some() {
+                    if let Some(s) = shot.as_ref() {
                         last_shot_ms = Some(now);
+                        if let Some(a) = arena.as_mut() {
+                            a.fighters[0].last_fire_ms = Some(now);
+                            let facts = *g.facts();
+                            a.bullet(0, s, &facts, now, &mut events);
+                        }
                     }
                     if let (Some(e), Some(v)) = (event.as_ref(), arsenal.views[a].as_mut())
                         && let Some(s) =
@@ -638,7 +792,16 @@ fn run_map(
                 // Dead: the view stays where the player fell until the respawn.
                 if life.ready_to_respawn(now) {
                     spawn += 1;
-                    player = Some(spawn_player(&world, c, spawn));
+                    let others: Vec<[f32; 3]> = arena
+                        .iter()
+                        .flat_map(|a| a.fighters[1..].iter())
+                        .filter(|f| f.life.alive())
+                        .map(|f| f.player.ps.origin)
+                        .collect();
+                    player = Some(match arena::pick_spawn(&spawn_list, &others, spawn) {
+                        Some((o, yaw)) => Player::spawn(c, o, yaw),
+                        None => spawn_player(&world, c, spawn),
+                    });
                     equip(&mut arsenal, gfx, class);
                     life.respawn();
                 }
@@ -657,7 +820,56 @@ fn run_map(
                 dt,
             ),
         }
+        if let (Some(a), Some(c)) = (arena.as_mut(), clip.as_ref()) {
+            a.human_present = !flying && player.is_some();
+            a.fighters[0].life = life;
+            a.update_bots(
+                c,
+                nav.as_ref(),
+                &spawn_list,
+                now,
+                msec as i32,
+                bot_gun,
+                &mut events,
+            );
+            life = a.fighters[0].life;
+        }
+        for e in events.drain(..) {
+            match e {
+                Event::Hit { attacker: 0, .. } => hitmarker_ms = Some(now),
+                Event::Kill { attacker, victim } => {
+                    feed.rotate_right(1);
+                    feed[0] = (Some((attacker, victim)), now);
+                }
+                _ => {}
+            }
+        }
         let stats = world.draw(gfx, &cam, scratch);
+        // Bots: placeholder bodies, one shaded box per hit volume, until the character models are converted.
+        if let Some(a) = arena.as_ref() {
+            boxes.clear();
+            box_colours.clear();
+            for f in a.fighters[1..].iter().filter(|f| f.life.alive()) {
+                for h in game_core::damage::boxes(f.player.ps.origin, f.player.crouched()) {
+                    boxes.push([
+                        h.mins[0], h.mins[1], h.mins[2], h.maxs[0], h.maxs[1], h.maxs[2],
+                    ]);
+                    box_colours.push(if h.loc <= game_core::damage::hitloc::NECK {
+                        0xd8b090ff
+                    } else {
+                        0x6a7050ff
+                    });
+                }
+            }
+            unsafe {
+                ffi::mwf_draw_boxes(
+                    &cam.view(),
+                    boxes.as_ptr(),
+                    box_colours.as_ptr(),
+                    boxes.len() as u32,
+                )
+            };
+        }
         if !flying
             && life.alive()
             && let (Some(v), Some(g)) = (
@@ -686,6 +898,16 @@ fn run_map(
                 draw_gun_hud(gfx, &mut hud_rects, g, &cam, &impacts, now);
             }
             draw_life_hud(gfx, &mut hud_rects, &life, &clock, now);
+            if let Some(a) = arena.as_ref() {
+                draw_match_hud(gfx, &mut hud_rects, a, &feed, hitmarker_ms, now);
+            }
+        }
+        if let Some(a) = arena.as_ref()
+            && (a.won() || clock.over(now))
+        {
+            unsafe { ffi::mwf_snd_stop_all() };
+            scoreboard(gfx, input, a);
+            return Exit::Menu;
         }
         if show_overlay {
             overlay(gfx, &mut rects, &timing, &stats, cam.eye);

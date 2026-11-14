@@ -76,6 +76,12 @@ unsafe extern "C" {
     pub fn mwf_app_dir() -> *const c_char;
     pub fn mwf_mem2_alloc(size: u32, align: u32) -> *mut u8;
     pub fn mwf_flush(p: *const u8, len: u32);
+    pub fn mwf_draw_boxes(
+        view: &[[f32; 4]; 3],
+        boxes: *const [f32; 6],
+        rgba: *const u32,
+        count: u32,
+    );
     pub fn mwf_snd_init();
     pub fn mwf_snd_play(pcm: *const u8, bytes: u32, rate: u32, vol_l: u8, vol_r: u8) -> i32;
     pub fn mwf_snd_stop_all();

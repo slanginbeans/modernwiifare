@@ -248,11 +248,14 @@ impl AssetLinkSink for Collector {
 
     fn capture_raw_file(
         &mut self,
-        _name: &str,
+        name: &str,
         data: &[u8],
         zlib_compressed: bool,
     ) -> fastfile_iw4::Result<()> {
         self.links.raw_file(data, zlib_compressed);
+        if name == crate::weapons::LOCHIT_RAWFILE {
+            self.links.lochit = crate::weapons::parse_lochit(data, zlib_compressed);
+        }
         Ok(())
     }
 }

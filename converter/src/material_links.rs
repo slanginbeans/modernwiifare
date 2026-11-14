@@ -236,6 +236,8 @@ pub struct Links {
     pub tables: HashMap<String, crate::ui_tables::Table>,
     /// Localized strings (`LocalizeEntry`) by reference name.
     pub localize: HashMap<String, String>,
+    /// MW2's per-hit-location damage table (`info/mp_lochit_dmgtable`), when the zone has it.
+    pub lochit: Option<[f32; weapon_iw4::HITLOC_COUNT]>,
     /// Sound aliases and loaded sounds of the zone.
     pub sounds: crate::sounds::Capture,
     /// Every XAnim loaded, by name, read again after the walk (`viewmodel.rs`).

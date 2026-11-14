@@ -9,6 +9,8 @@
 //! - [`player`]: pad -> `UserCmd` -> IW4L `pmove`.
 //! - [`hud`]: screen-space rectangles and a 3×5 debug font.
 //! - [`gun`]: IW4L weapon state machine + hitscan bullets against the map.
+//! - [`damage`]: range falloff, hit locations, player hit volumes.
+//! - [`nav`], [`bot`], [`arena`]: walk graph, bot brains, free-for-all match against bots.
 //! - [`loadout`]: Create-a-Class rules over the converted class catalog.
 //! - [`menu`]: pad-driven menu lists.
 //! - [`weapon_sound`]: which alias a weapon event or a first-person notetrack plays.
@@ -16,8 +18,11 @@
 
 extern crate alloc;
 
+pub mod arena;
+pub mod bot;
 pub mod camera;
 pub mod collision;
+pub mod damage;
 pub mod fly;
 pub mod gfx;
 pub mod gun;
@@ -25,6 +30,7 @@ pub mod hud;
 pub mod life;
 pub mod loadout;
 pub mod menu;
+pub mod nav;
 pub mod player;
 pub mod sky;
 pub mod viewmodel;

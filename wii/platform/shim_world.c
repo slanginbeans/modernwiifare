@@ -259,6 +259,8 @@ extern GXRModeObj *mwf_rmode;
 #define VIEW_DEPTH 0.02f
 static int mode = MODE_NONE;
 static const void *world_base = NULL;
+/* The world's projection of this frame (boxes drawn in world space reuse it). */
+static Mtx44 world_proj;
 
 void mwf_frame_begin(const float view[3][4], float fovy_deg, float znear, float zfar, uint32_t clear_rgba) {
     GXColor bg = {(u8)(clear_rgba >> 24), (u8)(clear_rgba >> 16), (u8)(clear_rgba >> 8), 0xff};
@@ -267,6 +269,7 @@ void mwf_frame_begin(const float view[3][4], float fovy_deg, float znear, float 
     Mtx44 proj;
     guPerspective(proj, fovy_deg, aspect, znear, zfar);
     GX_LoadProjectionMtx(proj, GX_PERSPECTIVE);
+    memcpy(world_proj, proj, sizeof(Mtx44));
     GX_LoadPosMtxImm((f32(*)[4])view, GX_PNMTX0);
     GX_SetCurrentMtx(GX_PNMTX0);
     GX_SetViewport(0, 0, mwf_rmode->fbWidth, mwf_rmode->efbHeight, VIEW_DEPTH, 1.0f);
@@ -576,6 +579,65 @@ void mwf_hud_rects(const int16_t (*r)[4], uint32_t count, uint32_t rgba) {
         }
         GX_End();
         r += n;
+        count -= n;
+    }
+}
+
+/* Solid boxes in world space (placeholder bodies): box i is mins b[i][0..3], maxs b[i][3..6], colour rgba[i];
+   faces shaded by direction (top brightest). Depth tested against the world. Call after the world, before the
+   first-person model. */
+void mwf_draw_boxes(const float view[3][4], const float (*b)[6], const uint32_t *rgba, uint32_t count) {
+    if (count == 0) return;
+    mode = MODE_NONE; /* the next world, view or HUD draw sets its own state up again */
+    world_base = NULL;
+    GX_LoadProjectionMtx(world_proj, GX_PERSPECTIVE);
+    GX_LoadPosMtxImm((f32(*)[4])view, GX_PNMTX0);
+    GX_SetCurrentMtx(GX_PNMTX0);
+    GX_ClearVtxDesc();
+    GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
+    GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+    GX_SetVtxAttrFmt(GX_VTXFMT7, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GX_SetVtxAttrFmt(GX_VTXFMT7, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+    GX_SetNumChans(1);
+    GX_SetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
+    GX_SetNumTexGens(0);
+    GX_SetNumTevStages(1);
+    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+    GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+    GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
+    GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+    GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
+    GX_SetCullMode(GX_CULL_NONE);
+    /* Face shades: +z, -z, +x, -x, +y, -y. */
+    static const u8 shade[6] = {255, 110, 200, 170, 185, 150};
+    while (count > 0) {
+        uint32_t n = count > 2000 ? 2000 : count;
+        GX_Begin(GX_QUADS, GX_VTXFMT7, (u16)(n * 24));
+        for (uint32_t i = 0; i < n; i++) {
+            const float *m = b[i];
+            f32 x0 = m[0], y0 = m[1], z0 = m[2], x1 = m[3], y1 = m[4], z1 = m[5];
+            u32 c = rgba[i];
+            f32 q[6][4][3] = {
+                {{x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}, {x0, y1, z1}},
+                {{x0, y0, z0}, {x0, y1, z0}, {x1, y1, z0}, {x1, y0, z0}},
+                {{x1, y0, z0}, {x1, y1, z0}, {x1, y1, z1}, {x1, y0, z1}},
+                {{x0, y0, z0}, {x0, y0, z1}, {x0, y1, z1}, {x0, y1, z0}},
+                {{x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}, {x1, y1, z0}},
+                {{x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {x0, y0, z1}},
+            };
+            for (int f = 0; f < 6; f++) {
+                u8 r = (u8)(((c >> 24) & 0xff) * shade[f] / 255);
+                u8 g = (u8)(((c >> 16) & 0xff) * shade[f] / 255);
+                u8 bl = (u8)(((c >> 8) & 0xff) * shade[f] / 255);
+                for (int v = 0; v < 4; v++) {
+                    GX_Position3f32(q[f][v][0], q[f][v][1], q[f][v][2]);
+                    GX_Color4u8(r, g, bl, 0xff);
+                }
+            }
+        }
+        GX_End();
+        b += n;
+        rgba += n;
         count -= n;
     }
 }

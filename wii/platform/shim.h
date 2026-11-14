@@ -143,6 +143,9 @@ void mwf_sky_face(const float view_rot[3][4], const float corners[4][5], int32_t
 /* Write back CPU-written data GX will read (skinned positions). */
 void mwf_flush(const void *p, uint32_t len);
 
+/* Solid shaded boxes in world space (placeholder bodies), depth tested: mins b[i][0..3], maxs b[i][3..6]. */
+void mwf_draw_boxes(const float view[3][4], const float (*b)[6], const uint32_t *rgba, uint32_t count);
+
 /* Sound: ASND voices. `pcm`: mono 16-bit big-endian, 32-byte aligned, flushed, `bytes` a multiple of 32.
    Volumes 0..255. Returns the voice, or -1 when every voice is busy. */
 void mwf_snd_init(void);

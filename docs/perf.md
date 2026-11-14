@@ -56,6 +56,8 @@ Not sacrificed: collision (never simplified), movement and weapon timings, 640×
 | Collision and visibility out of MEM2 (decoded from a temporary MEM1 buffer) | `mp_checkpoint` MEM2 51.7 → 44.3 MiB |
 | Fixed-point vertices (18 B; float fallback for batches that don't fit) | all 16 maps in MEM2: **18.9–38.5 MiB** (was up to 51.7); `mp_checkpoint` 38.5, `mp_rust` 18.9. Models 100% compact; world batches ~60% compact (the rest: UV spans over ±128 or very large batches) |
 
+| Bots (5): `pmove`, sight traces, gun, routes each frame | host: ~0.4 ms per frame for all five on `mp_rust`; Broadway is perhaps 10-20× slower, so **3-8 ms**: measure on hardware, and lower `BOTS` or think every other frame if it doesn't fit |
+
 Where that leaves us: `mp_terminal` spends ~244k world + ~91k model triangles per view, still ~3× the 60 fps
 budget. Memory is solved for every map. Next: world draw distance (fog) and `LOD_SCALE` (in `game_core::world`) as
 the per-map 60 fps levers, set from hardware numbers.

@@ -546,12 +546,24 @@ fn run_common(args: &[String]) -> ExitCode {
         .zip(&links.weapon_combat)
         .zip(&links.weapon_kick)
         .filter(|((n, _), _)| !n.is_empty())
-        .map(|((n, c), k)| (wpk::weapon::WeaponRecord::new(n, *c), *k))
+        .map(|((n, c), k)| {
+            // MW2's per-location damage table, baked into each weapon as IW4L does.
+            let c = weapons::with_global_location(*c, links.lochit);
+            (wpk::weapon::WeaponRecord::new(n, c), *k)
+        })
         .collect();
     both.sort_by_key(|(w, _)| w.name);
     both.dedup_by(|x, y| x.0.name == y.0.name);
     let (weapons, kicks): (Vec<_>, Vec<_>) = both.into_iter().unzip();
     let files: HashSet<String> = weapons.iter().map(|w| w.name().to_owned()).collect();
+    println!(
+        "hit-location damage table: {}",
+        if links.lochit.is_some() {
+            "found"
+        } else {
+            "not found (every location x1)"
+        }
+    );
     let (catalog, cr) = ui_tables::catalog(&tables, &localize, &files);
     println!(
         "classes: {} weapons ({} without a weapon file), {} attachments, {} perks, {} default and {} custom classes, {} names missing",
