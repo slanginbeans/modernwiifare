@@ -50,8 +50,11 @@ const BACK_TEXT: &str = "@PLATFORM_BACK_CAPS";
 const ITEM_TYPE_BUTTON: i32 = 1;
 const ITEM_TYPE_OWNERDRAW: i32 = 8;
 /// HUD images the game draws by name (`hud_iw4` compass pings and the radar sweep).
-pub const ICONS: [&str; 4] = [
+pub const ICONS: [&str; 7] = [
     "compassping_player",
+    "compassping_friendly_mp",
+    "compassping_grenade",
+    "compassping_explosion",
     "compassping_enemy",
     "compassping_enemyfiring",
     "compass_radarline",

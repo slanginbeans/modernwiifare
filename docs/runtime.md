@@ -39,7 +39,14 @@ with sample content to `out/preview/menu_<screen>.png` to check them on the PC. 
 the menus fall back to the block font.
 Every menu is a list: D-pad or main stick up / down, **A** chooses, **B** goes back.
 - **Main menu**: Play, Create a Class, Quit.
-- **Play** → choose a map → choose a class (your five custom classes, then MW2's five default classes) → the match.
+- **Play** → choose a map → **Game Setup** (as MW2's private match: game type free-for-all or team deathmatch, score
+  limit, time limit; each starts at your scripts' value for the mode, A cycles the choices) → choose a class (your
+  five custom classes, then MW2's five default classes) → the match.
+- **Team deathmatch** (`war.gsc`): you and two bots against three (allies tinted blue); team-mode points (100 a kill
+  from `_rank.gsc`) go to the team's score; no friendly fire (MW2's default); bots and aim assist ignore teammates;
+  spawns follow MW2's `getSpawnpoint_NearTeam` (far from enemies, near allies, out of enemy sight); teammates always
+  show on the minimap; the scoreboard ends in victory, defeat or a draw. The minimap also shows grenades and
+  explosions.
 - **Create a Class**: pick one of the five custom classes, then change its primary and secondary weapons, their
   attachments, equipment, special grenade, perks 1-3, deathstreak and three killstreaks. Everything is unlocked.
   The rules are MW2's: primaries are assault rifles, SMGs, LMGs, sniper rifles and the riot shield; secondaries are

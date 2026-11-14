@@ -14,14 +14,18 @@ pub const FFA: &str = "maps/mp/gametypes/dm.gsc";
 pub const WEAPONS: &str = "maps/mp/gametypes/_weapons.gsc";
 pub const PERK_FUNCTIONS: &str = "maps/mp/perks/_perkfunctions.gsc";
 pub const UAV: &str = "maps/mp/killstreaks/_uav.gsc";
+pub const TDM: &str = "maps/mp/gametypes/war.gsc";
+pub const RANK: &str = "maps/mp/gametypes/_rank.gsc";
 /// The scripts the rules come from (captured from the zones' rawfiles).
-pub const SCRIPTS: [&str; 6] = [
+pub const SCRIPTS: [&str; 8] = [
     TWEAKABLES,
     HEALTH_OVERLAY,
     FFA,
     WEAPONS,
     PERK_FUNCTIONS,
     UAV,
+    TDM,
+    RANK,
 ];
 
 /// The text without `/* */` and `//` comments (scanned in order, so a `//*` line comment isn't a block).
@@ -134,10 +138,21 @@ pub fn missing(r: &Rules) -> Vec<&'static str> {
         (found::CLASS_SPEED, "move speed by weapon class"),
         (found::LIGHTWEIGHT_SPEED, "Lightweight speed"),
         (found::UAV_TIME, "UAV time"),
+        (found::TDM_TIME_LIMIT, "TDM time limit"),
+        (found::TDM_SCORE_LIMIT, "TDM score limit"),
     ]
     .into_iter()
     .filter(|(bit, _)| r.found & bit == 0)
     .map(|(_, name)| name)
+    .chain(
+        [
+            (found::TEAM_KILL_SCORE, "team kill points"),
+            (found::TEAM_HEADSHOT_SCORE, "team headshot points"),
+        ]
+        .into_iter()
+        .filter(|(bit, _)| r.found_team & bit == 0)
+        .map(|(_, name)| name),
+    )
     .collect()
 }
 
@@ -228,6 +243,46 @@ pub fn read(scripts: &HashMap<String, String>) -> Rules {
         r.uav_time_ms = (v * 1000.0) as u32;
         r.found |= found::UAV_TIME;
     }
+    if let Some(t) = get(TDM) {
+        if let Some(v) = calls(&t, "registerTimeLimitDvar", 0)
+            .first()
+            .and_then(|(_, a)| a.get(1).and_then(|s| number(s)))
+        {
+            r.tdm_time_limit_ms = (v * 60_000.0) as u32;
+            r.found |= found::TDM_TIME_LIMIT;
+        }
+        if let Some(v) = calls(&t, "registerScoreLimitDvar", 0)
+            .first()
+            .and_then(|(_, a)| a.get(1).and_then(|s| number(s)))
+        {
+            r.tdm_score_limit = v as u32;
+            r.found |= found::TDM_SCORE_LIMIT;
+        }
+    }
+    // Team-mode points: the registrations inside `_rank.gsc`'s `if ( level.teamBased )` block.
+    if let Some(t) = get(RANK)
+        && let Some(at) = t.find("level.teamBased")
+    {
+        let block = &t[at..];
+        let block = &block[..block.find("else").unwrap_or(block.len())];
+        for (key, bit) in [
+            ("kill", found::TEAM_KILL_SCORE),
+            ("headshot", found::TEAM_HEADSHOT_SCORE),
+        ] {
+            if let Some(v) = calls(block, "registerScoreInfo", 0)
+                .into_iter()
+                .find(|(_, a)| a.first().is_some_and(|k| k == key))
+                .and_then(|(_, a)| a.get(1).and_then(|s| number(s)))
+            {
+                if key == "kill" {
+                    r.team_kill_score = v as u32;
+                } else {
+                    r.team_headshot_score = v as u32;
+                }
+                r.found_team |= bit;
+            }
+        }
+    }
     if let Some(t) = get(FFA) {
         if let Some(v) = calls(&t, "registerTimeLimitDvar", 0)
             .first()
@@ -311,8 +366,20 @@ mod tests {
             "init()\n{\n level.radarViewTime = 25; // time\n level.uavBlockTime = 9;\n}\n"
                 .to_owned(),
         );
+        s.insert(
+            TDM.to_owned(),
+            "main()\n{\n registerTimeLimitDvar( level.gameType, 15, 0, 9 );\n registerScoreLimitDvar( level.gameType, 7000, 0, 9 );\n}\n"
+                .to_owned(),
+        );
+        s.insert(
+            RANK.to_owned(),
+            "init()\n{\n if ( level.teamBased )\n {\n  registerScoreInfo( \"kill\", 90 );\n  registerScoreInfo( \"headshot\", 80 );\n }\n else\n {\n  registerScoreInfo( \"kill\", 7 );\n }\n}\n"
+                .to_owned(),
+        );
         let r = read(&s);
         assert_eq!(r.uav_time_ms, 25_000);
+        assert_eq!((r.tdm_time_limit_ms, r.tdm_score_limit), (900_000, 7000));
+        assert_eq!((r.team_kill_score, r.team_headshot_score), (90, 80));
         assert_eq!(
             r.class_speed,
             [0.9, 1.0, 0.85, 1.05, 0.9, 0.75, 0.98, 0.7],

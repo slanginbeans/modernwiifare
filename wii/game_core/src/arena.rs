@@ -46,6 +46,8 @@ pub struct Fighter {
     pub last_spawn: Option<usize>,
     /// This fighter's bullet damage scale (Stopping Power: 1.4).
     pub bullet_scale: f32,
+    /// Team in team modes (`TEAM_ALLIES` / `TEAM_AXIS`), `TEAM_NONE` in free-for-all.
+    pub team: u8,
     /// Kills since this fighter's last death.
     pub streak: u32,
     /// A bot's UAV: until when it knows where everyone is.
@@ -74,6 +76,7 @@ impl Fighter {
             last_attacker: None,
             last_spawn: None,
             bullet_scale: 1.0,
+            team: TEAM_NONE,
             streak: 0,
             uav_until: None,
             next_step_ms: None,
@@ -126,9 +129,49 @@ pub fn feet_and_aim(p: &Player) -> ([f32; 3], [f32; 3]) {
     (o, [o[0], o[1], o[2] + chest])
 }
 
+/// The match's game type.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// Free-for-all (`dm.gsc`).
+    #[default]
+    Ffa,
+    /// Team deathmatch (`war.gsc`).
+    Tdm,
+}
+
+pub const TEAM_NONE: u8 = 0;
+pub const TEAM_ALLIES: u8 = 1;
+pub const TEAM_AXIS: u8 = 2;
+
+/// The match's limits and points, from the rules for its mode or as set before the match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    pub score_limit: u32,
+    pub time_limit_ms: u32,
+    pub kill_score: u32,
+    pub headshot_score: u32,
+}
+
+impl Limits {
+    pub fn of(rules: &Rules, mode: Mode) -> Limits {
+        let (time_limit_ms, score_limit, kill_score, headshot_score) =
+            rules.of_mode(mode == Mode::Tdm);
+        Limits {
+            score_limit,
+            time_limit_ms,
+            kill_score,
+            headshot_score,
+        }
+    }
+}
+
 pub struct Arena {
     pub fighters: Vec<Fighter>,
     pub rules: Rules,
+    pub mode: Mode,
+    pub limits: Limits,
+    /// Team scores (index by team).
+    pub team_score: [u32; 3],
     /// Kills in a row a bot needs for its UAV (the UAV's killstreakTable cost; 0 = bots get none).
     pub bot_uav_kills: u32,
     /// Grenades in flight or lying on the ground.
@@ -192,6 +235,45 @@ pub fn pick_spawn(
     (0..spawns.len()).max_by(|&a, &b| weight(a).total_cmp(&weight(b)))
 }
 
+/// MW2's team spawn weighting (`_spawnlogic.gsc` `getSpawnpoint_NearTeam` with the penalties it applies): far from
+/// enemies and near allies (`(enemy distances - 2 × ally distances) / players`), then as free-for-all a large penalty
+/// for each enemy that sees the spawn and for the nearest enemy within [`NEARBY_ENEMY_RANGE`], and the last spawn
+/// avoided. Returns the index of the best spawn.
+pub fn pick_spawn_team(
+    spawns: &[([f32; 3], f32)],
+    allies: &[[f32; 3]],
+    enemies: &[[f32; 3]],
+    last: Option<usize>,
+    sees: impl Fn(usize, [f32; 3]) -> bool,
+    jitter: impl Fn(usize) -> f32,
+) -> Option<usize> {
+    if spawns.is_empty() {
+        return None;
+    }
+    let players = allies.len() + enemies.len();
+    let weight = |i: usize| {
+        let p = spawns[i].0;
+        let sum = |set: &[[f32; 3]]| set.iter().map(|&o| libm::sqrtf(dist2(p, o))).sum::<f32>();
+        let mut w = jitter(i);
+        if players > 0 {
+            w += (sum(enemies) - 2.0 * sum(allies)) / players as f32;
+        }
+        let nearest = enemies
+            .iter()
+            .map(|&o| libm::sqrtf(dist2(p, o)))
+            .fold(f32::MAX, f32::min);
+        w -= SPAWN_LOS_PENALTY * enemies.iter().filter(|&&o| sees(i, o)).count() as f32;
+        if nearest < NEARBY_ENEMY_RANGE {
+            w -= NEARBY_ENEMY_PENALTY * (1.0 - nearest / NEARBY_ENEMY_RANGE);
+        }
+        if last == Some(i) {
+            w -= SAME_SPAWN_PENALTY;
+        }
+        w
+    };
+    (0..spawns.len()).max_by(|&a, &b| weight(a).total_cmp(&weight(b)))
+}
+
 /// MW2's spawn weighting numbers (`_spawnlogic.gsc`; the distances are IW4L's `sim::SPAWN_IDEAL_DIST` /
 /// `SPAWN_BAD_DIST` too).
 pub const SPAWN_IDEAL_DIST: f32 = 1600.0;
@@ -216,6 +298,9 @@ impl Arena {
         let mut a = Arena {
             fighters: Vec::with_capacity(bots + 1),
             rules,
+            mode: Mode::Ffa,
+            limits: Limits::of(&rules, Mode::Ffa),
+            team_score: [0; 3],
             bot_uav_kills: 0,
             grenades: Vec::new(),
             equips: &[],
@@ -243,11 +328,20 @@ impl Arena {
         spawns: &[([f32; 3], f32)],
         who: usize,
     ) -> ([f32; 3], f32) {
+        let live =
+            |i: usize, f: &Fighter| i != who && f.life.alive() && (i != 0 || self.human_present);
         let others: Vec<[f32; 3]> = self
             .fighters
             .iter()
             .enumerate()
-            .filter(|(i, f)| *i != who && f.life.alive() && (*i != 0 || self.human_present))
+            .filter(|(i, f)| live(*i, f) && self.enemies(who, *i))
+            .map(|(_, f)| f.player.ps.origin)
+            .collect();
+        let allies: Vec<[f32; 3]> = self
+            .fighters
+            .iter()
+            .enumerate()
+            .filter(|(i, f)| live(*i, f) && self.mode == Mode::Tdm && !self.enemies(who, *i))
             .map(|(_, f)| f.player.ps.origin)
             .collect();
         self.spawn_count += 1;
@@ -266,7 +360,11 @@ impl Arena {
             x ^= x << 5;
             (x >> 8) as f32 / (1u32 << 24) as f32 * 0.2
         };
-        match pick_spawn(spawns, &others, last, sees, jitter) {
+        let picked = match self.mode {
+            Mode::Ffa => pick_spawn(spawns, &others, last, sees, jitter),
+            Mode::Tdm => pick_spawn_team(spawns, &allies, &others, last, sees, jitter),
+        };
+        match picked {
             Some(i) => {
                 if let Some(f) = self.fighters.get_mut(who) {
                     f.last_spawn = Some(i);
@@ -298,6 +396,41 @@ impl Arena {
         }
     }
 
+    /// Set the game type and limits before play: in team deathmatch the human and every second bot are allies, the
+    /// other bots axis (3 against 3 with five bots).
+    pub fn set_mode(&mut self, mode: Mode, limits: Limits) {
+        self.mode = mode;
+        self.limits = limits;
+        for (i, f) in self.fighters.iter_mut().enumerate() {
+            f.team = match mode {
+                Mode::Ffa => TEAM_NONE,
+                Mode::Tdm if i == 0 || i % 2 == 0 => TEAM_ALLIES,
+                Mode::Tdm => TEAM_AXIS,
+            };
+        }
+    }
+
+    /// Whether fighters `a` and `b` are enemies (everyone else in free-for-all; the other team in team modes).
+    pub fn enemies(&self, a: usize, b: usize) -> bool {
+        if a == b {
+            return false;
+        }
+        match self.mode {
+            Mode::Ffa => true,
+            Mode::Tdm => self.fighters[a].team != self.fighters[b].team,
+        }
+    }
+
+    /// The winning team in team modes (None in free-for-all or on a tie).
+    pub fn leading_team(&self) -> Option<u8> {
+        let (a, x) = (self.team_score[1], self.team_score[2]);
+        match self.mode {
+            Mode::Tdm if a > x => Some(TEAM_ALLIES),
+            Mode::Tdm if x > a => Some(TEAM_AXIS),
+            _ => None,
+        }
+    }
+
     /// The leader and their score: highest score, then fewer deaths (IW4L `gamemode_iw4::ffa`), then lower slot.
     pub fn leader(&self) -> (usize, u32) {
         self.fighters
@@ -307,9 +440,16 @@ impl Arena {
             .map_or((0, 0), |(i, f)| (i, f.score))
     }
 
-    /// Someone reached the score limit (0: none).
+    /// Someone (a player in free-for-all, a team in team modes) reached the score limit (0: none).
     pub fn won(&self) -> bool {
-        self.rules.score_limit > 0 && self.leader().1 >= self.rules.score_limit
+        let limit = self.limits.score_limit;
+        if limit == 0 {
+            return false;
+        }
+        match self.mode {
+            Mode::Ffa => self.leader().1 >= limit,
+            Mode::Tdm => self.team_score.iter().any(|&s| s >= limit),
+        }
     }
 
     /// Fighters in scoreboard order (as [`Arena::leader`]).
@@ -444,6 +584,10 @@ impl Arena {
         now: u32,
         out: &mut Vec<Event>,
     ) {
+        // No friendly fire in team modes (MW2's default `scr_team_fftype` 0); your own grenade still hurts you.
+        if from != victim && self.mode == Mode::Tdm && !self.enemies(from, victim) {
+            return;
+        }
         let v = &mut self.fighters[victim];
         v.last_attacker = Some(from);
         // The hit slows the victim for a moment (IW4L `update_damage_timer`: 100 ms a point, at most 750 ms).
@@ -462,15 +606,22 @@ impl Arena {
             self.fighters[victim].streak = 0;
             if from != victim {
                 let head = loc == damage::hitloc::HEAD || loc == damage::hitloc::HELMET;
-                let (rules, uav_kills) = (self.rules, self.bot_uav_kills);
+                let (rules, uav_kills, limits) = (self.rules, self.bot_uav_kills, self.limits);
                 let k = &mut self.fighters[from];
                 k.kills += 1;
                 k.streak += 1;
-                k.score += rules.kill_score;
+                let mut points = limits.kill_score;
                 if head {
                     k.headshots += 1;
-                    k.score += rules.headshot_score;
+                    points += limits.headshot_score;
                 }
+                k.score += points;
+                // Team modes: the kill's points go to the team's score too (`war.gsc` `onNormalDeath`).
+                let team = usize::from(k.team);
+                if team != 0 {
+                    self.team_score[team] += limits.kill_score;
+                }
+                let k = &mut self.fighters[from];
                 if k.brain.is_some() && uav_kills > 0 && k.streak == uav_kills {
                     k.uav_until = Some(now.wrapping_add(rules.uav_time_ms));
                 }
@@ -531,7 +682,9 @@ impl Arena {
         self.fighters
             .iter()
             .enumerate()
-            .filter(|(i, o)| *i != me && o.life.alive() && (*i != 0 || self.human_present))
+            .filter(|(i, o)| {
+                self.enemies(me, *i) && o.life.alive() && (*i != 0 || self.human_present)
+            })
             .map(|(i, o)| {
                 let (feet, aim) = feet_and_aim(&o.player);
                 let (_, to_yaw) = bot::look_angles(eye, aim);
@@ -864,6 +1017,73 @@ mod tests {
         );
         assert_eq!(a.fighters[0].kills, 1);
         assert!(a.grenades.is_empty());
+    }
+
+    #[test]
+    fn team_deathmatch_teams_scores_and_friendly_fire() {
+        let clip = boxes(&[([-4000.0, -4000.0, -64.0], [4000.0, 4000.0, 0.0])]);
+        let mc = MapClip::new(&clip);
+        let spawns = [
+            ([0.0, 0.0, 0.0], 0.0),
+            ([300.0, 0.0, 0.0], 180.0),
+            ([600.0, 0.0, 0.0], 180.0),
+        ];
+        let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+        let mut a = Arena::new(&mc, &spawns, 2, human, Rules::default(), |_| Some(rifle()));
+        let rules = Rules::default();
+        a.set_mode(Mode::Tdm, Limits::of(&rules, Mode::Tdm));
+        // The human and bot 2 are allies, bot 1 axis.
+        assert_eq!(
+            [a.fighters[0].team, a.fighters[1].team, a.fighters[2].team],
+            [TEAM_ALLIES, TEAM_AXIS, TEAM_ALLIES]
+        );
+        assert!(a.enemies(0, 1) && !a.enemies(0, 2));
+        // Shooting a teammate does nothing.
+        let mut ev = Vec::new();
+        a.hurt(
+            0,
+            2,
+            50,
+            damage::hitloc::NONE,
+            [1.0, 0.0, 0.0],
+            1000,
+            &mut ev,
+        );
+        assert_eq!(a.fighters[2].life.health, a.fighters[2].life.max_health);
+        // Killing an enemy scores for the team.
+        a.hurt(
+            0,
+            1,
+            500,
+            damage::hitloc::NONE,
+            [1.0, 0.0, 0.0],
+            1000,
+            &mut ev,
+        );
+        assert!(!a.fighters[1].life.alive());
+        assert_eq!(
+            a.team_score[usize::from(TEAM_ALLIES)],
+            rules.team_kill_score
+        );
+        assert_eq!(a.fighters[0].score, rules.team_kill_score);
+        assert_eq!(a.leading_team(), Some(TEAM_ALLIES));
+        // Bots only perceive enemies.
+        assert!(a.contacts(&mc, 2, 1000).iter().all(|c| a.enemies(2, c.id)));
+        // Team spawns: near allies, away from enemies.
+        let s = [([0.0, 0.0, 0.0], 0.0), ([2000.0, 0.0, 0.0], 0.0)];
+        let blind = |_: usize, _: [f32; 3]| false;
+        let none = |_: usize| 0.0;
+        assert_eq!(
+            pick_spawn_team(
+                &s,
+                &[[2100.0, 0.0, 0.0]],
+                &[[-300.0, 0.0, 0.0]],
+                None,
+                blind,
+                none
+            ),
+            Some(1)
+        );
     }
 
     #[test]

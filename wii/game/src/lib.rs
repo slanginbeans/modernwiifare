@@ -436,16 +436,26 @@ fn draw_match_hud(
     now: u32,
 ) {
     let mut line = Str::default();
-    line.push_str("SCORE ");
-    line.num(a.fighters[0].score);
-    line.push_str("  LEADER ");
-    let (who, k) = a.leader();
-    line.push_str(fighter_name(who).as_str());
-    line.push(' ');
-    line.num(k);
-    if a.rules.score_limit > 0 {
+    if a.mode == arena::Mode::Tdm {
+        // Your team first, as MW2's team score bar.
+        let mine = usize::from(a.fighters[0].team);
+        let theirs = 3 - mine;
+        line.push_str("YOUR TEAM ");
+        line.num(a.team_score[mine]);
+        line.push_str("  ENEMY ");
+        line.num(a.team_score[theirs]);
+    } else {
+        line.push_str("SCORE ");
+        line.num(a.fighters[0].score);
+        line.push_str("  LEADER ");
+        let (who, k) = a.leader();
+        line.push_str(fighter_name(who).as_str());
+        line.push(' ');
+        line.num(k);
+    }
+    if a.limits.score_limit > 0 {
         line.push_str(" / ");
-        line.num(a.rules.score_limit);
+        line.num(a.limits.score_limit);
     }
     rects.clear();
     hud::text(rects, 360, 24, 2, line.as_str());
@@ -490,6 +500,7 @@ fn draw_minimap(
     arena: Option<&Arena>,
     radar: &game_core::minimap::Radar,
     cam: &Camera,
+    blasts: &[(Option<[f32; 3]>, u32)],
     now: u32,
 ) {
     use game_core::minimap::{FIRING_PING_MS, Frame, RADAR_PING_MS, ping_alpha};
@@ -514,6 +525,9 @@ fn draw_minimap(
     let enemy = u.pack.icon("compassping_enemy");
     let firing = u.pack.icon("compassping_enemyfiring").or(enemy);
     let me = u.pack.icon("compassping_player");
+    let friendly = u.pack.icon("compassping_friendly_mp");
+    let grenade = u.pack.icon("compassping_grenade");
+    let explosion = u.pack.icon("compassping_explosion");
     u.page(|ui, q| {
         // MW2's own images over the map (the scan lines, the frame).
         if let Some(s) = ui.screen("minimap") {
@@ -523,6 +537,18 @@ fn draw_minimap(
         if let Some(a) = arena {
             for (i, fi) in a.fighters.iter().enumerate().skip(1) {
                 if !fi.life.alive() {
+                    continue;
+                }
+                // Teammates always show (MW2's friendly arrows).
+                if !a.enemies(0, i) {
+                    if let Some(t) = friendly {
+                        q.push(Frame::icon(
+                            f.to_screen(fi.player.ps.origin),
+                            Frame::ENEMY_SIZE,
+                            t,
+                            0xffff_ffff,
+                        ));
+                    }
                     continue;
                 }
                 let radar_hit = radar.contacts.get(i).copied().flatten().and_then(|(p, t)| {
@@ -544,6 +570,26 @@ fn draw_minimap(
                 }
             }
         }
+        // Grenades in the air or on the ground, and recent explosions (MW2's compass pings).
+        if let Some(a) = arena {
+            for g in &a.grenades {
+                if let Some(t) = grenade {
+                    q.push(Frame::icon(
+                        f.to_screen(g.origin),
+                        Frame::ENEMY_SIZE,
+                        t,
+                        0xffff_ffff,
+                    ));
+                }
+            }
+        }
+        for &(o, t0) in blasts {
+            if let (Some(o), Some(t)) = (o, explosion)
+                && let Some(al) = ping_alpha(now.wrapping_sub(t0), FIRING_PING_MS)
+            {
+                q.push(Frame::icon(f.to_screen(o), Frame::ENEMY_SIZE, t, alpha(al)));
+            }
+        }
         if let Some(t) = me {
             q.push(f.player_icon(t));
         }
@@ -552,11 +598,19 @@ fn draw_minimap(
 
 /// End of match: everyone's score, best first (fewer deaths break ties), until A (or B).
 fn scoreboard(gfx: &mut Shim, input: &mut front::Input, a: &Arena) {
-    let order = a.standings();
-    let title = if order.first() == Some(&0) {
-        "YOU WIN"
-    } else {
-        "MATCH OVER"
+    let mut order = a.standings();
+    let title = match a.mode {
+        arena::Mode::Ffa if order.first() == Some(&0) => "YOU WIN",
+        arena::Mode::Ffa => "MATCH OVER",
+        arena::Mode::Tdm => {
+            // Your team first.
+            order.sort_by_key(|&i| a.fighters[i].team != a.fighters[0].team);
+            match a.leading_team() {
+                Some(t) if t == a.fighters[0].team => "VICTORY",
+                Some(_) => "DEFEAT",
+                None => "DRAW",
+            }
+        }
     };
     // Free-for-all has no assists without teams.
     let rows: Vec<front::ScoreRow> = order
@@ -609,6 +663,7 @@ fn run_map(
     scratch: &mut WalkScratch,
     common: &'static [u8],
     loadouts: Loadouts<'_>,
+    setup: (arena::Mode, arena::Limits),
     input: &mut front::Input,
 ) -> Exit {
     let weapons = weapon_section(common);
@@ -773,12 +828,16 @@ fn run_map(
         }
     };
     let mut perk_set = equip(&mut arsenal, gfx, class);
-    // Free-for-all against bots (MW2's FFA spawns when the map has them).
+    // The mode's spawns (free-for-all or team deathmatch spawns when the map has them).
+    let spawn_kind = match setup.0 {
+        arena::Mode::Ffa => wpk::records::spawn_kind::DM,
+        arena::Mode::Tdm => wpk::records::spawn_kind::TDM,
+    };
     let spawn_list: Vec<([f32; 3], f32)> = {
         let dm: Vec<_> = world
             .spawns
             .iter()
-            .filter(|s| s.kind == wpk::records::spawn_kind::DM)
+            .filter(|s| s.kind == spawn_kind)
             .map(|s| (s.origin, s.yaw))
             .collect();
         if dm.is_empty() {
@@ -854,7 +913,10 @@ fn run_map(
     let mut next_impact = 0usize;
     let mut hud_rects: Vec<Rect> = Vec::with_capacity(512);
     let mut life = Life::with_rules(&rules);
-    let clock = MatchClock::with_limit(ffi::ms(), rules.time_limit_ms);
+    let clock = MatchClock::with_limit(ffi::ms(), setup.1.time_limit_ms);
+    if let Some(a) = arena.as_mut() {
+        a.set_mode(setup.0, setup.1);
+    }
     // Below the lowest spawn point by this much is out of the world.
     let floor_z = world
         .spawns
@@ -929,10 +991,14 @@ fn run_map(
             devlog::event(now, "pause", format_args!(""));
             stick_event(&stick_max, &trigger_max, now);
             devlog::flush(now);
-            let mode = if rules.score_limit > 0 {
-                alloc::format!("FREE-FOR-ALL: FIRST TO {} POINTS", rules.score_limit)
+            let kind = match setup.0 {
+                arena::Mode::Ffa => "FREE-FOR-ALL",
+                arena::Mode::Tdm => "TEAM DEATHMATCH",
+            };
+            let mode = if setup.1.score_limit > 0 {
+                alloc::format!("{kind}: FIRST TO {} POINTS", setup.1.score_limit)
             } else {
-                alloc::string::String::from("FREE-FOR-ALL")
+                alloc::string::String::from(kind)
             };
             match front::pause(
                 gfx,
@@ -1016,7 +1082,8 @@ fn run_map(
         {
             let eye = p.eye();
             for (i, f) in a.fighters.iter().enumerate().skip(1) {
-                if !f.life.alive() {
+                // Aim assist helps against enemies only.
+                if !f.life.alive() || !a.enemies(0, i) {
                     continue;
                 }
                 let (feet, chest) = arena::feet_and_aim(&f.player);
@@ -1395,15 +1462,23 @@ fn run_map(
                     box_colours.push(0xffc060ff);
                 }
             }
-            for f in a.fighters[1..].iter().filter(|f| f.life.alive()) {
+            for (i, f) in a
+                .fighters
+                .iter()
+                .enumerate()
+                .skip(1)
+                .filter(|(_, f)| f.life.alive())
+            {
+                let ally = !a.enemies(0, i);
                 for h in game_core::damage::boxes(f.draw_origin(now), f.player.crouched()) {
                     boxes.push([
                         h.mins[0], h.mins[1], h.mins[2], h.maxs[0], h.maxs[1], h.maxs[2],
                     ]);
-                    box_colours.push(if h.loc <= game_core::damage::hitloc::NECK {
-                        0xd8b090ff
-                    } else {
-                        0x6a7050ff
+                    box_colours.push(match (ally, h.loc <= game_core::damage::hitloc::NECK) {
+                        (true, true) => 0xb0c0d8ff,
+                        (true, false) => 0x46607cff,
+                        (false, true) => 0xd8b090ff,
+                        (false, false) => 0x6a7050ff,
                     });
                 }
             }
@@ -1464,7 +1539,7 @@ fn run_map(
                 radar.sweep(m, radar_at, now, &enemies);
             }
             radar_at = now;
-            draw_minimap(&world, arena.as_ref(), &radar, &cam, now);
+            draw_minimap(&world, arena.as_ref(), &radar, &cam, &blasts, now);
             if let Some((text, at)) = reward_note.filter(|(_, at)| now.wrapping_sub(*at) < 3000) {
                 let _ = at;
                 hud_rects.clear();
@@ -1554,6 +1629,14 @@ pub extern "C" fn mwf_game_main() -> i32 {
         .unwrap_or_default();
     let mut input = front::Input::default();
     let (mut main_sel, mut map_sel, mut class_sel, mut edit_sel) = (0usize, 0usize, 0usize, 0usize);
+    // The match setup, kept between matches; the rules from the user's scripts.
+    let rules = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::RULES))
+        .and_then(|s| wpk::rules::Rules::decode(s.data))
+        .unwrap_or_default();
+    let mut mode = arena::Mode::Ffa;
+    let mut limits = arena::Limits::of(&rules, mode);
     loop {
         match front::main_menu(&mut gfx, &mut input, &mut main_sel, catalog.is_some()) {
             front::Main::Quit => return 0,
@@ -1577,6 +1660,10 @@ pub extern "C" fn mwf_game_main() -> i32 {
                 let mut names = [0u8; 2048];
                 let maps = list_maps(&mut names);
                 while let Some(i) = front::pick_map(&mut gfx, &mut input, &maps, &mut map_sel) {
+                    // MW2's private-match setup: game type and limits.
+                    if !front::game_setup(&mut gfx, &mut input, &rules, &mut mode, &mut limits) {
+                        continue;
+                    }
                     // Custom classes first, then MW2's defaults.
                     let classes: Vec<wpk::classes::Loadout> = catalog
                         .as_ref()
@@ -1609,6 +1696,7 @@ pub extern "C" fn mwf_game_main() -> i32 {
                             class,
                             cursor: &mut class_sel,
                         },
+                        (mode, limits),
                         &mut input,
                     );
                     unsafe { ffi::mwf_snd_stop_all() };

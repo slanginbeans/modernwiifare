@@ -23,7 +23,13 @@ pub mod found {
     pub const CLASS_SPEED: u16 = 1 << 11;
     pub const LIGHTWEIGHT_SPEED: u16 = 1 << 12;
     pub const UAV_TIME: u16 = 1 << 13;
-    pub const ALL: u16 = (1 << 14) - 1;
+    pub const TDM_TIME_LIMIT: u16 = 1 << 14;
+    pub const TDM_SCORE_LIMIT: u16 = 1 << 15;
+    /// Team points (in `found_team`).
+    pub const TEAM_KILL_SCORE: u16 = 1;
+    pub const TEAM_HEADSHOT_SCORE: u16 = 1 << 1;
+    pub const ALL: u16 = u16::MAX;
+    pub const ALL_TEAM: u16 = (1 << 2) - 1;
 }
 
 /// The weapon classes of [`Rules::class_speed`], in order (`_weapons.gsc` `updateMoveSpeedScale`).
@@ -63,7 +69,14 @@ pub struct Rules {
     pub lightweight_speed: f32,
     /// How long a UAV keeps the radar up (`_uav.gsc` `level.radarViewTime`).
     pub uav_time_ms: u32,
+    /// Team deathmatch (`war.gsc`): time and score limits; points a kill and a headshot bonus in team modes
+    /// (`_rank.gsc`), which also go to the team's score.
+    pub tdm_time_limit_ms: u32,
+    pub tdm_score_limit: u32,
+    pub team_kill_score: u32,
+    pub team_headshot_score: u32,
     pub found: u16,
+    pub found_team: u16,
 }
 
 impl Default for Rules {
@@ -84,7 +97,12 @@ impl Default for Rules {
             class_speed: [0.95, 1.0, 0.875, 1.0, 0.95, 0.8, 1.0, 0.8],
             lightweight_speed: 1.07,
             uav_time_ms: 30_000,
+            tdm_time_limit_ms: 600_000,
+            tdm_score_limit: 500,
+            team_kill_score: 100,
+            team_headshot_score: 100,
             found: 0,
+            found_team: 0,
         }
     }
 }
@@ -108,12 +126,17 @@ impl Rules {
         }
         o.f32(self.lightweight_speed);
         o.u32(self.uav_time_ms);
+        o.u32(self.tdm_time_limit_ms);
+        o.u32(self.tdm_score_limit);
+        o.u32(self.team_kill_score);
+        o.u32(self.team_headshot_score);
         o.u16(self.found);
+        o.u16(self.found_team);
         o
     }
 
     pub fn decode(b: &[u8]) -> Option<Rules> {
-        if b.len() < 86 {
+        if b.len() < 104 {
             return None;
         }
         let u = |i: usize| be::u32(b, i * 4);
@@ -133,7 +156,12 @@ impl Rules {
             class_speed: core::array::from_fn(|k| f(11 + k)),
             lightweight_speed: f(19),
             uav_time_ms: u(20),
-            found: be::u16(b, 84),
+            tdm_time_limit_ms: u(21),
+            tdm_score_limit: u(22),
+            team_kill_score: u(23),
+            team_headshot_score: u(24),
+            found: be::u16(b, 100),
+            found_team: be::u16(b, 102),
         })
     }
 
@@ -146,6 +174,25 @@ impl Rules {
             self.lightweight_speed
         } else {
             1.0
+        }
+    }
+
+    /// The rules of `mode`: (time limit ms, score limit, points a kill, headshot bonus).
+    pub fn of_mode(&self, team: bool) -> (u32, u32, u32, u32) {
+        if team {
+            (
+                self.tdm_time_limit_ms,
+                self.tdm_score_limit,
+                self.team_kill_score,
+                self.team_headshot_score,
+            )
+        } else {
+            (
+                self.time_limit_ms,
+                self.score_limit,
+                self.kill_score,
+                self.headshot_score,
+            )
         }
     }
 

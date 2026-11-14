@@ -5,6 +5,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use game_core::arena::{Limits, Mode};
 use game_core::camera::Camera;
 use game_core::gfx::Gfx;
 use game_core::hud::{self, Rect};
@@ -241,6 +242,97 @@ pub fn pick_map(
     }
 }
 
+/// MW2's private-match game setup: the game type, score limit and time limit (each starts at the user's scripts'
+/// value for the mode; A cycles through the choices), then START. False on B.
+pub fn game_setup(
+    gfx: &mut Shim,
+    input: &mut Input,
+    rules: &wpk::rules::Rules,
+    mode: &mut Mode,
+    limits: &mut Limits,
+) -> bool {
+    let mut sel = 3usize;
+    loop {
+        let score = if limits.score_limit == 0 {
+            String::from("UNLIMITED")
+        } else {
+            alloc::format!("{}", limits.score_limit)
+        };
+        let time = if limits.time_limit_ms == 0 {
+            String::from("UNLIMITED")
+        } else {
+            alloc::format!("{} MIN", limits.time_limit_ms / 60_000)
+        };
+        let value = |text: &str, v: String| Line {
+            text: String::from(text),
+            value: Some(v),
+            enabled: true,
+        };
+        let lines = [
+            value(
+                "GAME TYPE",
+                String::from(match mode {
+                    Mode::Ffa => "FREE-FOR-ALL",
+                    Mode::Tdm => "TEAM DEATHMATCH",
+                }),
+            ),
+            value("SCORE LIMIT", score),
+            value("TIME LIMIT", time),
+            Line::new("START MATCH"),
+        ];
+        match list(
+            gfx,
+            input,
+            "GAME SETUP",
+            &lines,
+            &mut sel,
+            "A CHANGE / START   B BACK",
+        ) {
+            Step::Accept(0) => {
+                *mode = match mode {
+                    Mode::Ffa => Mode::Tdm,
+                    Mode::Tdm => Mode::Ffa,
+                };
+                *limits = Limits::of(rules, *mode);
+            }
+            Step::Accept(1) => {
+                // The scripts' limit, then whole numbers of kills, then none.
+                let default = Limits::of(rules, *mode).score_limit;
+                let mut options: Vec<u32> = alloc::vec![default];
+                for kills in [10, 20, 30, 50, 75, 100, 150] {
+                    let v = kills * limits.kill_score.max(1);
+                    if !options.contains(&v) {
+                        options.push(v);
+                    }
+                }
+                options.push(0);
+                let at = options
+                    .iter()
+                    .position(|&v| v == limits.score_limit)
+                    .unwrap_or(0);
+                limits.score_limit = options[(at + 1) % options.len()];
+            }
+            Step::Accept(2) => {
+                let default = Limits::of(rules, *mode).time_limit_ms;
+                let mut options: Vec<u32> = alloc::vec![default];
+                for min in [5, 10, 15, 20, 30] {
+                    let v = min * 60_000;
+                    if !options.contains(&v) {
+                        options.push(v);
+                    }
+                }
+                options.push(0);
+                let at = options
+                    .iter()
+                    .position(|&v| v == limits.time_limit_ms)
+                    .unwrap_or(0);
+                limits.time_limit_ms = options[(at + 1) % options.len()];
+            }
+            Step::Accept(_) => return true,
+            _ => return false,
+        }
+    }
+}
 /// Pick one of `classes` (custom first, then MW2's defaults) on MW2's class screen, the focused class shown in its
 /// panel; None = back.
 pub fn pick_class(

@@ -46,6 +46,11 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
    sight, the nearest enemy, the last spawn used): done. Still to do: the playlist's overrides (the stock script
    limit is 1000 points).
 9. Crouch as MW2's console toggle; prone.
+13. **Team deathmatch**: done (teams, team score, friendly fire off, team spawns, Game Setup with the scripts'
+    limits). The stock script limits are low (500 points, 5 kills); MW2's retail playlists aren't readable from
+    the install (`mp_playlists_dlc2`'s playlist is empty), so Game Setup offers longer limits. Not yet: the other
+    modes (Domination, Search and Destroy, Headquarters, Sabotage, Demolition, Capture the Flag), team start spawns
+    for the first spawn, team killstreaks shared by the team (the UAV is yours alone).
 12. **Grenades**: frag-type lethals done (`game_core::grenade`, IW4L's throw / bounce / fuse / blast; bots throw
     them). Not yet: throwing knife, claymore, C4, tactical insertion, blast shield; flash / stun (IW4L
     `apply_flashbang_blast` and the shock) and smoke; the grenade and explosion models, effects and sounds; the
