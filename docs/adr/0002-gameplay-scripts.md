@@ -1,6 +1,9 @@
 # ADR 0002: Run the user's own GSC through IW4L's script runtime
 
-Status: **accepted, pending the memory measurement in Phase 0 Spike F** (2026-11-13)
+Status: **superseded by [ADR 0007](0007-native-gameplay.md)** (2026-11-14). Gameplay was built natively on IW4L's
+crates instead, with script values read as data at convert time. Kept for the record.
+
+Original status: accepted, pending the memory measurement in Phase 0 Spike F (2026-11-13)
 
 ## Decision
 IW4L already compiles the user's own MP GSC rawfiles (from `common_mp` and the map zones) into an IR and runs them inside

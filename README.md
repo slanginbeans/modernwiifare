@@ -26,4 +26,5 @@ sizes and asset counts and saves `out\inventory.json`. That file contains only n
 No game files are needed for the Wii builds. Later, the converter will read your own MW2/IW4x install on your PC,
 and its output stays on your PC and SD card.
 
-Status: Phase 0 (foundations). See the roadmap.
+Status: a single-Wii game (FFA, TDM, Domination against bots) built and tested on the PC and in CI, awaiting its
+first run on a Wii. See the roadmap and `docs/testing.md`.

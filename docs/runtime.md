@@ -197,7 +197,7 @@ The minimap (top left, MW2's `minimap_fullscreen` layout) turns with your view; 
 Killstreaks: kills in a row since your last death earn your class's streaks at their killstreakTable cost; the UAV
 (D-pad left) runs MW2's radar sweep for its script time (every enemy marked as the sweep passes). Bots call in a UAV
 at its cost too. The other streaks are earned but not in this build yet.
-Placeholder until MW2's game-type scripts run (GSC, ADR 0002): the 3 s respawn (MW2: death cam / killcam flow).
+Placeholder until the death cam / killcam flow is ported (ADR 0007): the 3 s respawn.
 
 ## Movement status
 - `pmove` is IW4L's, unchanged; the context uses MW2's MP dvar defaults (190 speed, 800 gravity, jump 39, sprint ×1.5).
