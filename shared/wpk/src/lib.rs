@@ -63,6 +63,8 @@ pub mod tag {
     pub const SKYBOX: Tag = *b"SKYB";
     /// The HUD minimap ([`crate::records::Minimap`]).
     pub const MINIMAP: Tag = *b"MINI";
+    /// The map's distance fog ([`crate::records::Fog`]).
+    pub const FOG: Tag = *b"FOGD";
     /// Player spawn points ([`crate::records::SpawnRecord`]).
     pub const SPAWNS: Tag = *b"SPWN";
     /// Game-mode objectives (`records::ObjectiveRecord`: Domination flags).

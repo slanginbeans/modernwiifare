@@ -70,8 +70,8 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
     explosives or last stand yet), One Man Army, deathstreaks.
 
 ## Next, performance (ranked by expected milliseconds; measure with the logs first)
-1. **World vertex load** (~12-25 ms on big maps): `LOD_SCALE`, fog / far plane per map, vertex welding, more compact
-   batches.
+1. **World vertex load** (~12-25 ms on big maps): draw distance with fog and model LOD scale are in (debug menu;
+   per-map defaults still to set from hardware logs); vertex welding and more compact batches still to do.
 2. ~~**Run the CPU while the GPU draws**~~ done (draw-sync tokens, three XFBs, skinned positions double-buffered; frame = max(CPU, GPU), capped at one per retrace; not yet measured on hardware). Was: today `GX_DrawDone` then vsync serialise them, so frame = CPU + GPU and any
    frame over 16.7 ms becomes 33.3 ms. Pipeline with draw-sync tokens and three frame buffers (needs double buffers
    for the viewmodel's skinned positions, and the weapon-file swap after the GPU is done).

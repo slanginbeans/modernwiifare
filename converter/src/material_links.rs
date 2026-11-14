@@ -359,6 +359,9 @@ pub struct Links {
     pub minimap_materials: std::collections::HashSet<String>,
     /// The map script's `compassmaxrange` (world units the HUD minimap's height covers), when it sets one.
     pub compass_max_range: Option<f32>,
+    /// The map's fog: the first `setExpFog` with literal values in the zone's scripts (the art script,
+    /// `maps/createart/<map>_art.gsc`).
+    pub fog: Option<wpk::records::Fog>,
     /// Image index assigned to each loaded image, in load order (filled by the caller through `image_loaded`).
     image_count: usize,
     pub unresolved_texture_links: usize,
@@ -688,6 +691,9 @@ impl Links {
         self.minimap_materials.extend(minimap_calls(&text));
         if let Some(r) = compass_max_range(&text) {
             self.compass_max_range = Some(r);
+        }
+        if self.fog.is_none() {
+            self.fog = exp_fog(&text);
         }
     }
 
@@ -1159,6 +1165,46 @@ pub fn compass_max_range(source: &str) -> Option<f32> {
     num.parse().ok().filter(|v: &f32| *v > 0.0)
 }
 
+/// GSC source without its `//` and `/* */` comments (string literals are not special-cased: GSC paths use
+/// backslashes, not slashes, so a `//` inside a string does not occur in practice).
+fn strip_comments(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut rest = source;
+    while !rest.is_empty() {
+        if let Some(r) = rest.strip_prefix("//") {
+            rest = r.find('\n').map_or("", |i| &r[i..]);
+        } else if let Some(r) = rest.strip_prefix("/*") {
+            rest = r.find("*/").map_or("", |i| &r[i + 2..]);
+        } else {
+            let c = rest.chars().next().unwrap_or(' ');
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    out
+}
+
+/// The first `setExpFog(start, halfway, r, g, b, max_opacity, transition)` whose first six arguments are number
+/// literals (MW2's art scripts set the map's fog this way; calls with variables are skipped).
+pub fn exp_fog(source: &str) -> Option<wpk::records::Fog> {
+    let lower = strip_comments(source).to_ascii_lowercase();
+    lower.match_indices("setexpfog(").find_map(|(i, call)| {
+        let args = &lower[i + call.len()..];
+        let args = &args[..args.find(')')?];
+        let v: Vec<f32> = args
+            .split(',')
+            .take(6)
+            .map(|a| a.trim().parse::<f32>().ok().filter(|v| v.is_finite()))
+            .collect::<Option<_>>()?;
+        (v.len() == 6 && v[1] > v[0]).then(|| wpk::records::Fog {
+            start: v[0],
+            halfway: v[1],
+            rgb: [v[2], v[3], v[4]],
+            max_opacity: v[5],
+        })
+    })
+}
+
 /// Material names passed as a string literal to `setupMiniMap(` in GSC source (lower case).
 pub fn minimap_calls(source: &str) -> Vec<String> {
     let lower = source.to_ascii_lowercase();
@@ -1429,6 +1475,20 @@ mod tests {
         assert_eq!(links.models[0].weapons, BTreeSet::from([3, 5]));
         // Such a model is a weapon model, but not a viewmodel unless a weapon names it as gun or hand model.
         assert!(!links.models[0].viewmodel);
+    }
+
+    #[test]
+    fn exp_fog_from_an_art_script() {
+        // Made-up values in the art scripts' shape: a commented-out call, a call with variables, then the real one.
+        let gsc = "main() {\n// setExpFog( 1, 2, 0, 0, 0, 1, 0 );\n/* setExpFog(3, 4, 0, 0, 0, 1, 0); */\n\
+                   setExpFog(a, b, 0, 0, 0, 1, 0);\n\tsetExpFog( 100.5, 2000, 0.25, 0.5, .75, 0.6, 0 );\n}";
+        let f = exp_fog(gsc).unwrap();
+        assert_eq!(f.start, 100.5);
+        assert_eq!(f.halfway, 2000.0);
+        assert_eq!(f.rgb, [0.25, 0.5, 0.75]);
+        assert_eq!(f.max_opacity, 0.6);
+        assert_eq!(exp_fog("setexpfog(5, 1, 0, 0, 0, 1, 0);"), None);
+        assert_eq!(exp_fog("x = 1;"), None);
     }
 
     #[test]

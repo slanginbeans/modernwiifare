@@ -8,7 +8,18 @@ use alloc::vec::Vec;
 use crate::bot::Skill;
 
 /// File format version (first byte of `debug.dat`).
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
+
+/// Draw distances (world units, inches) the debug menu steps through; 0 is the full far plane.
+pub const DRAW_DISTANCES: [u16; 5] = [0, 6000, 4000, 3000, 2000];
+
+/// Model detail: the static-model LOD distance scale of each step (1 is the PC game's LOD distances).
+pub const MODEL_DETAIL: [(f32, &str); 4] = [
+    (1.0, "NORMAL"),
+    (1.5, "LOW"),
+    (2.0, "LOWER"),
+    (3.0, "LOWEST"),
+];
 
 /// The most bots a match can have from the debug menu (the arena's fighter slots, the Wii's CPU permitting).
 pub const MAX_BOTS: u8 = 7;
@@ -42,6 +53,12 @@ pub struct DebugSettings {
     pub perf_overlay: bool,
     pub world_models: bool,
     pub sound: bool,
+    /// Index into [`DRAW_DISTANCES`].
+    pub draw_distance: u8,
+    /// Index into [`MODEL_DETAIL`].
+    pub model_detail: u8,
+    /// The map's own fog (MW2's `setExpFog`); a shortened draw distance fogs regardless.
+    pub map_fog: bool,
 }
 
 impl Default for DebugSettings {
@@ -63,6 +80,9 @@ impl Default for DebugSettings {
             perf_overlay: false,
             world_models: true,
             sound: true,
+            draw_distance: 0,
+            model_detail: 0,
+            map_fog: true,
         }
     }
 }
@@ -85,12 +105,15 @@ pub enum Item {
     Characters,
     PerfOverlay,
     WorldModels,
+    DrawDistance,
+    ModelDetail,
+    MapFog,
     Sound,
     ResetDefaults,
 }
 
 /// The debug page's lines (the bot count and difficulty are in Game Setup).
-pub const ITEMS: [Item; 15] = [
+pub const ITEMS: [Item; 18] = [
     Item::BotsPassive,
     Item::BotsFrozen,
     Item::GodMode,
@@ -104,6 +127,9 @@ pub const ITEMS: [Item; 15] = [
     Item::Characters,
     Item::PerfOverlay,
     Item::WorldModels,
+    Item::DrawDistance,
+    Item::ModelDetail,
+    Item::MapFog,
     Item::Sound,
     Item::ResetDefaults,
 ];
@@ -126,6 +152,9 @@ impl Item {
             Item::Characters => "CHARACTER MODELS",
             Item::PerfOverlay => "PERF OVERLAY",
             Item::WorldModels => "WORLD MODELS",
+            Item::DrawDistance => "DRAW DISTANCE",
+            Item::ModelDetail => "MODEL DETAIL",
+            Item::MapFog => "MAP FOG",
             Item::Sound => "SOUND",
             Item::ResetDefaults => "RESET TO DEFAULTS",
         }
@@ -168,6 +197,12 @@ impl DebugSettings {
             Item::Characters => on_off(self.characters),
             Item::PerfOverlay => on_off(self.perf_overlay),
             Item::WorldModels => on_off(self.world_models),
+            Item::DrawDistance => match self.draw_distance_units() {
+                0 => String::from("FULL"),
+                d => alloc::format!("{d}"),
+            },
+            Item::ModelDetail => String::from(MODEL_DETAIL[self.detail_index()].1),
+            Item::MapFog => on_off(self.map_fog),
             Item::Sound => on_off(self.sound),
             Item::ResetDefaults => return None,
         })
@@ -202,9 +237,30 @@ impl DebugSettings {
             Item::Characters => flip(&mut self.characters),
             Item::PerfOverlay => flip(&mut self.perf_overlay),
             Item::WorldModels => flip(&mut self.world_models),
+            Item::DrawDistance => {
+                self.draw_distance = (self.draw_distance + 1) % DRAW_DISTANCES.len() as u8
+            }
+            Item::ModelDetail => {
+                self.model_detail = (self.model_detail + 1) % MODEL_DETAIL.len() as u8
+            }
+            Item::MapFog => flip(&mut self.map_fog),
             Item::Sound => flip(&mut self.sound),
             Item::ResetDefaults => *self = DebugSettings::default(),
         }
+    }
+
+    /// The draw distance in world units (0: the full far plane).
+    pub fn draw_distance_units(&self) -> u16 {
+        DRAW_DISTANCES[usize::from(self.draw_distance) % DRAW_DISTANCES.len()]
+    }
+
+    fn detail_index(&self) -> usize {
+        usize::from(self.model_detail) % MODEL_DETAIL.len()
+    }
+
+    /// The static-model LOD distance scale.
+    pub fn lod_scale(&self) -> f32 {
+        MODEL_DETAIL[self.detail_index()].0
     }
 
     /// The bots' skill (debug presets around MW2's regular bot: easy reacts slower and aims worse, hard the reverse).
@@ -237,6 +293,7 @@ impl DebugSettings {
             self.perf_overlay,
             self.world_models,
             self.sound,
+            self.map_fog,
         ];
         let bits = flags
             .iter()
@@ -245,14 +302,19 @@ impl DebugSettings {
         let mut o = alloc::vec![VERSION, self.bots, self.bot_skill];
         o.extend_from_slice(&u16::from(self.primary).to_be_bytes());
         o.extend_from_slice(&bits.to_be_bytes());
+        o.extend_from_slice(&[self.draw_distance, self.model_detail]);
         o
     }
 
-    /// Settings from `debug.dat` (None when unreadable or another version: the defaults then).
+    /// Settings from `debug.dat` (None when unreadable or an unknown version: the defaults then). Version 1 files
+    /// (before the draw-distance settings) read with those at their defaults.
     pub fn decode(b: &[u8]) -> Option<DebugSettings> {
-        if b.len() < 9 || b[0] != VERSION {
-            return None;
-        }
+        let v2 = match b.first() {
+            Some(1) if b.len() >= 9 => false,
+            Some(2) if b.len() >= 11 => true,
+            _ => return None,
+        };
+        let defaults = DebugSettings::default();
         let bits = u32::from_be_bytes([b[5], b[6], b[7], b[8]]);
         let f = |i: u32| bits & (1 << i) != 0;
         Some(DebugSettings {
@@ -272,6 +334,17 @@ impl DebugSettings {
             perf_overlay: f(10),
             world_models: f(11),
             sound: f(12),
+            map_fog: if v2 { f(13) } else { defaults.map_fog },
+            draw_distance: if v2 {
+                b[9] % DRAW_DISTANCES.len() as u8
+            } else {
+                defaults.draw_distance
+            },
+            model_detail: if v2 {
+                b[10] % MODEL_DETAIL.len() as u8
+            } else {
+                defaults.model_detail
+            },
         })
     }
 }
@@ -355,6 +428,19 @@ mod tests {
             .collect();
         assert_eq!(seq, [0, 1, 2, wpk::classes::NONE]);
         assert!(DebugSettings::decode(&[9, 0, 0]).is_none());
+        // A version 1 file keeps the new settings at their defaults.
+        let v1 = [1, 2, 0, 0, 255, 0, 0, 0, 1];
+        let old = DebugSettings::decode(&v1).unwrap();
+        assert!(
+            old.bots_passive && old.map_fog && old.draw_distance == 0 && old.lod_scale() == 1.0
+        );
+        // Draw distance steps full -> 6000 -> ... and wraps.
+        let mut d = DebugSettings::default();
+        assert_eq!(d.draw_distance_units(), 0);
+        d.cycle(Item::DrawDistance, 0);
+        assert_eq!(d.draw_distance_units(), DRAW_DISTANCES[1]);
+        d.cycle(Item::ModelDetail, 0);
+        assert!(d.lod_scale() > 1.0);
         assert!(s.skill().reaction_ms > 0);
     }
 }

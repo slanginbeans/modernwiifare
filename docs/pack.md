@@ -23,6 +23,7 @@ Version 3 (2026-11-13): fixed-point vertices. Version 2: LOD tables in `ModelRec
 | `WDLS` | – | GX display lists: `0x90` (triangles, VTXFMT0), u16 count, per vertex u16 indices for POS/CLR0/TEX0/TEX1 (all the same, relative to the batch's vertex base), NOP-padded to 32 |
 | `SKYB` | `Skybox` (16 B) | six sky face textures, D3D cube order |
 | `MINI` | `Minimap` (28 B) | the HUD minimap: its texture, northwest / southeast corners (MW2's `setupMiniMap` frame from the `minimap_corner` entities), north yaw, `compassmaxrange` |
+| `FOGD` | `Fog` (24 B) | the map's distance fog: start, halfway distance, colour (RGB 0..1), max opacity, from the first `setExpFog` with literal values in the zone's scripts (the art script). Optional |
 | `SPWN` | `SpawnRecord` (24 B) | origin, yaw, kind (TDM / DM), team, initial flag |
 | `OBJS` | `ObjectiveRecord` (24 B) | game-mode objectives: kind (Domination flag), label (A, B, C ... from `script_label`), the trigger's origin, radius and height |
 | `CHAR` | `view::encode_characters` | the player characters, allies then axis: each team's body (its first assault body) with its first head attached (shared bones by name), skinned surfaces of LOD 3 (or the nearest more detailed), textures in this pack, and the bone names |

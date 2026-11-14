@@ -63,8 +63,17 @@ Not sacrificed: collision (never simplified), movement and weapon timings, 640×
 | Pipelined frames (`shim_gx.c`: the frame end waits for the previous frame's draw-sync token, shows it at the next retrace, queues this one's copy and token; three XFBs; at most one frame per retrace; first-person and character positions double-buffered; MEM2 / texture release waits for the GPU) | frame time max(CPU, GPU) instead of CPU + GPU, one frame of extra display latency. Expected on `mp_rust` from the last log (CPU 13-20 ms, GPU ~21 ms): ~21 ms frames, a steady 30 fps instead of 20-30. **Not yet measured on hardware.** |
 
 Where that leaves us: `mp_terminal` spends ~244k world + ~91k model triangles per view, still ~3× the 60 fps
-budget. Memory is solved for every map. Next: world draw distance (fog) and `LOD_SCALE` (in `game_core::world`) as
-the per-map 60 fps levers, set from hardware numbers.
+budget. Memory is solved for every map.
+
+**Draw distance and model detail** (`World::draw_distance`, `World::lod_scale`; debug menu DRAW DISTANCE
+full / 6000 / 4000 / 3000 / 2000 units, MODEL DETAIL normal / low / lower / lowest = LOD distance ×1 / 1.5 / 2 / 3,
+MAP FOG on / off). A shorter draw distance moves the far plane in: world batches past it are culled by their bounds,
+model instances by their spheres, and GX linear fog ends at the far plane, so geometry fades out instead of popping.
+The fog is the map's own where the pack has it (`FOGD`: MW2's `setExpFog` from `maps/createart/<map>_art.gsc`, as a
+line through the same start and the same density at the halfway distance; GX fog has no opacity cap, so it keeps
+thickening past halfway); otherwise it fades to the clear colour from 60% of the distance. The sky is still drawn,
+unfogged. These are the per-map 60 fps levers; the values to ship come from hardware logs (triangles and GPU wait
+at each step).
 
 IW4 geometry is cut by UV seams and small surfaces, so strips average ~1.7 vertices per triangle, not ~1.1. Better
 vertex welding on the converter side (merge vertices identical in every attribute) is a later step.

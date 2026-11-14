@@ -127,7 +127,9 @@ releases its MEM2 (bump allocator mark/release) and its textures.
 Per frame: one `pmove` with the frame's milliseconds, then the skybox (Z off), visible opaque and alpha-tested
 world batches grouped by material and lightmap, then static model instances (each within its draw distance and in
 view: view × placement loaded into the position matrix, its surfaces' display lists, its light-grid colour as a TEV
-konst ×2), then blended world and model surfaces back to front. The pack is loaded once into MEM2 and
+konst ×2), then blended world and model surfaces back to front. The far plane is the debug menu's draw
+distance (full by default); world draws and characters are fogged (the map's `FOGD` fog, and always when the draw
+distance is short, ending at the far plane), the sky, first-person model, HUD and menus are not. The pack is loaded once into MEM2 and
 used in place; collision is decoded once into the MEM1 heap (about 2.6 MiB for `mp_rust`), where traces are fastest.
 
 ## Gun

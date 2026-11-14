@@ -64,6 +64,10 @@ impl Gfx for Shim {
     fn frame_begin(&mut self, view: &Mtx34, fovy: f32, znear: f32, zfar: f32, clear: u32) {
         unsafe { ffi::mwf_frame_begin(view, fovy, znear, zfar, clear) }
     }
+    fn fog(&mut self, fog: Option<(f32, f32, u32)>) {
+        let (s, e, c) = fog.unwrap_or((0.0, 1.0, 0));
+        unsafe { ffi::mwf_fog(i32::from(fog.is_some()), s, e, c) }
+    }
     fn world_arrays(&mut self, v: *const u8, stride: u8) {
         unsafe { ffi::mwf_world_arrays(v, u32::from(stride)) }
     }
@@ -1148,6 +1152,9 @@ fn run_map(
             a.bots_frozen = debug.bots_frozen;
         }
         world.draw_models = debug.world_models;
+        world.draw_distance = f32::from(debug.draw_distance_units());
+        world.lod_scale = debug.lod_scale();
+        world.map_fog = debug.map_fog;
         sound::MUTED.store(!debug.sound, core::sync::atomic::Ordering::Relaxed);
         if debug.infinite_ammo
             && let Some(g) = arsenal.guns[arsenal.active].as_mut()

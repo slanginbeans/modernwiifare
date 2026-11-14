@@ -22,7 +22,8 @@ use std::path::{Path, PathBuf};
 /// 21: map objectives (`OBJS`: Domination flags). 22: EMP and nuke rules.
 /// 23: perk damage (`_perks.gsc`). 24: player characters (`CHAR`) and player animations (`PANM`, `PANB`).
 /// 25: HUD icons (hitmarker, weapons' and killstreaks' icons in `UIPK`).
-pub const REVISION: u32 = 25;
+/// 26: map fog (`FOGD`, the art script's `setExpFog`).
+pub const REVISION: u32 = 26;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

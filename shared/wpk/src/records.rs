@@ -376,7 +376,43 @@ impl Record for Skybox {
     }
 }
 
-/// The HUD minimap (`MINI`): its texture, the map's northwest and southeast corners in world units (MW2's
+/// The map's distance fog (FOGD), MW2's setExpFog from the map's art script (maps/createart/<map>_art.gsc):
+/// fog starts at start world units from the eye, is half of max_opacity at halfway, and tints towards gb
+/// (0..1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fog {
+    pub start: f32,
+    pub halfway: f32,
+    pub rgb: [f32; 3],
+    pub max_opacity: f32,
+}
+
+impl Record for Fog {
+    const LEN: usize = 24;
+    fn write(&self, o: &mut Vec<u8>) {
+        for v in [
+            self.start,
+            self.halfway,
+            self.rgb[0],
+            self.rgb[1],
+            self.rgb[2],
+            self.max_opacity,
+        ] {
+            o.f32(v);
+        }
+    }
+    fn read(b: &[u8]) -> Self {
+        let f = |i: usize| be::f32(b, 4 * i);
+        Fog {
+            start: f(0),
+            halfway: f(1),
+            rgb: [f(2), f(3), f(4)],
+            max_opacity: f(5),
+        }
+    }
+}
+
+/// The HUD minimap (MINI): its texture, the map's northwest and southeast corners in world units (MW2's
 /// `setupMiniMap` frame from the two `minimap_corner` entities, `hud_iw4::compass::setup_mini_map_frame`), the map's
 /// north yaw, and how many world units the minimap's height covers (the map script's `compassmaxrange`).
 #[derive(Clone, Copy, Debug, PartialEq)]

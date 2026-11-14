@@ -1109,6 +1109,9 @@ pub fn build(
     if let Some(m) = minimap {
         b.section(wpk::tag::MINIMAP, 1, records::encode(&[m]));
     }
+    if let Some(f) = links.fog {
+        b.section(wpk::tag::FOG, 1, records::encode(&[f]));
+    }
     b.section(
         wpk::tag::SPAWNS,
         spawns.len() as u32,

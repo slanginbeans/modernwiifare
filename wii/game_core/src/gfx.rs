@@ -34,6 +34,9 @@ pub trait Gfx {
     /// Create a texture; returns a handle, or -1.
     fn tex_create(&mut self, desc: &TexDesc) -> i32;
     fn frame_begin(&mut self, view: &Mtx34, fovy_deg: f32, znear: f32, zfar: f32, clear_rgba: u32);
+    /// Linear distance fog on world draws from `start` to `end` (eye distance, world units) towards `rgba`
+    /// (0xRRGGBB__); `None` turns it off. Kept until changed.
+    fn fog(&mut self, _fog: Option<(f32, f32, u32)>) {}
     /// Point the world vertex arrays at `vertices` (interleaved: 28-byte float or 18-byte compact vertices).
     fn world_arrays(&mut self, vertices: *const u8, stride: u8);
     fn world_state(&mut self, state: &DrawState);

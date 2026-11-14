@@ -54,9 +54,11 @@ pub struct FrameStats {
     pub in_cell: bool,
 }
 
-/// Multiplies the distance used to pick a static model's LOD. 1.0 is the PC game; larger switches to lower detail
-/// sooner and drops distant models sooner (a 60 fps lever, see `docs/perf.md`).
+/// The default of [`World::lod_scale`]: 1.0 is the PC game.
 pub const LOD_SCALE: f32 = 1.0;
+
+/// Where fog starts, as a share of a shortened draw distance, when the map has no fog of its own.
+const FOG_START_SHARE: f32 = 0.6;
 
 /// The most cells a map may have for the portal walk (`dpvs_iw4::WalkScratch` tracks 512 path cells).
 pub const MAX_CELLS: usize = 512;
@@ -189,6 +191,15 @@ pub struct World<'a> {
     model_draws: Vec<(u16, u32)>,
     /// Draw the static models (the debug menu can turn them off to measure them).
     pub draw_models: bool,
+    /// The far plane in world units; 0 is the full [`ZFAR`]. Shorter culls everything past it (world batches by
+    /// their bounds, models by their spheres) and fades the last stretch into fog so nothing pops (a 60 fps lever).
+    pub draw_distance: f32,
+    /// Multiplies the distance used to pick a static model's LOD. 1.0 is the PC game; larger switches to lower
+    /// detail sooner and drops distant models sooner (a 60 fps lever, see `docs/perf.md`).
+    pub lod_scale: f32,
+    /// Draw the map's own fog (MW2's `setExpFog`, when the pack has one).
+    pub map_fog: bool,
+    fog: Option<records::Fog>,
 }
 
 const MODEL_DRAW: u32 = 1 << 31;
@@ -402,6 +413,12 @@ impl<'a> World<'a> {
             surface_quant,
             model_draws: Vec::with_capacity(model_surfaces.len()),
             draw_models: true,
+            draw_distance: 0.0,
+            lod_scale: LOD_SCALE,
+            map_fog: true,
+            fog: pack
+                .section(tag::FOG)
+                .and_then(|s| records::get::<records::Fog>(s.data, 0)),
             model_surfaces,
             instance_bounds: instances
                 .iter()
@@ -420,6 +437,45 @@ impl<'a> World<'a> {
             batch_cells,
             instance_cells,
         })
+    }
+
+    /// The far plane this frame (the draw distance, or the full [`ZFAR`]).
+    pub fn far(&self) -> f32 {
+        if self.draw_distance > 0.0 {
+            self.draw_distance.clamp(ZNEAR * 2.0, ZFAR)
+        } else {
+            ZFAR
+        }
+    }
+
+    /// The linear fog ramp to draw with: `(start, end, rgba)` in eye distance, or `None`.
+    ///
+    /// MW2's exponential fog (`setExpFog(start, halfway, r, g, b, max_opacity, ..)`) as a line through the same start
+    /// and the same density at `halfway` (half of `max_opacity`); GX fog has no opacity cap, so past that it keeps
+    /// thickening, which only shows beyond the halfway point. A shortened draw distance always fogs, and its fog
+    /// ends at the far plane so geometry fades out before it is cut.
+    pub fn fog_ramp(&self) -> Option<(f32, f32, u32)> {
+        let far = self.far();
+        let short = far < ZFAR;
+        let map = self.fog.filter(|_| self.map_fog).map(|f| {
+            let span = (f.halfway - f.start).max(1.0);
+            let end = f.start + span / (0.5 * f.max_opacity.clamp(0.05, 1.0));
+            let c = f.rgb.map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u32);
+            (
+                f.start.max(0.0),
+                end,
+                (c[0] << 24) | (c[1] << 16) | (c[2] << 8) | 0xff,
+            )
+        });
+        match (map, short) {
+            (Some((s, e, c)), true) => {
+                let e = e.min(far);
+                Some((s.min(e * FOG_START_SHARE), e, c))
+            }
+            (Some(m), false) => Some(m),
+            (None, true) => Some((far * FOG_START_SHARE, far, CLEAR)),
+            (None, false) => None,
+        }
     }
 
     /// Whether this map draws through visibility cells.
@@ -458,7 +514,8 @@ impl<'a> World<'a> {
         scratch: &mut WalkScratch,
     ) -> FrameStats {
         let mut stats = FrameStats::default();
-        let frustum = cam.frustum(ZNEAR, ZFAR);
+        let far = self.far();
+        let frustum = cam.frustum(ZNEAR, far);
         if let Some(v) = self.vis.as_mut() {
             stats.in_cell = v.update(cam, &frustum.planes, scratch);
             stats.cells_visible = v
@@ -469,7 +526,8 @@ impl<'a> World<'a> {
                 .min(v.cell_ranges.len() as u32);
         }
         let cell_of = |cells: &[u16], i: usize| cells.get(i).copied().unwrap_or(ALWAYS);
-        gfx.frame_begin(&cam.view(), cam.fovy, ZNEAR, ZFAR, CLEAR);
+        gfx.frame_begin(&cam.view(), cam.fovy, ZNEAR, far, CLEAR);
+        gfx.fog(self.fog_ramp());
         if let Some(faces) = self.sky {
             let rot = cam.view_rotation();
             for (f, &t) in faces.iter().enumerate() {
@@ -532,7 +590,8 @@ impl<'a> World<'a> {
             }
             // IW4 LOD choice: camera distance over placement scale against each LOD's switch distance; past the
             // last LOD the model is not drawn.
-            let Some(lod) = model.lod_for(libm::sqrtf(dot(d, d)) * LOD_SCALE / scale.max(1e-6))
+            let Some(lod) =
+                model.lod_for(libm::sqrtf(dot(d, d)) * self.lod_scale / scale.max(1e-6))
             else {
                 stats.instances_culled += 1;
                 continue;
@@ -769,6 +828,43 @@ mod tests {
         b.section(tag::SKYBOX, 1, records::encode(&[Skybox { faces: [0; 6] }]));
         extra(&mut b);
         b.finish()
+    }
+
+    #[test]
+    fn draw_distance_culls_and_fogs() {
+        let fog = records::Fog {
+            start: 100.0,
+            halfway: 600.0,
+            rgb: [1.0, 0.5, 0.0],
+            max_opacity: 0.5,
+        };
+        let bytes = sample_pack_with(|b| {
+            b.section(tag::FOG, 1, records::encode(&[fog]));
+        });
+        let mut gfx = Rec::default();
+        let mut world = World::load(&bytes, None, &mut gfx).unwrap();
+        // Full distance: the map's fog, its density at `halfway` matched (half of max opacity 0.5 = 0.25 there).
+        let (s, e, c) = world.fog_ramp().unwrap();
+        assert_eq!((s, c), (100.0, 0xff80_00ff));
+        assert!(((600.0 - s) / (e - s) - 0.25).abs() < 1e-4, "{e}");
+        world.map_fog = false;
+        assert_eq!(world.fog_ramp(), None);
+        // A short draw distance: fog always, ending at the far plane.
+        world.draw_distance = 250.0;
+        assert_eq!(world.far(), 250.0);
+        let (s, e, _) = world.fog_ramp().unwrap();
+        assert_eq!(e, 250.0);
+        assert!(s < e);
+        world.map_fog = true;
+        let (s, e, _) = world.fog_ramp().unwrap();
+        assert_eq!((s, e), (100.0, 250.0));
+        // The batch 300 units ahead is past the far plane now.
+        let cam = Camera::new([0.0; 3], 0.0, 0.0);
+        let all = World::load(&bytes, None, &mut gfx)
+            .unwrap()
+            .draw(&mut gfx, &cam, &mut scratch());
+        let short = world.draw(&mut gfx, &cam, &mut scratch());
+        assert_eq!(short.culled, all.culled + 1);
     }
 
     #[test]

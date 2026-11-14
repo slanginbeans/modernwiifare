@@ -291,7 +291,39 @@ static const void *world_base = NULL;
 /* The world's projection of this frame (boxes drawn in world space reuse it). */
 static Mtx44 world_proj;
 
+/* Distance fog for world draws (linear, in eye depth), set by mwf_fog; off for the sky, the first-person model, the HUD
+ * and menus. */
+static int fog_on = 0;
+static float fog_start = 0.0f, fog_end = 1.0f, frame_near = 1.0f, frame_far = 1000.0f;
+static GXColor fog_colour = {0, 0, 0, 0xff};
+
+static void fog_world(int on) {
+    if (on && fog_on) {
+        /* GX rebuilds eye depth from screen z as A / (B - z) assuming the depth range [0, 1]; the world draws in
+         * [VIEW_DEPTH, 1], so pass the near and far that give the same A and B for that range:
+         * B = d + (1 - d) f / (f - n), A = (1 - d) f n / (f - n). */
+        float n = frame_near, f = frame_far, d = VIEW_DEPTH;
+        float b = d + (1.0f - d) * f / (f - n);
+        float n2 = (1.0f - d) * f * n / ((f - n) * b);
+        float f2 = b * n2 / (b - 1.0f);
+        GX_SetFog(GX_FOG_LIN, fog_start, fog_end, n2, f2, fog_colour);
+    } else {
+        GX_SetFog(GX_FOG_NONE, 0.0f, 1.0f, 0.1f, 1.0f, fog_colour);
+    }
+}
+
+void mwf_fog(int32_t on, float start, float end, uint32_t rgba) {
+    fog_on = on != 0 && end > start;
+    fog_start = start;
+    fog_end = end;
+    fog_colour = (GXColor){(u8)(rgba >> 24), (u8)(rgba >> 16), (u8)(rgba >> 8), 0xff};
+}
+
 void mwf_frame_begin(const float view[3][4], float fovy_deg, float znear, float zfar, uint32_t clear_rgba) {
+    frame_near = znear;
+    frame_far = zfar;
+    /* Fog is per frame: whoever draws a world sets it after this (World::draw does). */
+    fog_on = 0;
     GXColor bg = {(u8)(clear_rgba >> 24), (u8)(clear_rgba >> 16), (u8)(clear_rgba >> 8), 0xff};
     GX_SetCopyClear(bg, GX_MAX_Z24);
     f32 aspect = (CONF_GetAspectRatio() == CONF_ASPECT_16_9) ? (16.0f / 9.0f) : (4.0f / 3.0f);
@@ -316,6 +348,7 @@ void mwf_frame_begin(const float view[3][4], float fovy_deg, float znear, float 
 static void world_mode(void) {
     if (mode == MODE_WORLD) return;
     mode = MODE_WORLD;
+    fog_world(1);
     GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS, GX_INDEX16);
     GX_SetVtxDesc(GX_VA_CLR0, GX_INDEX16);
@@ -471,6 +504,7 @@ void mwf_sky_face(const float view_rot[3][4], const float c[4][5], int32_t tex) 
     if (tex < 0 || tex >= tex_count) return;
     if (mode != MODE_SKY) {
         mode = MODE_SKY;
+        fog_world(0);
         world_base = NULL;
         GX_ClearVtxDesc();
         GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
@@ -532,6 +566,7 @@ void mwf_snd_stop_all(void) {
 }
 
 void mwf_view_begin(float fovy_deg, float znear, float zfar) {
+    fog_world(0);
     f32 aspect = (CONF_GetAspectRatio() == CONF_ASPECT_16_9) ? (16.0f / 9.0f) : (4.0f / 3.0f);
     Mtx44 proj;
     guPerspective(proj, fovy_deg, aspect, znear, zfar);
@@ -541,6 +576,7 @@ void mwf_view_begin(float fovy_deg, float znear, float zfar) {
 }
 
 void mwf_world_view(void) {
+    fog_world(1);
     GX_LoadProjectionMtx(world_proj, GX_PERSPECTIVE);
     GX_SetViewport(0, 0, mwf_rmode->fbWidth, mwf_rmode->efbHeight, VIEW_DEPTH, 1.0f);
     GX_SetCurrentMtx(GX_PNMTX0);
@@ -573,6 +609,7 @@ void mwf_view_arrays(const void *pos, const void *attr) {
 static void hud_mode(void) {
     if (mode == MODE_HUD) return;
     mode = MODE_HUD;
+    fog_world(0);
     world_base = NULL;
     Mtx44 ortho;
     guOrtho(ortho, 0, 480, 0, 640, -1, 1);
@@ -600,6 +637,7 @@ static void hud_mode(void) {
 static void ui_mode(void) {
     if (mode == MODE_UI) return;
     mode = MODE_UI;
+    fog_world(0);
     world_base = NULL;
     Mtx44 ortho;
     guOrtho(ortho, 0, 480, 0, 640, -1, 1);
@@ -702,6 +740,7 @@ void mwf_hud_rects(const int16_t (*r)[4], uint32_t count, uint32_t rgba) {
    first-person model. */
 void mwf_draw_boxes(const float view[3][4], const float (*b)[6], const uint32_t *rgba, uint32_t count) {
     if (count == 0) return;
+    fog_world(1);
     mode = MODE_NONE; /* the next world, view or HUD draw sets its own state up again */
     world_base = NULL;
     GX_LoadProjectionMtx(world_proj, GX_PERSPECTIVE);
