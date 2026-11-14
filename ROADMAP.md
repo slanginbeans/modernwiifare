@@ -100,6 +100,10 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
 ## Phase 4: Game breadth (single Wii)
 - [ ] Modes already scripted upstream: dm, war, dom, sd, sab, ctf, koth, dd. Bring them up in that order.
 - [ ] Create-a-class, perks, deathstreaks, attachments, equipment.
+      Done (2026-11-13): main menu, map and class choice, Create-a-Class with MW2's rules (everything unlocked, saved
+      to SD), all 45 weapons with their first-person files, attachment variants' combat numbers, weapon switching,
+      pause menu with class change. Still to do: what perks, equipment, grenades and deathstreaks do in a match;
+      attachment models on the first-person gun.
 - [ ] Killstreaks, cheapest first: UAV, Care Package, Counter-UAV, Predator, Sentry, airstrikes, then helicopters, AC-130 and Nuke.
       Each one gets a budget line.
 - [ ] Killcam and final killcam (reuse `killcam_iw4`). Frontend: menus, match setup, local progression saved to SD.

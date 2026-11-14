@@ -228,6 +228,15 @@ impl AssetLinkSink for Collector {
         Ok(())
     }
 
+    fn capture_localize(&mut self, name: &str, value: &[u8]) -> fastfile_iw4::Result<()> {
+        let v = String::from_utf8_lossy(value);
+        self.links
+            .localize
+            .entry(name.to_owned())
+            .or_insert_with(|| v.trim_end_matches(' ').to_owned());
+        Ok(())
+    }
+
     fn capture_string_table(
         &mut self,
         s: &ZoneStream<'_>,

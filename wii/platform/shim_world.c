@@ -124,6 +124,19 @@ static FILE *open_at(const char *path, uint32_t offset) {
     return f;
 }
 
+int32_t mwf_file_write(const char *path, const void *data, uint32_t len) {
+    file_error = 0;
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        file_error = 1;
+        return -1;
+    }
+    size_t put = fwrite(data, 1, len, f);
+    fclose(f);
+    if (put != len) file_error = 4;
+    return (int32_t)put;
+}
+
 int32_t mwf_file_read(const char *path, uint32_t offset, uint32_t len, void *dst) {
     file_error = 0;
     FILE *f = open_at(path, offset);
@@ -202,6 +215,15 @@ static int32_t tex_count = 0;
 
 void mwf_tex_reset(void) {
     tex_count = 0;
+    GX_InvalidateTexAll();
+}
+
+int32_t mwf_tex_mark(void) {
+    return tex_count;
+}
+
+void mwf_tex_release(int32_t mark) {
+    if (mark >= 0 && mark <= tex_count) tex_count = mark;
     GX_InvalidateTexAll();
 }
 

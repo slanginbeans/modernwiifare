@@ -2,6 +2,7 @@
 
 use core::ffi::c_char;
 
+pub const BTN_LEFT: u16 = 0x0001;
 pub const BTN_DOWN: u16 = 0x0004;
 pub const BTN_UP: u16 = 0x0008;
 pub const BTN_Z: u16 = 0x0010;
@@ -70,6 +71,7 @@ unsafe extern "C" {
 
     pub fn mwf_file_load_range(path: *const c_char, offset: u32, len: u32) -> *const u8;
     pub fn mwf_file_read(path: *const c_char, offset: u32, len: u32, dst: *mut u8) -> i32;
+    pub fn mwf_file_write(path: *const c_char, data: *const u8, len: u32) -> i32;
     pub fn mwf_file_error() -> i32;
     pub fn mwf_app_dir() -> *const c_char;
     pub fn mwf_mem2_alloc(size: u32, align: u32) -> *mut u8;
@@ -83,6 +85,8 @@ unsafe extern "C" {
     pub fn mwf_mem2_release(mark: u32);
     pub fn mwf_list_dir(dir: *const c_char, suffix: *const c_char, out: *mut u8, cap: u32) -> i32;
     pub fn mwf_tex_reset();
+    pub fn mwf_tex_mark() -> i32;
+    pub fn mwf_tex_release(mark: i32);
     pub fn mwf_tex_create(desc: *const TexDesc) -> i32;
     pub fn mwf_frame_begin(
         view: *const Mtx34,

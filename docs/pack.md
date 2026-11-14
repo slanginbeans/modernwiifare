@@ -33,18 +33,26 @@ Version 3 (2026-11-13): fixed-point vertices. Version 2: LOD tables in `ModelRec
 | `WBCL` / `SMCL` | u16 per batch / instance | the visibility cell of each `WBAT` batch and `SMDL` instance (`0xFFFF`: none, drawn when in the frustum) |
 | `CLIP` | one blob (`wpk::clip::Clip`) | collision, unsimplified: a table of 16 arrays (count, offset), then pooled brush planes + surface flags, brushes (contents, glass), BSP nodes, leaves, leaf brushes, mesh vertices / triangles / walkable-edge bits / triangle flags / AABB trees / partitions / borders / roots, brush models. Decoded and validated at load into the `clipmap_iw4` types IW4L traces with |
 
-## `common.wpk` (`mwf-convert common`)
+## `common.wpk` and `views/*.wpk` (`mwf-convert common`)
+
+`common.wpk`:
 
 | Tag | Records | Content |
 |---|---|---|
 | `WEAP` | `WeaponRecord` | every weapon's combat numbers (IW4L `CapturedCombatInput`), sorted by name |
 | `KICK` | `KickRecord` (80 B) | recoil, parallel to `WEAP` |
-| `TEXT` / `TXDA` | as in map packs | the first-person models' textures |
-| `VIEW` | one blob (`wpk::view::ViewModel`) per weapon, `count` = its `WEAP` index | skinned first-person model and its clips |
+| `CLSS` | one blob (`wpk::classes::Catalog`) | Create-a-Class: weapons (group, display name, attachment mask), attachments and the pairs that clash, perks / equipment / deathstreaks by slot, special grenades, killstreaks, MW2's 5 default classes and 5 starting custom classes |
+
+`views/<weapon>.wpk`, one per weapon a class can carry (its base name, e.g. `views/m4.wpk`):
+
+| Tag | Records | Content |
+|---|---|---|
+| `TEXT` / `TXDA` | as in map packs | the first-person model's textures |
+| `VIEW` | one blob (`wpk::view::ViewModel`), `count` = the weapon's `WEAP` index | skinned first-person model and its clips |
+| `WSND` | one blob (`wpk::sound::WeaponSounds`) | the alias of each weapon event (fire, last shot, empty, reload, empty reload, raise, first raise, put away, melee swipe) and notetrack sounds (anim slot, time fraction, alias) |
 | `SNDA` | `AliasRecord` (4 B) | a sound alias: a run of `SNDV` variants |
 | `SNDV` | `VariantRecord` (32 B) | a clip in `SNDD` (offset, padded length, rate), volume and pitch ranges, probability weight |
 | `SNDD` | – | mono 16-bit big-endian PCM, each clip 32-byte aligned and padded to 32 (ASND DMA) |
-| `WSND` | one blob (`wpk::sound::WeaponSounds`) per first-person weapon, `count` = its `WEAP` index | the alias of each weapon event (fire, last shot, empty, reload, empty reload, raise, first raise, put away, melee swipe) and notetrack sounds (anim slot, time fraction, alias) |
 
 ## How the world is built (`converter/src/pack.rs`)
 - Surfaces are batched by vertex group (consecutive surfaces spanning under 65,536 vertices, so u16 indices reach

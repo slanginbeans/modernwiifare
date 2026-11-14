@@ -9,6 +9,8 @@
 //! - [`player`]: pad -> `UserCmd` -> IW4L `pmove`.
 //! - [`hud`]: screen-space rectangles and a 3×5 debug font.
 //! - [`gun`]: IW4L weapon state machine + hitscan bullets against the map.
+//! - [`loadout`]: Create-a-Class rules over the converted class catalog.
+//! - [`menu`]: pad-driven menu lists.
 //! - [`weapon_sound`]: which alias a weapon event or a first-person notetrack plays.
 #![no_std]
 
@@ -21,6 +23,8 @@ pub mod gfx;
 pub mod gun;
 pub mod hud;
 pub mod life;
+pub mod loadout;
+pub mod menu;
 pub mod player;
 pub mod sky;
 pub mod viewmodel;

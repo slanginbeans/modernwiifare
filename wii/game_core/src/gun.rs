@@ -120,6 +120,14 @@ impl Gun {
         core::str::from_utf8(&self.name[..end]).unwrap_or("")
     }
 
+    /// Raise the gun again (switching to it), keeping its ammunition: IW4L's spawn hand with the ordinary raise.
+    pub fn raise(&mut self) {
+        let (clip, stock) = (self.hand.clip, self.hand.stock);
+        self.hand = spawn_weapon_hand(self.hand.weapon, &self.facts, false);
+        self.hand.clip = clip;
+        self.hand.stock = stock;
+    }
+
     /// Rounds in the magazine and in reserve.
     pub fn ammo(&self) -> (i32, i32) {
         (self.hand.clip, self.hand.stock)

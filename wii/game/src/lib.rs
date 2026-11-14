@@ -10,7 +10,9 @@
 
 extern crate alloc;
 
+mod arsenal;
 mod ffi;
+mod front;
 mod rt;
 mod sound;
 mod view;
@@ -249,9 +251,6 @@ fn draw_life_hud(gfx: &mut Shim, rects: &mut Vec<Rect>, life: &Life, clock: &Mat
     gfx.hud_rects(rects, 0xd0d8e0c0);
 }
 
-/// The weapon a player spawns with (MW2's first default class carries the M4A1).
-const DEFAULT_WEAPON: &str = "m4_mp";
-
 /// Crosshair, ammo, weapon name and bullet impacts (markers that fade over 400 ms).
 fn draw_gun_hud(
     gfx: &mut Shim,
@@ -301,10 +300,10 @@ fn draw_gun_hud(
 }
 
 /// A NUL-terminated path inside the app folder: `<app folder>/<rest>`.
-struct AppPath([u8; 192]);
+pub(crate) struct AppPath([u8; 192]);
 
 impl AppPath {
-    fn new(rest: &str) -> Option<AppPath> {
+    pub(crate) fn new(rest: &str) -> Option<AppPath> {
         let dir = unsafe { core::ffi::CStr::from_ptr(ffi::mwf_app_dir()) }.to_bytes();
         let mut p = AppPath([0; 192]);
         let n = dir.len() + 1 + rest.len();
@@ -316,35 +315,35 @@ impl AppPath {
         p.0[dir.len() + 1..n].copy_from_slice(rest.as_bytes());
         Some(p)
     }
-    fn as_ptr(&self) -> *const core::ffi::c_char {
+    pub(crate) fn as_ptr(&self) -> *const core::ffi::c_char {
         self.0.as_ptr().cast()
     }
 }
 
-/// `<app folder>/common.wpk` (from `mwf-convert common`) in MEM2 for the whole run (GX reads its textures in
-/// place), or empty when it isn't there.
-fn load_common() -> &'static [u8] {
-    let Some(path) = AppPath::new("common.wpk") else {
-        return &[];
-    };
+/// A whole pack file into MEM2 (flushed; GX and the DSP read it in place), checked; None when missing or bad.
+pub(crate) fn load_pack(path: &AppPath) -> Option<&'static [u8]> {
     let mut head = [0u8; wpk::HEADER_LEN];
     let got = unsafe { ffi::mwf_file_read(path.as_ptr(), 0, head.len() as u32, head.as_mut_ptr()) };
     if got != head.len() as i32 {
-        return &[];
+        return None;
     }
     let len = u32::from_be_bytes([head[24], head[25], head[26], head[27]]) as usize;
     if len > 16 << 20 {
-        return &[];
+        return None;
     }
     let p = unsafe { ffi::mwf_file_load_range(path.as_ptr(), 0, len as u32) };
     if p.is_null() {
-        return &[];
+        return None;
     }
     let bytes: &'static [u8] = unsafe { core::slice::from_raw_parts(p, len) };
-    if wpk::Pack::parse(bytes, false).is_err() {
-        return &[];
-    }
-    bytes
+    wpk::Pack::parse(bytes, false).is_ok().then_some(bytes)
+}
+
+/// `<app folder>/common.wpk` (from `mwf-convert common`) in MEM2 for the whole run, or empty when it isn't there.
+fn load_common() -> &'static [u8] {
+    AppPath::new("common.wpk")
+        .and_then(|p| load_pack(&p))
+        .unwrap_or(&[])
 }
 
 fn weapon_section(common: &[u8]) -> &[u8] {
@@ -387,87 +386,26 @@ fn list_maps(buf: &mut [u8; 2048]) -> Vec<&str> {
     maps
 }
 
-/// Pick a map: D-pad / main stick up and down, A plays, START or RESET quits. None = quit.
-fn menu(gfx: &mut Shim, maps: &[&str], selected: &mut usize) -> Option<usize> {
-    let cam = Camera::new([0.0; 3], 0.0, 0.0);
-    let mut rects: Vec<Rect> = Vec::with_capacity(4096);
-    let mut held_y = 0i8;
-    loop {
-        let pad = ffi::pad0();
-        if pad.down & ffi::BTN_START != 0 || ffi::should_exit() {
-            return None;
-        }
-        if pad.down & ffi::BTN_A != 0 && !maps.is_empty() {
-            return Some(*selected);
-        }
-        // Edge-triggered stick so one push moves one line.
-        let stick = if pad.sy > 60 {
-            1
-        } else if pad.sy < -60 {
-            -1
-        } else {
-            0
-        };
-        let up = pad.down & ffi::BTN_UP != 0 || (stick == 1 && held_y != 1);
-        let down = pad.down & ffi::BTN_DOWN != 0 || (stick == -1 && held_y != -1);
-        held_y = stick;
-        if !maps.is_empty() {
-            if up {
-                *selected = (*selected + maps.len() - 1) % maps.len();
-            }
-            if down {
-                *selected = (*selected + 1) % maps.len();
-            }
-        }
-        unsafe { ffi::mwf_frame_begin(&cam.view(), cam.fovy, 4.0, 100.0, 0x1a1e24ff) };
-        rects.clear();
-        hud::text(&mut rects, 64, 48, 6, "MODERN WIIFARE");
-        gfx.hud_rects(&rects, 0xf0e8d0ff);
-        rects.clear();
-        if maps.is_empty() {
-            hud::text(
-                &mut rects,
-                64,
-                140,
-                3,
-                "NO MAPS IN THE APP FOLDER'S MAPS/\nCONVERT THEM WITH MWF-CONVERT PACK",
-            );
-            gfx.hud_rects(&rects, 0xe08060ff);
-        }
-        // Up to 14 lines, scrolled so the selection stays visible.
-        let first = selected.saturating_sub(13);
-        for (row, (i, m)) in maps.iter().enumerate().skip(first).take(14).enumerate() {
-            rects.clear();
-            let y = 130 + row as i16 * 22;
-            if i == *selected {
-                hud::text(&mut rects, 64, y, 3, ">");
-            }
-            hud::text(&mut rects, 88, y, 3, m);
-            gfx.hud_rects(
-                &rects,
-                if i == *selected {
-                    0xffd040ff
-                } else {
-                    0xb0b8c0ff
-                },
-            );
-        }
-        rects.clear();
-        hud::text(
-            &mut rects,
-            64,
-            446,
-            2,
-            "A PLAY   START EXIT   IN GAME: START BACK TO THIS MENU",
-        );
-        gfx.hud_rects(&rects, 0x808890ff);
-        gfx.frame_end();
-    }
-}
-
 /// Load `<app folder>/maps/<name>.wpk` and play it until START (menu) or RESET (quit). Everything the map
 /// allocates in MEM2 is released by the caller (`mwf_mem2_release`); the MEM1 parts drop here.
-fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8]) -> Exit {
+/// The classes a match can spawn with.
+struct Loadouts<'a> {
+    catalog: Option<&'a wpk::classes::Catalog>,
+    classes: &'a [wpk::classes::Loadout],
+    /// The class chosen before the match (index into `classes`).
+    class: Option<usize>,
+    /// Cursor of the class list (kept between menus).
+    cursor: &'a mut usize,
+}
+
+fn run_map(
+    gfx: &mut Shim,
+    name: &str,
+    scratch: &mut WalkScratch,
+    common: &[u8],
+    loadouts: Loadouts<'_>,
+    input: &mut front::Input,
+) -> Exit {
     let weapons = weapon_section(common);
     let mut file = [0u8; 96];
     let n = name.len() + 4;
@@ -541,25 +479,19 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
     let mut cam = spawn_camera(&world, spawn);
     cam.aspect = aspect;
     let mut player = clip.as_ref().map(|c| spawn_player(&world, c, spawn));
-    // The gun (when common.wpk is on the SD card): the M4A1, as in MW2's first default class.
+    // The class's weapons (when common.wpk is on the SD card), first-person files loaded above the map's data.
     let kicks = wpk::Pack::parse(common, false)
         .ok()
         .and_then(|p| p.section(wpk::tag::KICK))
         .map_or(&[][..], |s| s.data);
-    let new_gun = || {
-        let (i, r) = wpk::weapon::find_indexed(weapons, DEFAULT_WEAPON)?;
-        let mut g = Gun::with_index(&r, i)?;
-        g.set_kick(wpk::records::get::<wpk::weapon::KickRecord>(
-            kicks, i as usize,
-        ));
-        Some(g)
+    let mut arsenal = arsenal::Arsenal::new();
+    // A class change applies at the next spawn, as in MW2.
+    let mut class = loadouts.class;
+    let equip = |arsenal: &mut arsenal::Arsenal, gfx: &mut Shim, class: Option<usize>| {
+        let l = class.and_then(|c| loadouts.classes.get(c));
+        arsenal.equip(gfx, weapons, kicks, loadouts.catalog, l);
     };
-    let mut gun = new_gun();
-    // Its first-person model (textures created after this map's texture reset).
-    let mut view = gun
-        .as_ref()
-        .and_then(|g| view::View::load(common, g.weapon_index(), gfx));
-    let mut sounds = sound::Sounds::load(common);
+    equip(&mut arsenal, gfx, class);
     let mut impacts: [(Option<[f32; 3]>, u32); 8] = [(None, 0); 8];
     let mut last_shot_ms: Option<u32> = None;
     let mut next_impact = 0usize;
@@ -592,16 +524,35 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
             return Exit::Quit;
         }
         if pad.down & ffi::BTN_START != 0 {
-            return Exit::Menu;
+            unsafe { ffi::mwf_snd_stop_all() };
+            match front::pause(
+                gfx,
+                input,
+                (!loadouts.classes.is_empty()).then_some(loadouts.classes),
+                loadouts.cursor,
+            ) {
+                front::Pause::EndGame => return Exit::Menu,
+                front::Pause::ChangeClass(c) => class = Some(c),
+                front::Pause::Resume => {}
+            }
+            // The match was stopped: no time passed.
+            last = ffi::ms();
+            frame_start = ffi::us();
+            continue;
         }
-        if pad.down & ffi::BTN_Y != 0 {
+        // Y: the other weapon (MW2's console layout).
+        if pad.down & ffi::BTN_Y != 0 && !flying && life.alive() {
+            arsenal.switch();
+        }
+        // D-pad left: next spawn point (debug), with the class's weapons.
+        if pad.down & ffi::BTN_LEFT != 0 {
             spawn += 1;
             cam = spawn_camera(&world, spawn);
             cam.aspect = aspect;
             if let Some(c) = &clip {
                 player = Some(spawn_player(&world, c, spawn));
             }
-            gun = new_gun();
+            equip(&mut arsenal, gfx, class);
         }
         if pad.down & ffi::BTN_UP != 0 && clip.is_some() {
             flying = !flying;
@@ -633,7 +584,7 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
                 );
                 cam = p.camera(aspect);
                 // Recoil kicks the view (IW4: kick angles on top of the view; shots follow the kicked view).
-                if let Some(g) = &gun {
+                if let Some(g) = arsenal.gun() {
                     cam.pitch += g.kick_angles[0];
                     cam.yaw += g.kick_angles[1];
                 }
@@ -643,7 +594,8 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
                 if p.ps.origin[2] < floor_z {
                     life.damage(life.max_health, now);
                 }
-                if let Some(g) = gun.as_mut().filter(|_| life.alive()) {
+                let a = arsenal.active;
+                if let (Some(g), true) = (arsenal.guns[a].as_mut(), life.alive()) {
                     g.update_spread(
                         msec as i32,
                         &SpreadInput {
@@ -670,12 +622,11 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
                     if shot.is_some() {
                         last_shot_ms = Some(now);
                     }
-                    if let (Some(e), Some(s), Some(v)) =
-                        (event.as_ref(), sounds.as_mut(), view.as_ref())
-                        && let Some(a) =
+                    if let (Some(e), Some(v)) = (event.as_ref(), arsenal.views[a].as_mut())
+                        && let Some(s) =
                             game_core::weapon_sound::for_event(&v.sounds, e, g.ammo().0)
                     {
-                        s.play(a);
+                        v.play(s);
                     }
                     if let Some(s) = shot.filter(|s| s.hit) {
                         impacts[next_impact] = (Some(s.end), now);
@@ -688,7 +639,7 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
                 if life.ready_to_respawn(now) {
                     spawn += 1;
                     player = Some(spawn_player(&world, c, spawn));
-                    gun = new_gun();
+                    equip(&mut arsenal, gfx, class);
                     life.respawn();
                 }
             }
@@ -709,15 +660,14 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
         let stats = world.draw(gfx, &cam, scratch);
         if !flying
             && life.alive()
-            && let (Some(v), Some(g)) = (view.as_mut(), gun.as_ref())
+            && let (Some(v), Some(g)) = (
+                arsenal.views[arsenal.active].as_mut(),
+                arsenal.guns[arsenal.active].as_ref(),
+            )
         {
             let (slot, restart) = g.anim();
             v.draw(gfx, slot, restart, now, g.gun_kick());
-            if let Some(s) = sounds.as_mut() {
-                for &a in v.notes_due() {
-                    s.play(a);
-                }
-            }
+            v.play_notes();
             // Muzzle flash for 50 ms after a shot: a placeholder additive-looking glow at the gun's tag_flash until
             // MW2's view flash effect is converted.
             if last_shot_ms.is_some_and(|t| now.wrapping_sub(t) < 50)
@@ -732,7 +682,7 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
             }
         }
         if !flying {
-            if let Some(g) = gun.as_ref().filter(|_| life.alive()) {
+            if let Some(g) = arsenal.gun().filter(|_| life.alive()) {
                 draw_gun_hud(gfx, &mut hud_rects, g, &cam, &impacts, now);
             }
             draw_life_hud(gfx, &mut hud_rects, &life, &clock, now);
@@ -755,21 +705,81 @@ pub extern "C" fn mwf_game_main() -> i32 {
     let mut gfx = Shim::default();
     // The portal walk's scratch (~0.2 MiB) is static, never on the stack.
     let scratch: &'static mut WalkScratch = unsafe { &mut *core::ptr::addr_of_mut!(WALK_SCRATCH) };
-    let mut selected = 0usize;
-    // Weapons and other shared data (optional): <app folder>/common.wpk, kept in MEM1 for the whole run.
+    // Weapons, classes and other shared data (optional): <app folder>/common.wpk, in MEM2 for the whole run.
     let common = load_common();
+    let catalog = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::CLASSES))
+        .and_then(|s| wpk::classes::Catalog::decode(s.data).ok());
+    let mut custom = catalog
+        .as_ref()
+        .map(front::load_classes)
+        .unwrap_or_default();
+    let mut input = front::Input::default();
+    let (mut main_sel, mut map_sel, mut class_sel, mut edit_sel) = (0usize, 0usize, 0usize, 0usize);
     loop {
-        let mut names = [0u8; 2048];
-        let maps = list_maps(&mut names);
-        let Some(i) = menu(&mut gfx, &maps, &mut selected) else {
-            return 0;
-        };
-        let mark = unsafe { ffi::mwf_mem2_mark() };
-        let exit = run_map(&mut gfx, maps[i], scratch, common);
-        unsafe { ffi::mwf_snd_stop_all() };
-        unsafe { ffi::mwf_mem2_release(mark) };
-        if let Exit::Quit = exit {
-            return 0;
+        match front::main_menu(&mut gfx, &mut input, &mut main_sel, catalog.is_some()) {
+            front::Main::Quit => return 0,
+            front::Main::CreateAClass => {
+                let Some(cat) = catalog.as_ref() else {
+                    continue;
+                };
+                while let Some(i) = front::pick_class(
+                    &mut gfx,
+                    &mut input,
+                    "CREATE A CLASS",
+                    &custom,
+                    &mut edit_sel,
+                ) {
+                    front::edit_class(&mut gfx, &mut input, cat, &mut custom[i]);
+                    front::save_classes(cat, &custom);
+                }
+            }
+            front::Main::Play => {
+                let mut names = [0u8; 2048];
+                let maps = list_maps(&mut names);
+                while let Some(i) = front::pick_map(&mut gfx, &mut input, &maps, &mut map_sel) {
+                    // Custom classes first, then MW2's defaults.
+                    let classes: Vec<wpk::classes::Loadout> = catalog
+                        .as_ref()
+                        .map(|c| custom.iter().chain(&c.defaults).cloned().collect())
+                        .unwrap_or_default();
+                    let class = if classes.is_empty() {
+                        None
+                    } else {
+                        match front::pick_class(
+                            &mut gfx,
+                            &mut input,
+                            "CHOOSE CLASS",
+                            &classes,
+                            &mut class_sel,
+                        ) {
+                            Some(c) => Some(c),
+                            None => continue,
+                        }
+                    };
+                    let mark = unsafe { ffi::mwf_mem2_mark() };
+                    let exit = run_map(
+                        &mut gfx,
+                        maps[i],
+                        scratch,
+                        common,
+                        Loadouts {
+                            catalog: catalog.as_ref(),
+                            classes: &classes,
+                            class,
+                            cursor: &mut class_sel,
+                        },
+                        &mut input,
+                    );
+                    unsafe { ffi::mwf_snd_stop_all() };
+                    unsafe { ffi::mwf_mem2_release(mark) };
+                    if let Exit::Quit = exit {
+                        return 0;
+                    }
+                    break;
+                }
+            }
         }
     }
 }

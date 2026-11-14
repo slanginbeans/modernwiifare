@@ -74,8 +74,8 @@ package: all
 	  sed "s/@BUILD_ID@/$(BUILD_ID)/" hbc/$$s/meta.xml > $(DIST)/apps/mwf_$$s/meta.xml; \
 	  cp $(BUILD)/$$s.elf $(DIST)/debug/$$s.elf; \
 	done
-	@mkdir -p $(DIST)/apps/mwf_game/maps
-	@echo "Copy dist/apps to the root of the SD card. Map packs go in apps/mwf_game/maps/, common.wpk in apps/mwf_game/."
+	@mkdir -p $(DIST)/apps/mwf_game/maps $(DIST)/apps/mwf_game/views
+	@echo "Copy dist/apps to the root of the SD card. Map packs go in apps/mwf_game/maps/, common.wpk in apps/mwf_game/, weapon files in apps/mwf_game/views/."
 
 run-a: $(BUILD)/spike_a_gx.dol
 	$(WIILOAD_BIN) $<

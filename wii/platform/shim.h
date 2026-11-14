@@ -112,6 +112,8 @@ void *mwf_file_load(const char *path, uint32_t *size_out);
 void *mwf_file_load_range(const char *path, uint32_t offset, uint32_t len);
 /* Read bytes [offset, offset + len) of a file into `dst` (any memory). Returns the bytes read, or -1. */
 int32_t mwf_file_read(const char *path, uint32_t offset, uint32_t len, void *dst);
+/* Write a whole file (created or replaced). Returns the bytes written, or -1 (see mwf_file_error). */
+int32_t mwf_file_write(const char *path, const void *data, uint32_t len);
 /* Why the last file call failed: 0 none, 1 no SD card, 2 no such file, 3 out of MEM2, 4 read error. */
 int32_t mwf_file_error(void);
 
@@ -119,6 +121,9 @@ int32_t mwf_file_error(void);
 int32_t mwf_tex_create(const mwf_tex_desc *desc);
 /* Forget every texture (before loading another map). */
 void mwf_tex_reset(void);
+/* Texture handles are handed out in order: mark the count, release back to it (handles after it become invalid). */
+int32_t mwf_tex_mark(void);
+void mwf_tex_release(int32_t mark);
 
 /* Frame: clear, set the camera. view is a GX 3x4 world->eye matrix (row-major); fovy in degrees. */
 void mwf_frame_begin(const float view[3][4], float fovy_deg, float znear, float zfar, uint32_t clear_rgba);

@@ -39,8 +39,9 @@ pub struct View {
     playing: (u8, bool, u32),
     /// Model-to-eye matrix of the last draw (for the muzzle flash).
     last_eye: Option<Mtx34>,
-    /// The weapon's sounds (`WSND`; empty when the pack has none).
+    /// The weapon's sounds (`WSND`; empty when the pack has none) and the clips they play.
     pub sounds: WeaponSounds,
+    bank: Option<crate::sound::Sounds<'static>>,
     /// Fraction of the playing clip at the last draw (`None` right after a clip starts).
     last_frac: Option<f32>,
     /// Notetrack sounds the last draw passed.
@@ -54,18 +55,16 @@ fn mem2(count: usize) -> Option<&'static mut [u8]> {
 }
 
 impl View {
-    /// The model of weapon `index` (its `WEAP` record index) from the common pack, with its textures created.
-    pub fn load(common: &[u8], index: u32, gfx: &mut impl Gfx) -> Option<View> {
-        let pack = wpk::Pack::parse(common, false).ok()?;
-        let section = pack
-            .section(wpk::tag::VIEWMODEL)
-            .filter(|s| s.count == index)?;
-        let vm = ViewModel::decode(section.data).ok()?;
+    /// A weapon's first-person file (`views/<weapon>.wpk`, in MEM2 and flushed): its model with textures created,
+    /// and its sounds.
+    pub fn load(file: &'static [u8], gfx: &mut impl Gfx) -> Option<View> {
+        let pack = wpk::Pack::parse(file, false).ok()?;
+        let vm = ViewModel::decode(pack.section(wpk::tag::VIEWMODEL)?.data).ok()?;
         let sounds = pack
             .section(wpk::tag::WEAPON_SOUNDS)
-            .filter(|s| s.count == index)
             .and_then(|s| WeaponSounds::decode(s.data))
             .unwrap_or_default();
+        let bank = crate::sound::Sounds::load(file);
         // Textures (the common pack is in MEM2, 32-byte aligned, flushed).
         let txda = pack.section(wpk::tag::TEXTURE_DATA)?.data;
         let mut handles = Vec::new();
@@ -147,15 +146,34 @@ impl View {
             playing: (wpk::view::slot::IDLE, false, 0),
             last_eye: None,
             sounds,
+            bank,
             last_frac: None,
             notes_due: Vec::new(),
             vm,
         })
     }
 
-    /// Notetrack sounds (aliases) the last draw's animation passed.
-    pub fn notes_due(&self) -> &[u16] {
-        &self.notes_due
+    /// Play the sound of weapon event `e` (`wpk::sound::event`).
+    pub fn play_event_alias(&mut self, e: usize) {
+        if let Some(&a) = self.sounds.events.get(e) {
+            self.play(a);
+        }
+    }
+
+    /// Play alias `alias` of this weapon.
+    pub fn play(&mut self, alias: u16) {
+        if let Some(b) = self.bank.as_mut() {
+            b.play(alias);
+        }
+    }
+
+    /// Play the notetrack sounds the last draw's animation passed.
+    pub fn play_notes(&mut self) {
+        if let Some(b) = self.bank.as_mut() {
+            for &a in &self.notes_due {
+                b.play(a);
+            }
+        }
     }
 
     /// Where the gun's `tag_flash` is on the 640 × 480 HUD, from the last draw.

@@ -232,6 +232,10 @@ pub struct Links {
     pub weapon_kick: Vec<wpk::weapon::KickRecord>,
     /// First-person models and animations of each weapon (parallel to `weapons`).
     pub weapon_views: Vec<WeaponView>,
+    /// Every string table of the zone, by name (lower case).
+    pub tables: HashMap<String, crate::ui_tables::Table>,
+    /// Localized strings (`LocalizeEntry`) by reference name.
+    pub localize: HashMap<String, String>,
     /// Sound aliases and loaded sounds of the zone.
     pub sounds: crate::sounds::Capture,
     /// Every XAnim loaded, by name, read again after the walk (`viewmodel.rs`).
@@ -531,6 +535,11 @@ impl Links {
     /// Hook for `AssetLinkSink::capture_string_table`: remember every cell, so materials named in a table are known.
     pub fn string_table(&mut self, s: &ZoneStream<'_>, header: Ptr) {
         let pb = s.pointer_bytes();
+        let table_name = match s.ptr_at(header, 0) {
+            Ok(ZonePtr::Offset(p)) => s.cstr(s.resolve_alias(p)).ok().map(str::to_ascii_lowercase),
+            _ => None,
+        };
+        let mut cells = Vec::new();
         let columns = s.i32_at(header, pb).unwrap_or(0).max(0) as usize;
         let rows = s.i32_at(header, pb + 4).unwrap_or(0).max(0) as usize;
         // StringTableCell is { const char *string; int hash } (x86: 8 bytes, x64: 16).
@@ -540,12 +549,19 @@ impl Links {
         };
         let arr = s.resolve_alias(arr);
         for i in 0..columns.saturating_mul(rows) {
-            if let Ok(ZonePtr::Offset(p)) = s.ptr_at(arr, i * cell_size)
-                && let Ok(text) = s.cstr(s.resolve_alias(p))
-                && !text.is_empty()
-            {
+            let text = match s.ptr_at(arr, i * cell_size) {
+                Ok(ZonePtr::Offset(p)) => s.cstr(s.resolve_alias(p)).unwrap_or(""),
+                _ => "",
+            };
+            if !text.is_empty() {
                 self.table_strings.insert(text.to_ascii_lowercase());
             }
+            cells.push(text.to_owned());
+        }
+        if let Some(n) = table_name {
+            self.tables
+                .entry(n)
+                .or_insert(crate::ui_tables::Table { columns, cells });
         }
     }
 

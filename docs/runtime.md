@@ -3,28 +3,47 @@
 ## Try it
 1. Convert the maps on your PC: `mwf-convert pack "<your MW2 / IW4x folder>" --map all` → `out/packs/<map>.wpk` for
    all 16 multiplayer maps (or `--map mp_rust` for one).
-   `--map all` also writes `out/packs/common.wpk` (weapons; or run `mwf-convert common "<folder>"`).
+   `--map all` also writes `out/packs/common.wpk` (weapons and classes) and `out/packs/views/*.wpk` (each weapon's
+   first-person model, textures and sounds); or run `mwf-convert common "<folder>"` for those alone.
 2. The packs live in the game's own app folder: map `.wpk` files in **`sd:/apps/mwf_game/maps/`**, `common.wpk` in
-   **`sd:/apps/mwf_game/`** (the `.json` reports are not needed). Without `common.wpk` you walk unarmed. The game finds
-   its folder from the path the Homebrew Channel starts it with, so a USB copy (`usb:/apps/mwf_game/`) works too;
-   started without one (wiiload, emulators) it uses `sd:/apps/mwf_game`.
+   **`sd:/apps/mwf_game/`**, the weapon files in **`sd:/apps/mwf_game/views/`** (~80 MiB for all 45; the `.json`
+   reports are not needed). Without `common.wpk` you walk unarmed and Create-a-Class is off. The game finds its folder
+   from the path the Homebrew Channel starts it with, so a USB copy (`usb:/apps/mwf_game/`) works too; started
+   without one (wiiload, emulators) it uses `sd:/apps/mwf_game`.
 3. Copy `apps/mwf_game` from the build (`make -C wii package` → `dist/apps`, or CI's `modernwiifare-sd-card`) to
    `sd:/apps/`, and start **Modern Wiifare** from the Homebrew Channel. GameCube controller in port 1.
 
-The game opens on a map list (D-pad or main stick up/down, **A** plays, **START** quits). In a map, **START**
-returns to the list.
+## Menus
+Every menu is a list: D-pad or main stick up / down, **A** chooses, **B** goes back.
+- **Main menu**: Play, Create a Class, Quit.
+- **Play** → choose a map → choose a class (your five custom classes, then MW2's five default classes) → the match.
+- **Create a Class**: pick one of the five custom classes, then change its primary and secondary weapons, their
+  attachments, equipment, special grenade, perks 1-3, deathstreak and three killstreaks. Everything is unlocked.
+  The rules are MW2's: primaries are assault rifles, SMGs, LMGs, sniper rifles and the riot shield; secondaries are
+  machine pistols, shotguns, handguns and launchers; each weapon takes only its own attachments, never two that
+  clash; a second attachment needs Bling in perk 1 (taken as Bling Pro, so the secondary gets one too). Leaving a
+  class saves all five to `classes.dat` in the app folder, by item name (a re-converted `common.wpk` still reads it).
+  The classes start as MW2's own starting custom classes. Names, weapons and perks come from your copy's tables
+  (statsTable, attachmentTable, perkTable, killstreakTable, classTable) and their localized names.
+- In a match, **START** pauses: Resume, Change Class (applies at your next spawn, as in MW2) or End Game.
 
-Controls, walking (IW4L movement and the map's collision): main stick move, C-stick look, **A** jump, **B** crouch
-(held), **Z** sprint, **L** ADS, **R** fire, **X** reload. **D-pad up** toggles free fly (main stick, C-stick, L/R triggers down/up, B fast);
-leaving free fly drops the player where the camera is. **Y** next spawn point, **D-pad down** toggles the
-performance overlay (fps, frame / CPU / GPU-wait ms, triangles (of which static models), draws, state changes,
-visible cells, models, position; see `docs/perf.md`),
-**START** back to the map list. A pack without a `CLIP` section starts in free fly.
+Controls in a match (IW4L movement and the map's collision): main stick move, C-stick look, **A** jump, **B** crouch
+(held), **Z** sprint, **L** ADS, **R** fire, **X** reload, **Y** switch weapon. **D-pad up** toggles free fly (main
+stick, C-stick, L/R triggers down/up, B fast); leaving free fly drops the player where the camera is. **D-pad left**
+next spawn point (with the class's weapons), **D-pad down** toggles the performance overlay (fps, frame / CPU /
+GPU-wait ms, triangles (of which static models), draws, state changes, visible cells, models, position; see
+`docs/perf.md`). A pack without a `CLIP` section starts in free fly.
 
-Solid colour screens (START goes back to the list): red = no SD card or no such pack, magenta = the pack failed its
+Perks, equipment, special grenades, deathstreaks and killstreaks are chosen and saved but do nothing in a match yet.
+Weapons with attachments use the attachment variant's combat numbers (`m4_acog_mp` ...) but the base weapon's
+first-person model. Switching weapons raises the other one at once (no drop animation of the first yet).
+
+Solid colour screens (START goes back to the menu): red = no SD card or no such pack, magenta = the pack failed its
 checks (or is from an older converter: convert again), orange = out of memory or texture slots.
 
 ## Memory
+The two weapon files of the spawned class load into MEM2 above the map (about 2 × 1.8 MiB) and are swapped when a
+spawn brings other weapons (MEM2 and texture handles released back to a mark taken after the map).
 The pack's GPU data (textures, vertices, display lists) is read into MEM2 and used in place; the sections decoded at
 load (visibility, cell tables, collision) are written last by the converter, read into a temporary MEM1 buffer,
 decoded into MEM1 and the buffer freed. `mwf-convert pack` prints the MEM2 part and warns above 44 MiB. Leaving a map
@@ -44,7 +63,7 @@ konst ×2), then blended world and model surfaces back to front. The pack is loa
 used in place; collision is decoded once into the MEM1 heap (about 2.6 MiB for `mp_rust`), where traces are fastest.
 
 ## Gun
-The M4A1 (`m4_mp`) from `common.wpk`, run by IW4L's weapon state machine (`weapon_iw4::weapon_ordinary`: raise,
+The class's weapons from `common.wpk` (the M4A1 `m4_mp` in the figures below), run by IW4L's weapon state machine (`weapon_iw4::weapon_ordinary`: raise,
 fire rate, bursts, reload, rechamber), so its timings are the PC game's: 70 ms per round, quantized to whole frames
 like IW4 (every 5th frame at 60 fps), 30-round magazine, 2.03 s / 2.36 s (empty) reload. Bullets are traced against
 the map (IW4 `MASK_SHOT`); impacts show as yellow markers for 400 ms. HUD: crosshair, magazine / reserve, weapon.
