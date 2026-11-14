@@ -37,6 +37,7 @@ mod pack;
 mod pixel_decode;
 mod preview;
 mod report;
+mod rules;
 mod sounds;
 mod stamp;
 mod static_models;
@@ -519,9 +520,12 @@ fn walk_zone(a: &MapArgs, zone: &str) -> Option<material_links::Links> {
 
 /// The data every map shares, from `common_mp`: weapons (combat numbers) for now. â†’ `out/packs/common.wpk`.
 /// MW2's menu fonts and screens from the UI zones (`ui_capture::UI_ZONES`), their textures added to `tex`.
+/// Bake the menus from the UI zones. The same walk collects the game-type scripts the match rules come from into
+/// `scripts` (a later zone's copy wins: `patch_mp` over `common_mp`).
 fn build_ui(
     a: &MapArgs,
     tex: &mut pack::Textures,
+    scripts: &mut HashMap<String, String>,
 ) -> Option<(wpk::ui::UiPack, ui_bake::BakeReport)> {
     struct Zone {
         links: material_links::Links,
@@ -558,6 +562,7 @@ fn build_ui(
         for (k, v) in std::mem::take(&mut links.localize) {
             localize.entry(k).or_insert(v);
         }
+        scripts.extend(std::mem::take(&mut links.scripts));
         zones.push(Zone {
             links,
             dir,
@@ -767,7 +772,21 @@ fn run_common(args: &[String]) -> ExitCode {
     b.section(wpk::tag::CLASSES, 0, catalog.encode());
     // Menus: MW2's fonts and baked screens, with their textures.
     let mut ui_tex = pack::Textures::default();
-    match build_ui(&a, &mut ui_tex) {
+    let mut scripts = HashMap::new();
+    let built = build_ui(&a, &mut ui_tex, &mut scripts);
+    let rules = rules::read(&scripts);
+    println!(
+        "match rules: {} of {} values read from the game-type scripts ({} scripts found)",
+        rules.found.count_ones(),
+        wpk::rules::found::ALL.count_ones(),
+        scripts.len()
+    );
+    let missing = rules::missing(&rules);
+    if !missing.is_empty() {
+        println!("  kept MW2's stock value for: {}", missing.join(", "));
+    }
+    b.section(wpk::tag::RULES, 0, rules.encode());
+    match built {
         Some((ui, r)) => {
             println!(
                 "menus: {} fonts ({} glyphs), {} screens ({} images), {} textures, {} materials without a texture",

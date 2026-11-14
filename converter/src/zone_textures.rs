@@ -299,6 +299,18 @@ impl AssetLinkSink for Collector {
         zlib_compressed: bool,
     ) -> fastfile_iw4::Result<()> {
         self.links.raw_file(data, zlib_compressed);
+        // The game-type scripts the match rules are read from (`rules.rs`).
+        if crate::rules::SCRIPTS.contains(&name) {
+            let bytes = if zlib_compressed {
+                asset_transport::inflate_zlib(data).unwrap_or_default()
+            } else {
+                data.to_vec()
+            };
+            let text = String::from_utf8_lossy(&bytes)
+                .trim_end_matches('\0')
+                .to_owned();
+            self.links.scripts.insert(name.to_owned(), text);
+        }
         if name == crate::weapons::LOCHIT_RAWFILE {
             self.links.lochit = crate::weapons::parse_lochit(data, zlib_compressed);
         }

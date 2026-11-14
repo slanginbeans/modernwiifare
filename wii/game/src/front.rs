@@ -396,6 +396,7 @@ pub fn pause(
     gfx: &mut Shim,
     input: &mut Input,
     map: &str,
+    mode: &str,
     cat: Option<&Catalog>,
     classes: Option<&[Loadout]>,
     class_cursor: &mut usize,
@@ -403,10 +404,7 @@ pub fn pause(
     // MW2's pause screen names the map and the mode in its right-hand slots.
     let info = |_: usize, out: &mut Vec<String>| {
         out.push(map.trim_start_matches("mp_").to_ascii_uppercase());
-        out.push(alloc::format!(
-            "FREE-FOR-ALL: FIRST TO {} KILLS",
-            game_core::arena::KILL_LIMIT
-        ));
+        out.push(String::from(mode));
     };
     let page = Page {
         screen: "pause",

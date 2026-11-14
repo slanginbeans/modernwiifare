@@ -426,15 +426,17 @@ fn draw_match_hud(
     now: u32,
 ) {
     let mut line = Str::default();
-    line.push_str("KILLS ");
-    line.num(a.fighters[0].kills);
+    line.push_str("SCORE ");
+    line.num(a.fighters[0].score);
     line.push_str("  LEADER ");
     let (who, k) = a.leader();
     line.push_str(fighter_name(who).as_str());
     line.push(' ');
     line.num(k);
-    line.push_str(" / ");
-    line.num(arena::KILL_LIMIT);
+    if a.rules.score_limit > 0 {
+        line.push_str(" / ");
+        line.num(a.rules.score_limit);
+    }
     rects.clear();
     hud::text(rects, 360, 24, 2, line.as_str());
     gfx.hud_rects(rects, 0xf0e8d0e0);
@@ -471,22 +473,21 @@ fn draw_match_hud(
     }
 }
 
-/// End of match: everyone's kills, highest first, until A (or B).
+/// End of match: everyone's score, best first (fewer deaths break ties), until A (or B).
 fn scoreboard(gfx: &mut Shim, input: &mut front::Input, a: &Arena) {
-    let mut order: Vec<usize> = (0..a.fighters.len()).collect();
-    order.sort_by_key(|&i| core::cmp::Reverse(a.fighters[i].kills));
+    let order = a.standings();
     let title = if order.first() == Some(&0) {
         "YOU WIN"
     } else {
         "MATCH OVER"
     };
-    // MW2's free-for-all scores 50 a kill; there are no assists without teams.
+    // Free-for-all has no assists without teams.
     let rows: Vec<front::ScoreRow> = order
         .iter()
         .map(|&i| front::ScoreRow {
             name: alloc::string::String::from(fighter_name(i).as_str()),
             cols: [
-                a.fighters[i].kills as i32 * 50,
+                a.fighters[i].score as i32,
                 a.fighters[i].kills as i32,
                 0,
                 a.fighters[i].life.deaths as i32,
@@ -502,6 +503,8 @@ fn scoreboard(gfx: &mut Shim, input: &mut front::Input, a: &Arena) {
         .map(|&i| {
             let mut l = front::Line::new(fighter_name(i).as_str());
             let mut v = Str::default();
+            v.num(a.fighters[i].score);
+            v.push_str(" POINTS  ");
             v.num(a.fighters[i].kills);
             v.push_str(" KILLS  ");
             v.num(a.fighters[i].life.deaths);
@@ -532,6 +535,12 @@ fn run_map(
     input: &mut front::Input,
 ) -> Exit {
     let weapons = weapon_section(common);
+    // MW2's match rules from the user's scripts (stock values with an older pack).
+    let rules = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::RULES))
+        .and_then(|s| wpk::rules::Rules::decode(s.data))
+        .unwrap_or_default();
     let mut file = [0u8; 96];
     let n = name.len() + 4;
     if n > file.len() {
@@ -711,7 +720,7 @@ fn run_map(
     };
     let mut arena = match (&clip, &player) {
         (Some(c), Some(p)) if !spawn_list.is_empty() => {
-            Some(Arena::new(c, &spawn_list, BOTS, p.clone(), |i| {
+            Some(Arena::new(c, &spawn_list, BOTS, p.clone(), rules, |i| {
                 if i == 0 { None } else { bot_gun(i) }
             }))
         }
@@ -726,8 +735,8 @@ fn run_map(
     let mut last_shot_ms: Option<u32> = None;
     let mut next_impact = 0usize;
     let mut hud_rects: Vec<Rect> = Vec::with_capacity(512);
-    let mut life = Life::default();
-    let clock = MatchClock::start(ffi::ms());
+    let mut life = Life::with_rules(&rules);
+    let clock = MatchClock::with_limit(ffi::ms(), rules.time_limit_ms);
     // Below the lowest spawn point by this much is out of the world.
     let floor_z = world
         .spawns
@@ -795,10 +804,16 @@ fn run_map(
             devlog::event(now, "pause", format_args!(""));
             stick_event(&stick_max, &trigger_max, now);
             devlog::flush(now);
+            let mode = if rules.score_limit > 0 {
+                alloc::format!("FREE-FOR-ALL: FIRST TO {} POINTS", rules.score_limit)
+            } else {
+                alloc::string::String::from("FREE-FOR-ALL")
+            };
             match front::pause(
                 gfx,
                 input,
                 name,
+                &mode,
                 loadouts.catalog,
                 (!loadouts.classes.is_empty()).then_some(loadouts.classes),
                 loadouts.cursor,
@@ -1054,6 +1069,7 @@ fn run_map(
                 bot_gun,
                 &mut events,
             );
+            a.regen(now);
             life = a.fighters[0].life;
             // Hits slow you (IW4 damage timer, set on the arena's copy of you).
             if let Some(p) = player.as_mut() {
@@ -1166,8 +1182,9 @@ fn run_map(
                 now,
                 "match_end",
                 format_args!(
-                    "kills={} deaths={} leader={} leader_kills={}",
+                    "kills={} score={} deaths={} leader={} leader_score={}",
                     a.fighters[0].kills,
+                    a.fighters[0].score,
                     life.deaths,
                     a.leader().0,
                     a.leader().1

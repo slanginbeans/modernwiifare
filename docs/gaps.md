@@ -30,11 +30,13 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
 2. **Weapon switching through IW4L** (`weapon_check_for_change`: drop, then raise; refused in blocking states).
 3. **Melee** (`weapon_iw4::melee`, the lunge in `movement_iw4::melee_charge_move`).
 4. **Players block each other** (`clipmap_iw4::transformed_temp_capsule_trace` per fighter in pmove traces).
-5. **Health regeneration** with the delay and rate read from the user's game scripts (not guessed).
+5. ~~Health regeneration~~ done: MW2's `_healthoverlay.gsc` loop step by step (`life::Life::regen`), the numbers
+   read from the user's scripts (`RULE`).
 6. **Bullet penetration** (`weapon_iw4::penetration`; needs surface types and the depth table from the converter).
 7. **Hit volumes**: turn the boxes with the body's yaw now; the character models' hit boxes later.
-8. **FFA rules**: IW4L `gamemode_iw4::ffa` scores (50 a kill, limit from the user's playlist / scripts), ties to
-   fewer deaths; spawns scored by distance (`SPAWN_IDEAL_DIST` 1600, `SPAWN_BAD_DIST` 1200) and line of sight.
+8. **FFA rules**: points (a kill, the headshot bonus), score and time limits from the user's `dm.gsc`, ties to fewer
+   deaths: done. Still to do: spawns scored by distance (`SPAWN_IDEAL_DIST` 1600, `SPAWN_BAD_DIST` 1200) and line
+   of sight; the playlist's overrides (the stock script limit is 1000 points).
 9. Crouch as MW2's console toggle; prone.
 
 ## Next, performance (ranked by expected milliseconds; measure with the logs first)

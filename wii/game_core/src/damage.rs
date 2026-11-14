@@ -11,6 +11,7 @@ use weapon_iw4::{HITLOC_COUNT, WeaponCombatFacts, location_damage_scale};
 
 /// IW4 hit locations (`weapon_iw4::HITLOC_NAMES` order).
 pub mod hitloc {
+    pub const HELMET: u8 = 1;
     pub const HEAD: u8 = 2;
     pub const NECK: u8 = 3;
     pub const TORSO_UPPER: u8 = 4;

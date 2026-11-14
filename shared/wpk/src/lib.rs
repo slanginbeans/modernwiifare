@@ -23,6 +23,7 @@ pub mod clip;
 pub mod nav;
 pub mod quant;
 pub mod records;
+pub mod rules;
 pub mod sound;
 pub mod strips;
 pub mod ui;
@@ -99,6 +100,8 @@ pub mod tag {
     pub const CLASSES: Tag = *b"CLSS";
     /// Menu fonts and baked screens ([`crate::ui::UiPack`]); their textures are in `TEXT` / `TXDA`.
     pub const UI: Tag = *b"UIPK";
+    /// Match rules from the user's game-type scripts ([`crate::rules::Rules`], in `common.wpk`).
+    pub const RULES: Tag = *b"RULE";
     /// Weapons (`weapon::WeaponRecord`): combat numbers of every weapon (in `common.wpk`).
     pub const WEAPONS: Tag = *b"WEAP";
     /// World visibility (`vis::Vis`): cell BSP, cells, portals.

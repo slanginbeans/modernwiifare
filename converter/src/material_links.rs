@@ -244,6 +244,8 @@ pub struct Links {
     pub lochit: Option<[f32; weapon_iw4::HITLOC_COUNT]>,
     /// Fonts and menus of the zone.
     pub ui: crate::ui_capture::UiCapture,
+    /// The game-type scripts the match rules come from (`rules::SCRIPTS`), by rawfile name.
+    pub scripts: HashMap<String, String>,
     /// Sound aliases and loaded sounds of the zone.
     pub sounds: crate::sounds::Capture,
     /// Every XAnim loaded, by name, read again after the walk (`viewmodel.rs`).

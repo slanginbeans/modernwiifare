@@ -2,7 +2,8 @@
 //! movement, an IW4L gun and a life; bullets land on players' hit volumes ([`crate::damage`]) before the wall behind
 //! them; kills, deaths and respawns at the spawn point furthest from everyone alive.
 //!
-//! MW2 FFA: first to 30 kills or the 10-minute clock (both are GSC-scripted in MW2; these are its defaults).
+//! MW2 FFA rules (`wpk::rules::Rules`, read from the user's `dm.gsc` / `_healthoverlay.gsc` at convert time): points
+//! a kill and a headshot bonus, the score limit, health and its regeneration.
 
 use alloc::vec::Vec;
 
@@ -15,9 +16,7 @@ use crate::damage;
 use crate::gun::{Gun, GunInput, MASK_SHOT, Shot, SpreadInput};
 use crate::life::Life;
 use crate::player::Player;
-
-/// MW2 FFA score limit in kills.
-pub const KILL_LIMIT: u32 = 30;
+use wpk::rules::Rules;
 /// How far a bot looks to either side of where it faces, and how far it sees (IW4L `bots` sensor: a 90° field of
 /// view, 5906 units).
 const VIEW_HALF_DEG: f32 = 45.0;
@@ -37,6 +36,9 @@ pub struct Fighter {
     /// None for the human.
     pub brain: Option<Brain>,
     pub kills: u32,
+    pub headshots: u32,
+    /// Match points (`Rules::kill_score` a kill, `headshot_score` more for a headshot).
+    pub score: u32,
     pub last_fire_ms: Option<u32>,
     /// Who last hurt this fighter (credited with the kill).
     pub last_attacker: Option<usize>,
@@ -50,14 +52,16 @@ pub struct Fighter {
 }
 
 impl Fighter {
-    fn new(player: Player, gun: Option<Gun>, brain: Option<Brain>) -> Fighter {
+    fn new(player: Player, gun: Option<Gun>, brain: Option<Brain>, rules: &Rules) -> Fighter {
         Fighter {
             prev_origin: player.ps.origin,
             player,
-            life: Life::default(),
+            life: Life::with_rules(rules),
             gun,
             brain,
             kills: 0,
+            headshots: 0,
+            score: 0,
             last_fire_ms: None,
             last_attacker: None,
             next_step_ms: None,
@@ -107,6 +111,7 @@ pub fn feet_and_aim(p: &Player) -> ([f32; 3], [f32; 3]) {
 
 pub struct Arena {
     pub fighters: Vec<Fighter>,
+    pub rules: Rules,
     /// Whether the human (slot 0) is in the match (not free-flying): bots ignore and can't hit it otherwise.
     pub human_present: bool,
     spawn_count: usize,
@@ -141,20 +146,23 @@ impl Arena {
         spawns: &[([f32; 3], f32)],
         bots: usize,
         human: Player,
+        rules: Rules,
         mut gun: impl FnMut(usize) -> Option<Gun>,
     ) -> Arena {
         let mut a = Arena {
             fighters: Vec::with_capacity(bots + 1),
+            rules,
             human_present: true,
             spawn_count: 0,
         };
-        a.fighters.push(Fighter::new(human, gun(0), None));
+        a.fighters.push(Fighter::new(human, gun(0), None, &rules));
         for i in 1..=bots {
             let p = a.spawn_point(spawns, i);
             a.fighters.push(Fighter::new(
                 Player::spawn(clip, p.0, p.1),
                 gun(i),
                 Some(Brain::new(Skill::REGULAR, 0x51ed_270b ^ (i as u32 * 7919))),
+                &rules,
             ));
         }
         a
@@ -193,18 +201,36 @@ impl Arena {
         }
     }
 
-    /// The leading kill count and whether the match is won.
+    /// The leader and their score: highest score, then fewer deaths (IW4L `gamemode_iw4::ffa`), then lower slot.
     pub fn leader(&self) -> (usize, u32) {
         self.fighters
             .iter()
             .enumerate()
-            .map(|(i, f)| (i, f.kills))
-            .max_by_key(|&(i, k)| (k, usize::MAX - i))
-            .unwrap_or((0, 0))
+            .max_by_key(|&(i, f)| (f.score, u32::MAX - f.life.deaths, usize::MAX - i))
+            .map_or((0, 0), |(i, f)| (i, f.score))
     }
 
+    /// Someone reached the score limit (0: none).
     pub fn won(&self) -> bool {
-        self.leader().1 >= KILL_LIMIT
+        self.rules.score_limit > 0 && self.leader().1 >= self.rules.score_limit
+    }
+
+    /// Fighters in scoreboard order (as [`Arena::leader`]).
+    pub fn standings(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.fighters.len()).collect();
+        order.sort_by_key(|&i| {
+            let f = &self.fighters[i];
+            (core::cmp::Reverse(f.score), f.life.deaths, i)
+        });
+        order
+    }
+
+    /// Run every living fighter's health regeneration up to `now`.
+    pub fn regen(&mut self, now: u32) {
+        let rules = self.rules;
+        for f in &mut self.fighters {
+            f.life.regen(now, &rules);
+        }
     }
 
     /// Resolve a bullet from fighter `from` (traced against the world as `shot`): the first player hit volume
@@ -255,7 +281,15 @@ impl Arena {
                 victim,
             });
             if from != victim {
-                self.fighters[from].kills += 1;
+                let head = loc == damage::hitloc::HEAD || loc == damage::hitloc::HELMET;
+                let rules = self.rules;
+                let k = &mut self.fighters[from];
+                k.kills += 1;
+                k.score += rules.kill_score;
+                if head {
+                    k.headshots += 1;
+                    k.score += rules.headshot_score;
+                }
             }
         }
     }
@@ -467,7 +501,7 @@ mod tests {
         let mc = MapClip::new(&clip);
         let spawns = [([0.0, 0.0, 0.0], 0.0), ([300.0, 0.0, 0.0], 180.0)];
         let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
-        let mut a = Arena::new(&mc, &spawns, 1, human, |_| Some(rifle()));
+        let mut a = Arena::new(&mc, &spawns, 1, human, Rules::default(), |_| Some(rifle()));
         let bot_at = a.fighters[1].player.ps.origin;
         let shot = Shot {
             start: [bot_at[0] - 300.0, bot_at[1], 64.0],
@@ -494,6 +528,9 @@ mod tests {
         }
         assert!(!a.fighters[1].life.alive());
         assert_eq!(a.fighters[0].kills, 1);
+        // MW2 FFA: 50 a kill and 50 more for a headshot.
+        assert_eq!((a.fighters[0].score, a.fighters[0].headshots), (100, 1));
+        assert_eq!(a.standings()[0], 0);
         assert!(ev.contains(&Event::Kill {
             attacker: 0,
             victim: 1
@@ -507,7 +544,7 @@ mod tests {
         // The bot spawns furthest from the human, facing it.
         let spawns = [([0.0, 0.0, 0.0], 0.0), ([400.0, 0.0, 0.0], 180.0)];
         let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
-        let mut a = Arena::new(&mc, &spawns, 1, human, |_| Some(rifle()));
+        let mut a = Arena::new(&mc, &spawns, 1, human, Rules::default(), |_| Some(rifle()));
         let mut ev = Vec::new();
         for f in 0..300u32 {
             a.update_bots(
@@ -557,7 +594,9 @@ mod tests {
         .map(|s| (s.origin, s.yaw))
         .collect();
         let human = Player::spawn(&mc, spawns[0].0, spawns[0].1);
-        let mut a = Arena::new(&mc, &spawns, 5, human, |i| (i > 0).then(rifle));
+        let mut a = Arena::new(&mc, &spawns, 5, human, Rules::default(), |i| {
+            (i > 0).then(rifle)
+        });
         a.human_present = false;
         let start: Vec<[f32; 3]> = a.fighters.iter().map(|f| f.player.ps.origin).collect();
         let mut furthest = [0.0f32; 6];

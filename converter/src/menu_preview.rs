@@ -97,7 +97,15 @@ pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
             ("CHOOSE CLASS", names, Vec::new(), "A CHOOSE   B BACK")
         }
         "pause" => {
-            slots.extend(s(&["RUST", "FREE-FOR-ALL: FIRST TO 30 KILLS"]));
+            let rules = pack
+                .section(wpk::tag::RULES)
+                .and_then(|s| wpk::rules::Rules::decode(s.data))
+                .unwrap_or_default();
+            slots.push("RUST".to_owned());
+            slots.push(format!(
+                "FREE-FOR-ALL: FIRST TO {} POINTS",
+                rules.score_limit
+            ));
             (
                 "PAUSED",
                 s(&["RESUME", "CHANGE CLASS", "END GAME"]),
