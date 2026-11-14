@@ -201,6 +201,33 @@ impl AssetLinkSink for Collector {
         self.links.xmodel_surface_name(slot)
     }
 
+    fn capture_loaded_sound(
+        &mut self,
+        s: &ZoneStream<'_>,
+        header: Ptr,
+        pcm: Ptr,
+        data_len: usize,
+    ) -> fastfile_iw4::Result<()> {
+        self.links.sounds.loaded_sound(s, header, pcm, data_len);
+        Ok(())
+    }
+
+    fn bind_last_loaded_to_sound_file(&mut self, file: Ptr) -> fastfile_iw4::Result<()> {
+        self.links.sounds.bind_file(file);
+        Ok(())
+    }
+
+    fn capture_sound(
+        &mut self,
+        s: &ZoneStream<'_>,
+        list: Ptr,
+        count: usize,
+        head: Option<Ptr>,
+    ) -> fastfile_iw4::Result<()> {
+        self.links.sounds.sound_list(s, list, count, head);
+        Ok(())
+    }
+
     fn capture_string_table(
         &mut self,
         s: &ZoneStream<'_>,

@@ -9,6 +9,7 @@
 #include <dirent.h>
 #include <fat.h>
 #include <strings.h>
+#include <asndlib.h>
 #include <gccore.h>
 #include <stdio.h>
 #include <string.h>
@@ -453,6 +454,27 @@ void mwf_pos_matrix(const float m[3][4]) {
 
 void mwf_flush(const void *p, uint32_t len) {
     DCFlushRange((void *)p, len);
+}
+
+/* ---- Sound (libogc ASND: 16 voices mixed by the DSP) ---- */
+
+void mwf_snd_init(void) {
+    ASND_Init();
+    ASND_Pause(0);
+}
+
+int32_t mwf_snd_play(const void *pcm, uint32_t bytes, uint32_t rate, uint8_t vol_l, uint8_t vol_r) {
+    s32 voice = ASND_GetFirstUnusedVoice();
+    if (voice < 0)
+        return -1;
+    if (ASND_SetVoice(voice, VOICE_MONO_16BIT, (s32)rate, 0, (void *)pcm, (s32)bytes, vol_l, vol_r, NULL) != SND_OK)
+        return -1;
+    return voice;
+}
+
+void mwf_snd_stop_all(void) {
+    for (s32 v = 0; v < MAX_SND_VOICES; v++)
+        ASND_StopVoice(v);
 }
 
 void mwf_view_begin(float fovy_deg, float znear, float zfar) {

@@ -23,6 +23,7 @@
 //!       Converts one PNG to a Wii texture (`.gxt`) plus a `_preview.png` of what the Wii shows,
 //!       and prints the chosen format, size and quality. Default output folder: out/textures.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -34,6 +35,7 @@ mod material_links;
 mod pack;
 mod pixel_decode;
 mod preview;
+mod sounds;
 mod static_models;
 mod texture;
 mod viewmodel;
@@ -431,10 +433,14 @@ fn run_pack(args: &[String]) -> ExitCode {
     run_pack_one(a)
 }
 
+/// The zone the weapon sounds are read from: MW2 MP's sound aliases and their loaded sounds live in
+/// `localized_common_mp` (`common_mp` only names them).
+const SOUND_ZONE: &str = "localized_common_mp";
+
 /// Weapons whose first-person model goes into `common.wpk` (the default weapon for now; class weapons later).
 const VIEWMODEL_WEAPONS: [&str; 1] = ["m4_mp"];
 
-/// The data every map shares, from `common_mp`: weapons (combat numbers) for now. → `out/packs/common.wpk`.
+/// The data every map shares, from `common_mp`: weapons (combat numbers) for now. â†’ `out/packs/common.wpk`.
 fn run_common(args: &[String]) -> ExitCode {
     let mut a = match parse_map_args(args) {
         Ok(a) => a,
@@ -461,19 +467,47 @@ fn run_common(args: &[String]) -> ExitCode {
                 continue;
             };
             match viewmodel::build(s, links, w, &index, &tex_dir, &mut tex) {
-                Ok((vm, report)) => views.push((name, vm, report)),
+                Ok((vm, report)) => {
+                    let view = &links.weapon_views[w];
+                    let notes = sounds::view_notes(s, links, view);
+                    views.push((name, vm, report, view.sounds.clone(), notes));
+                }
                 Err(e) => eprintln!("warning: viewmodel of {name}: {e}"),
             }
         }
         views
     });
-    let (collector, views) = match walked {
+    let (mut collector, views) = match walked {
         Ok(x) => x,
         Err(e) => {
             eprintln!("reading {label}: {e}");
             return ExitCode::FAILURE;
         }
     };
+    // The weapons' sound aliases and clips come from the localized zone.
+    let mut capture = std::mem::take(&mut collector.links.sounds);
+    let sound_args = MapArgs {
+        map: SOUND_ZONE.to_owned(),
+        zone: None,
+        ..a.clone()
+    };
+    match open_map_zone(&sound_args).and_then(|(image, l, _)| {
+        zone_textures::walk_with(&image, &HashSet::new(), |_, _| ()).map_err(|e| {
+            eprintln!("reading {l}: {e}");
+            ExitCode::FAILURE
+        })
+    }) {
+        Ok((c, ())) => capture.absorb(c.links.sounds),
+        Err(_) => eprintln!("warning: no weapon sounds ({SOUND_ZONE} unreadable)"),
+    }
+    let mut bank = sounds::Bank::default();
+    let views: Vec<_> = views
+        .into_iter()
+        .map(|(name, vm, report, names, notes)| {
+            let snd = sounds::weapon_sounds(&capture, &mut bank, &names, &notes);
+            (name, vm, report, snd)
+        })
+        .collect();
     let links = &collector.links;
     // Weapons with their recoil, sorted by name, first of each name kept.
     let mut both: Vec<(wpk::weapon::WeaponRecord, wpk::weapon::KickRecord)> = links
@@ -504,10 +538,40 @@ fn run_common(args: &[String]) -> ExitCode {
         wpk::records::encode(&tex.records),
     );
     b.section(wpk::tag::TEXTURE_DATA, 0, std::mem::take(&mut tex.data));
-    for (name, vm, r) in &views {
+    b.section(
+        wpk::tag::SOUND_ALIASES,
+        bank.aliases.len() as u32,
+        wpk::records::encode(&bank.aliases),
+    );
+    b.section(
+        wpk::tag::SOUND_VARIANTS,
+        bank.variants.len() as u32,
+        wpk::records::encode(&bank.variants),
+    );
+    b.section(wpk::tag::SOUND_DATA, 0, bank.data.clone());
+    println!(
+        "sounds: {} aliases ({} without a playable clip), {} variants, {:.2} MiB of PCM; {} aliases and {} loaded sounds in the zone",
+        bank.aliases.len(),
+        bank.missing,
+        bank.variants.len(),
+        bank.data.len() as f64 / (1024.0 * 1024.0),
+        capture.aliases.len(),
+        capture.loaded.len(),
+    );
+    for (name, vm, r, snd) in &views {
         // `count` = the weapon's record index in WEAP.
         let w = weapons.iter().position(|x| x.name() == *name).unwrap_or(0);
         b.section(wpk::tag::VIEWMODEL, w as u32, vm.encode());
+        b.section(wpk::tag::WEAPON_SOUNDS, w as u32, snd.encode());
+        println!(
+            "sounds {name}: {} of {} events, {} notetrack sounds",
+            snd.events
+                .iter()
+                .filter(|&&e| e != wpk::sound::NONE)
+                .count(),
+            snd.events.len(),
+            snd.notes.len()
+        );
         println!(
             "viewmodel {name}: {} bones, {} vertices, {} triangles, {} surfaces ({} textured, {} hidden), {} clips ({} missing)",
             r.bones,

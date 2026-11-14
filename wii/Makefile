@@ -19,7 +19,7 @@ MACHDEP := -DGEKKO -mrvl -mcpu=750 -meabi -mhard-float
 CFLAGS  := -O2 -g -Wall -Wextra -ffunction-sections -fdata-sections $(MACHDEP) -I$(OGC)/include -Iplatform
 LDFLAGS := -g $(MACHDEP) -L$(OGC)/lib/wii -Wl,--gc-sections
 LIBS    := -logc -lm
-GAME_LIBS := -lfat -logc -lm
+GAME_LIBS := -lfat -lasnd -logc -lm
 
 RUST_TARGET := powerpc-unknown-linux-gnu
 RUSTLIB     := ../target/$(RUST_TARGET)/release/libmwf_spikes.a

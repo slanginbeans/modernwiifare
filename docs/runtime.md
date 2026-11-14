@@ -55,7 +55,13 @@ Recoil is IW4L's model with each weapon's own kick numbers (`KICK` in `common.wp
 the viewmodel (gun kick within the weapon's maximum pitch / yaw).
 A shot shows a muzzle flash for 50 ms at the gun's `tag_flash`: a placeholder glow in two HUD rectangles, until
 MW2's view flash effect (FxEffectDef) is converted.
-Not yet: sounds, damage to players, other weapons and attachments.
+Sounds: the gun plays MW2's player-view sounds through libogc's ASND mixer (16 voices): fire, empty click, reload
+and raise from the weapon's events, and the reload's clip-out / clip-in / chamber sounds from the first-person
+animation's notetracks (mapped through the weapon's `notetrackSoundMap`). Each play picks a variant, volume and
+pitch from the alias's ranges, as IW4 does. They come from `localized_common_mp` (where MW2 MP keeps its sound
+aliases and clips), stored in `common.wpk` as mono 16-bit PCM at the original 44.1 kHz (~0.5 MiB for the M4).
+No distance falloff or panning yet: there are no other players to hear.
+Not yet: damage to players, other weapons and attachments.
 
 ## First-person model
 The M4A1's view hands and gun (`common.wpk`, 8.4k triangles, 101 bones, 17 animations), posed and skinned on the CPU
@@ -88,3 +94,5 @@ no health regeneration.
   vertices are the next performance steps.
 - Trace cost on Broadway: on the host one `pmove` on `mp_rust` takes about 20 µs, so a 750CL should stay well under
   a millisecond, but this is unmeasured.
+- Sound from MEM2: ASND plays the clips in place from `common.wpk` in MEM2. If the gun is silent, the DSP may not
+  reach MEM2 there, and the clips need copying to MEM1.

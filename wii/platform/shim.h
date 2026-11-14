@@ -137,6 +137,12 @@ void mwf_sky_face(const float view_rot[3][4], const float corners[4][5], int32_t
 /* ---- first-person model (game/src/view.rs) ---- */
 /* Write back CPU-written data GX will read (skinned positions). */
 void mwf_flush(const void *p, uint32_t len);
+
+/* Sound: ASND voices. `pcm`: mono 16-bit big-endian, 32-byte aligned, flushed, `bytes` a multiple of 32.
+   Volumes 0..255. Returns the voice, or -1 when every voice is busy. */
+void mwf_snd_init(void);
+int32_t mwf_snd_play(const void *pcm, uint32_t bytes, uint32_t rate, uint8_t vol_l, uint8_t vol_r);
+void mwf_snd_stop_all(void);
 /* Start drawing the first-person model: its own projection (fovy degrees, near / far) and the front slice of the
  * depth range, so it never sinks into walls. World draws use the rest of the range. */
 void mwf_view_begin(float fovy_deg, float znear, float zfar);

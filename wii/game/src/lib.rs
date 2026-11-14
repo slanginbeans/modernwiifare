@@ -12,6 +12,7 @@ extern crate alloc;
 
 mod ffi;
 mod rt;
+mod sound;
 mod view;
 
 use alloc::vec::Vec;
@@ -558,6 +559,7 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
     let mut view = gun
         .as_ref()
         .and_then(|g| view::View::load(common, g.weapon_index(), gfx));
+    let mut sounds = sound::Sounds::load(common);
     let mut impacts: [(Option<[f32; 3]>, u32); 8] = [(None, 0); 8];
     let mut last_shot_ms: Option<u32> = None;
     let mut next_impact = 0usize;
@@ -652,7 +654,7 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
                             rightmove: p.cmd_move.1,
                         },
                     );
-                    let (_, shot) = g.update(
+                    let (event, shot) = g.update(
                         c,
                         msec as i32,
                         &GunInput {
@@ -667,6 +669,13 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
                     );
                     if shot.is_some() {
                         last_shot_ms = Some(now);
+                    }
+                    if let (Some(e), Some(s), Some(v)) =
+                        (event.as_ref(), sounds.as_mut(), view.as_ref())
+                        && let Some(a) =
+                            game_core::weapon_sound::for_event(&v.sounds, e, g.ammo().0)
+                    {
+                        s.play(a);
                     }
                     if let Some(s) = shot.filter(|s| s.hit) {
                         impacts[next_impact] = (Some(s.end), now);
@@ -704,6 +713,11 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
         {
             let (slot, restart) = g.anim();
             v.draw(gfx, slot, restart, now, g.gun_kick());
+            if let Some(s) = sounds.as_mut() {
+                for &a in v.notes_due() {
+                    s.play(a);
+                }
+            }
             // Muzzle flash for 50 ms after a shot: a placeholder additive-looking glow at the gun's tag_flash until
             // MW2's view flash effect is converted.
             if last_shot_ms.is_some_and(|t| now.wrapping_sub(t) < 50)
@@ -737,6 +751,7 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
 #[unsafe(no_mangle)]
 pub extern "C" fn mwf_game_main() -> i32 {
     unsafe { ffi::mwf_gx_init(0x202020ff) };
+    unsafe { ffi::mwf_snd_init() };
     let mut gfx = Shim::default();
     // The portal walk's scratch (~0.2 MiB) is static, never on the stack.
     let scratch: &'static mut WalkScratch = unsafe { &mut *core::ptr::addr_of_mut!(WALK_SCRATCH) };
@@ -751,6 +766,7 @@ pub extern "C" fn mwf_game_main() -> i32 {
         };
         let mark = unsafe { ffi::mwf_mem2_mark() };
         let exit = run_map(&mut gfx, maps[i], scratch, common);
+        unsafe { ffi::mwf_snd_stop_all() };
         unsafe { ffi::mwf_mem2_release(mark) };
         if let Exit::Quit = exit {
             return 0;

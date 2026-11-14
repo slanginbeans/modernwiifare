@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use game_core::gfx::{DrawState, Gfx, Mtx34, TexDesc};
 use game_core::viewmodel as vmod;
 use wpk::records::{self, NONE, TextureRecord, texture_flags};
+use wpk::sound::WeaponSounds;
 use wpk::view::{Clip, ViewModel};
 
 use crate::ffi;
@@ -38,6 +39,12 @@ pub struct View {
     playing: (u8, bool, u32),
     /// Model-to-eye matrix of the last draw (for the muzzle flash).
     last_eye: Option<Mtx34>,
+    /// The weapon's sounds (`WSND`; empty when the pack has none).
+    pub sounds: WeaponSounds,
+    /// Fraction of the playing clip at the last draw (`None` right after a clip starts).
+    last_frac: Option<f32>,
+    /// Notetrack sounds the last draw passed.
+    notes_due: Vec<u16>,
 }
 
 /// `count` bytes of 32-byte aligned MEM2, released with the map.
@@ -54,6 +61,11 @@ impl View {
             .section(wpk::tag::VIEWMODEL)
             .filter(|s| s.count == index)?;
         let vm = ViewModel::decode(section.data).ok()?;
+        let sounds = pack
+            .section(wpk::tag::WEAPON_SOUNDS)
+            .filter(|s| s.count == index)
+            .and_then(|s| WeaponSounds::decode(s.data))
+            .unwrap_or_default();
         // Textures (the common pack is in MEM2, 32-byte aligned, flushed).
         let txda = pack.section(wpk::tag::TEXTURE_DATA)?.data;
         let mut handles = Vec::new();
@@ -134,8 +146,16 @@ impl View {
             skinned: Vec::with_capacity(n),
             playing: (wpk::view::slot::IDLE, false, 0),
             last_eye: None,
+            sounds,
+            last_frac: None,
+            notes_due: Vec::new(),
             vm,
         })
+    }
+
+    /// Notetrack sounds (aliases) the last draw's animation passed.
+    pub fn notes_due(&self) -> &[u16] {
+        &self.notes_due
     }
 
     /// Where the gun's `tag_flash` is on the 640 × 480 HUD, from the last draw.
@@ -166,12 +186,25 @@ impl View {
     ) {
         if (slot, restart) != (self.playing.0, self.playing.1) {
             self.playing = (slot, restart, now_ms);
+            self.last_frac = None;
         }
         let time = now_ms.wrapping_sub(self.playing.2) as f32 / 1000.0;
         let clip: Option<&Clip> = self
             .vm
             .clip(slot)
             .or_else(|| self.vm.clip(wpk::view::slot::IDLE));
+        // Notetrack sounds passed since the last frame.
+        self.notes_due.clear();
+        if let Some(c) = clip {
+            let frac = vmod::fraction(c, time);
+            self.notes_due.extend(game_core::weapon_sound::notes_passed(
+                &self.sounds.notes,
+                c.slot,
+                self.last_frac,
+                frac,
+            ));
+            self.last_frac = Some(frac);
+        }
         vmod::pose(&self.vm, clip.map(|c| (c, time)), &mut self.world);
         vmod::skin_matrices(&self.vm, &self.world, &mut self.skin);
         vmod::skin(&self.vm, &self.skin, &mut self.skinned);

@@ -103,6 +103,17 @@ fn frames(c: &Clip, time_s: f32) -> (usize, usize, f32) {
     (a, b, f - a as f32)
 }
 
+/// How far through `c` the pose at `time_s` is, 0..1 (wrapping for a looping clip), as IW4 notetrack times are.
+pub fn fraction(c: &Clip, time_s: f32) -> f32 {
+    let (a, _, t) = frames(c, time_s);
+    let last = f32::from(c.frames.saturating_sub(1));
+    if last <= 0.0 {
+        1.0
+    } else {
+        (a as f32 + t) / last
+    }
+}
+
 /// Duration of a clip in seconds.
 pub fn duration(c: &Clip) -> f32 {
     f32::from(c.frames.saturating_sub(1)) / c.framerate.max(1e-3)

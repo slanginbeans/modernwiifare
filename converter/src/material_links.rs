@@ -127,6 +127,8 @@ pub struct WeaponView {
     pub anims: Vec<Option<String>>,
     /// Bone names whose surfaces are hidden (attachment parts the base weapon doesn't show).
     pub hide: Vec<String>,
+    /// Player-view sound aliases and the notetrack sound map.
+    pub sounds: crate::sounds::WeaponSoundNames,
 }
 
 /// Everything a zone says about one image's use.
@@ -230,6 +232,8 @@ pub struct Links {
     pub weapon_kick: Vec<wpk::weapon::KickRecord>,
     /// First-person models and animations of each weapon (parallel to `weapons`).
     pub weapon_views: Vec<WeaponView>,
+    /// Sound aliases and loaded sounds of the zone.
+    pub sounds: crate::sounds::Capture,
     /// Every XAnim loaded, by name, read again after the walk (`viewmodel.rs`).
     pub xanims: Vec<(String, fastfile_iw4::XAnimPartsGeometry)>,
     /// Every string-table cell in the zone (material names found here are looked up by name).
@@ -421,11 +425,47 @@ impl Links {
                 .map(str::to_owned)
                 .collect()
         });
+        // Player-view sounds (IW4L `WeaponSoundAliases`), in `wpk::sound::event` order.
+        let direct = |p: Option<Ptr>| {
+            p.and_then(|p| s.cstr(p).ok())
+                .filter(|n| !n.is_empty())
+                .map(str::to_owned)
+        };
+        let events = [
+            w.fire_sound_player_name,
+            w.fire_last_sound_player_name,
+            w.empty_fire_sound_player_name,
+            w.reload_sound_player_name,
+            w.reload_empty_sound_player_name,
+            w.raise_sound_player_name,
+            w.first_raise_sound_player_name,
+            w.putaway_sound_player_name,
+            w.melee_swipe_sound_player_name,
+        ]
+        .map(direct);
+        // notetrackSoundMap: 16 script-string pairs (IW4L `read_script_string_map`).
+        let mut note_map = Vec::new();
+        if let (Some(keys), Some(values)) = (w.notetrack_sound_keys, w.notetrack_sound_values) {
+            for i in 0..16 {
+                let (Ok(k), Ok(v)) = (s.u16_at(keys, i * 2), s.u16_at(values, i * 2)) else {
+                    break;
+                };
+                if k == 0 {
+                    break;
+                }
+                let k = self.script_string(s, k).filter(|n| !n.is_empty());
+                let v = self.script_string(s, v).filter(|n| !n.is_empty());
+                if let (Some(k), Some(v)) = (k, v) {
+                    note_map.push((k.to_owned(), v.to_owned()));
+                }
+            }
+        }
         self.weapon_views.push(WeaponView {
             gun: w.gun_xmodel_name.and_then(text),
             hands: w.hand_xmodel_name.and_then(text),
             anims,
             hide,
+            sounds: crate::sounds::WeaponSoundNames { events, note_map },
         });
         for name in w
             .gun_xmodel_names
@@ -567,6 +607,7 @@ impl Links {
             }
             AssetType::XModel => self.xmodel_loaded(s, slot, insert_slot),
             AssetType::Weapon => self.weapon_loaded(s),
+            AssetType::LoadedSound => self.sounds.loaded_slot(slot, insert_slot),
             _ => {}
         }
     }
@@ -588,6 +629,7 @@ impl Links {
                     self.use_material(i);
                 }
             }
+            AssetType::LoadedSound => self.sounds.alias_slot(slot, target),
             _ => {}
         }
     }

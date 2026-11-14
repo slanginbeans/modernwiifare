@@ -9,6 +9,7 @@
 //! - [`player`]: pad -> `UserCmd` -> IW4L `pmove`.
 //! - [`hud`]: screen-space rectangles and a 3×5 debug font.
 //! - [`gun`]: IW4L weapon state machine + hitscan bullets against the map.
+//! - [`weapon_sound`]: which alias a weapon event or a first-person notetrack plays.
 #![no_std]
 
 extern crate alloc;
@@ -23,4 +24,5 @@ pub mod life;
 pub mod player;
 pub mod sky;
 pub mod viewmodel;
+pub mod weapon_sound;
 pub mod world;

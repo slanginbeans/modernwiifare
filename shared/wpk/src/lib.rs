@@ -21,6 +21,7 @@ pub mod be;
 pub mod clip;
 pub mod quant;
 pub mod records;
+pub mod sound;
 pub mod strips;
 pub mod view;
 pub mod vis;
@@ -79,6 +80,14 @@ pub mod tag {
     pub const VIEWMODEL: Tag = *b"VIEW";
     /// Recoil of every weapon (`weapon::KickRecord`, parallel to `WEAP`).
     pub const KICK: Tag = *b"KICK";
+    /// Sound alias lists ([`crate::sound::AliasRecord`]).
+    pub const SOUND_ALIASES: Tag = *b"SNDA";
+    /// Sound variants ([`crate::sound::VariantRecord`]).
+    pub const SOUND_VARIANTS: Tag = *b"SNDV";
+    /// Sound clips: mono 16-bit big-endian PCM, 32-byte aligned.
+    pub const SOUND_DATA: Tag = *b"SNDD";
+    /// A first-person weapon's sounds ([`crate::sound::WeaponSounds`]); `count` = its `WEAP` index.
+    pub const WEAPON_SOUNDS: Tag = *b"WSND";
     /// Weapons (`weapon::WeaponRecord`): combat numbers of every weapon (in `common.wpk`).
     pub const WEAPONS: Tag = *b"WEAP";
     /// World visibility (`vis::Vis`): cell BSP, cells, portals.
