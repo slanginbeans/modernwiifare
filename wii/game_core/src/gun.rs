@@ -334,6 +334,15 @@ impl Gun {
         &self.facts
     }
 
+    /// Fill the magazine, the reserve and the grenades (the debug menu's infinite ammo).
+    pub fn refill_ammo(&mut self) {
+        self.hand.clip = self.facts.clip_size.max(self.hand.clip);
+        self.hand.stock = self.facts.max_ammo.max(self.hand.stock);
+        for r in self.offhand.inventory.iter_mut().filter(|r| r.weapon != 0) {
+            r.ammo = r.ammo.max(1);
+        }
+    }
+
     /// Rounds in the magazine and in reserve.
     pub fn ammo(&self) -> (i32, i32) {
         (self.hand.clip, self.hand.stock)

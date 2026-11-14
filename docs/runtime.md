@@ -81,6 +81,12 @@ EMP: jams the enemies' radar as a Counter-UAV does, for `_emp.gsc`'s jam time (6
 
 Player characters: the other players are MW2's bodies for the map's factions (`CHAR`: each team's assault body and head, a low LOD so the Wii can skin several), animated with MW2's player animations (`PANM`, bound by bone name at load) chosen from each player's stance, sprint and move direction relative to its facing (stand, run forward / back / left / right, sprint, crouch, crouch run, prone, prone crawl; one full-body clip, not MW2's blended leg and torso tree), skinned on the CPU and drawn at the player's position and facing with the world's projection. Players behind you aren't skinned. Without characters in the pack, the placeholder boxes are drawn. Hit detection still uses the boxes.
 
+Debug menu (DEBUG on the main menu, and on the pause menu during a match; A changes a setting; saved to `<app folder>/debug.dat`):
+- Match: bots (0-7; applies at the next match), bot skill (easy / regular / hard presets around MW2's regular reaction and aim error), bots don't attack, bots frozen, god mode (no damage, no fall or out-of-world deaths), infinite ammo (magazine, reserve and grenades every frame), all killstreaks (every reward at the start of each life), primary weapon (any catalog weapon instead of the class's, no attachments; at the next spawn).
+- Overlays (see-through boxes): hit boxes (head and neck red, body blue), bot goals (yellow posts where each bot is walking), objectives (Domination flag triggers, coloured by holder), bullet paths (your last six shots for 3 s, through walls).
+- Performance: perf overlay at match start, character models (off: the placeholder boxes), world models, sound.
+- In a match only: teleport to the next spawn or objective, bring a bot in front of you, kill all bots, UAV / Counter-UAV / EMP / nuke now, every killstreak reward, reset the match clock, write the log now. Actions are recorded in the match log (`debug` events).
+
 Footsteps: each player's bob cycle wrapping is a step (IW4L), sounding `step_<gait>[_plr]_<surface>` (sprint, run, walk / crouch, prone; the surface under the feet; `_default` when a surface has none; `STEP` in `common.wpk`); yours as you hear them, others' where they are.
 
 Grenades: your class's frag-type equipment (frag, semtex) is thrown through IW4L's offhand states (pull back, cook

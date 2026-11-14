@@ -187,6 +187,8 @@ pub struct World<'a> {
     order: Vec<(u8, i32, u32)>,
     /// Scratch: (instance, model surface) of each visible model surface.
     model_draws: Vec<(u16, u32)>,
+    /// Draw the static models (the debug menu can turn them off to measure them).
+    pub draw_models: bool,
 }
 
 const MODEL_DRAW: u32 = 1 << 31;
@@ -399,6 +401,7 @@ impl<'a> World<'a> {
             batch_quant,
             surface_quant,
             model_draws: Vec::with_capacity(model_surfaces.len()),
+            draw_models: true,
             model_surfaces,
             instance_bounds: instances
                 .iter()
@@ -503,7 +506,12 @@ impl<'a> World<'a> {
         // Visible static model surfaces.
         self.model_draws.clear();
         let fwd = cam.forward();
-        for (ii, inst) in self.instances.iter().enumerate() {
+        for (ii, inst) in self
+            .instances
+            .iter()
+            .enumerate()
+            .filter(|_| self.draw_models)
+        {
             if self
                 .vis
                 .as_ref()

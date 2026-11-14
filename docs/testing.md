@@ -34,3 +34,6 @@ Also say per round: did it crash (the log then has no summary line), did sound p
   CPU split over the match, and event counts.
 
 `mwf-convert report <log>...` prints the same summary for any log files (`report.bat X:\path\0007.log`).
+
+## Debug menu
+DEBUG on the main menu (and in the pause menu) sets up test conditions: bot count and skill, passive or frozen bots, god mode, infinite ammo, every killstreak, any primary weapon, overlays (hit boxes, bot goals, objectives, bullet paths), and switches to isolate costs in the log (character models, world models, sound). The settings are saved to `<app folder>/debug.dat`; delete it to go back to the defaults. Say which debug settings were on when you send a log.

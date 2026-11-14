@@ -272,6 +272,10 @@ pub struct Arena {
     pub smoke: crate::smoke::Smoke,
     /// Domination's flags (in Domination, when the map has them).
     pub dom: Option<crate::dom::Domination>,
+    /// Debug: you take no damage; bots don't attack; bots stand still.
+    pub god_mode: bool,
+    pub bots_passive: bool,
+    pub bots_frozen: bool,
     /// A tactical nuke: who called it, when it goes off, and whether it has (the match is over: its caller wins).
     pub nuke: Option<Nuke>,
     rng: u32,
@@ -404,6 +408,9 @@ impl Arena {
             smoke: crate::smoke::Smoke::default(),
             dom: None,
             nuke: None,
+            god_mode: false,
+            bots_passive: false,
+            bots_frozen: false,
             rng: 0x2545_f491,
             human_present: true,
             spawn_count: 0,
@@ -588,6 +595,13 @@ impl Arena {
             })
     }
 
+    /// Give every bot `skill`.
+    pub fn set_bot_skill(&mut self, skill: crate::bot::Skill) {
+        for b in self.fighters.iter_mut().filter_map(|f| f.brain.as_mut()) {
+            b.set_skill(skill);
+        }
+    }
+
     /// Run every living fighter's health regeneration up to `now`.
     pub fn regen(&mut self, now: u32) {
         let rules = self.rules;
@@ -705,6 +719,9 @@ impl Arena {
     ) {
         // No friendly fire in team modes (MW2's default `scr_team_fftype` 0); your own grenade still hurts you.
         if from != victim && self.mode.teams() && !self.enemies(from, victim) {
+            return;
+        }
+        if victim == 0 && self.god_mode {
             return;
         }
         let v = &mut self.fighters[victim];
@@ -1388,10 +1405,15 @@ impl Arena {
             } else {
                 f.player.ps.pm_flags &= !playerstate_iw4::pm_flags::SHELLSHOCKED;
             }
-            if f.brain.is_none() {
+            if f.brain.is_none() || self.bots_frozen {
                 continue;
             }
-            let act = f.act;
+            let mut act = f.act;
+            if self.bots_passive {
+                act.fire = false;
+                act.melee = false;
+                act.frag = false;
+            }
             f.prev_origin = f.player.ps.origin;
             f.last_step_ms = now;
             let w = f.gun.as_ref().map(Gun::move_context).unwrap_or_default();

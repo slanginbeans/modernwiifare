@@ -5,6 +5,9 @@
 //! Player-view sounds play at the listener; world sounds ([`Sounds::play_at`]) fade with distance between the alias's
 //! `distMin` and `distMax` (IW4's linear falloff) and pan left / right by where they are.
 
+/// The debug menu's sound switch: nothing plays while set.
+pub static MUTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 use wpk::records::{self, Record};
 use wpk::sound::{AliasRecord, NONE, VariantRecord};
 
@@ -119,6 +122,9 @@ impl<'a> Sounds<'a> {
             };
             left = vol * gain * (1.0 - pan.max(0.0) * 0.7);
             right = vol * gain * (1.0 + pan.min(0.0) * 0.7);
+        }
+        if MUTED.load(core::sync::atomic::Ordering::Relaxed) {
+            return;
         }
         let level = |x: f32| (x.clamp(0.0, 1.0) * 255.0) as u8;
         let rate = (v.rate as f32 * pitch.clamp(0.25, 4.0)) as u32;

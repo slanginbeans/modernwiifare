@@ -186,6 +186,7 @@ fn draw_mw2(
 pub enum Main {
     Play,
     CreateAClass,
+    Debug,
     Quit,
 }
 
@@ -198,6 +199,7 @@ pub fn main_menu(
     let mut lines = [
         Line::new("PLAY"),
         Line::new("CREATE A CLASS"),
+        Line::new("DEBUG"),
         Line::new("QUIT"),
     ];
     if !has_classes {
@@ -208,6 +210,7 @@ pub fn main_menu(
         match list(gfx, input, "MODERN WIIFARE", &lines, selected, "A SELECT") {
             Step::Accept(0) => return Main::Play,
             Step::Accept(1) => return Main::CreateAClass,
+            Step::Accept(2) => return Main::Debug,
             Step::Accept(_) => return Main::Quit,
             // B on the main menu does nothing (QUIT is a line); RESET still quits.
             _ if ffi::should_exit() => return Main::Quit,
@@ -482,6 +485,7 @@ pub fn save_classes(cat: &Catalog, classes: &[Loadout]) -> bool {
 pub enum Pause {
     Resume,
     ChangeClass(usize),
+    Debug,
     EndGame,
 }
 
@@ -509,6 +513,7 @@ pub fn pause(
         let mut lines = [
             Line::new("RESUME"),
             Line::new("CHANGE CLASS"),
+            Line::new("DEBUG"),
             Line::new("END GAME"),
         ];
         lines[1].enabled = classes.is_some();
@@ -528,7 +533,8 @@ pub fn pause(
                     return Pause::ChangeClass(i);
                 }
             }
-            Step::Accept(2) => return Pause::EndGame,
+            Step::Accept(2) => return Pause::Debug,
+            Step::Accept(3) => return Pause::EndGame,
             _ => return Pause::Resume,
         }
     }
@@ -554,5 +560,62 @@ pub fn scoreboard(gfx: &mut Shim, input: &mut Input, title: &str, rows: &[ScoreR
             u.page(|ui, q| ui_page::score_rows(ui, rows, q));
         }
         gfx.frame_end();
+    }
+}
+
+/// The debug menu: every setting (A cycles its value) and, in a match, the sandbox actions. Returns an action to
+/// carry out (the menu closes for it), or None on B. Settings that only apply when a match starts are greyed out in
+/// a match. `weapon_name` names catalog weapon `i` of `weapons`.
+pub fn debug_menu(
+    gfx: &mut Shim,
+    input: &mut Input,
+    s: &mut game_core::debug::DebugSettings,
+    weapon_name: &dyn Fn(u8) -> Option<String>,
+    weapons: u8,
+    in_match: bool,
+    sel: &mut usize,
+) -> Option<game_core::debug::Action> {
+    use game_core::debug::{ACTIONS, ITEMS};
+    loop {
+        let mut lines: Vec<Line> = ITEMS
+            .iter()
+            .map(|&it| Line {
+                text: String::from(it.label()),
+                value: s.value(it, weapon_name),
+                enabled: !(in_match && it.at_start_only()),
+            })
+            .collect();
+        if in_match {
+            lines.extend(ACTIONS.iter().map(|a| Line::new(a.label())));
+        }
+        match list(gfx, input, "DEBUG", &lines, sel, "A CHANGE / DO   B BACK") {
+            Step::Accept(i) if i < ITEMS.len() => s.cycle(ITEMS[i], weapons),
+            Step::Accept(i) => return ACTIONS.get(i - ITEMS.len()).copied(),
+            _ => return None,
+        }
+    }
+}
+
+/// The debug settings in `debug.dat` (the defaults when it isn't there).
+pub fn load_debug() -> game_core::debug::DebugSettings {
+    let Some(path) = AppPath::new("debug.dat") else {
+        return Default::default();
+    };
+    let mut buf = [0u8; 64];
+    let n = unsafe { ffi::mwf_file_read(path.as_ptr(), 0, buf.len() as u32, buf.as_mut_ptr()) };
+    if n <= 0 {
+        return Default::default();
+    }
+    game_core::debug::DebugSettings::decode(&buf[..n as usize]).unwrap_or_default()
+}
+
+/// Save the debug settings to `debug.dat`; false when the write failed.
+pub fn save_debug(s: &game_core::debug::DebugSettings) -> bool {
+    let bytes = s.encode();
+    let Some(path) = AppPath::new("debug.dat") else {
+        return false;
+    };
+    unsafe {
+        ffi::mwf_file_write(path.as_ptr(), bytes.as_ptr(), bytes.len() as u32) == bytes.len() as i32
     }
 }

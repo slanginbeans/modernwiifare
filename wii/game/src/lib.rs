@@ -410,12 +410,6 @@ fn list_maps(buf: &mut [u8; 2048]) -> Vec<&str> {
     maps
 }
 
-/// Load `<app folder>/maps/<name>.wpk` and play it until START (menu) or RESET (quit). Everything the map
-/// allocates in MEM2 is released by the caller (`mwf_mem2_release`); the MEM1 parts drop here.
-/// Bots in a free-for-all (MW2 FFA takes up to 18 players; the Wii's CPU budget starts at 5 bots, see
-/// docs/perf.md).
-const BOTS: usize = 5;
-
 fn fighter_name(i: usize) -> Str {
     let mut s = Str::default();
     if i == 0 {
@@ -692,6 +686,12 @@ struct Loadouts<'a> {
     cursor: &'a mut usize,
 }
 
+/// A debug bullet path: (start, end) and when it was fired.
+type Trail = (Option<([f32; 3], [f32; 3])>, u32);
+
+/// Load `<app folder>/maps/<name>.wpk` and play it until START (menu) or RESET (quit). Everything the map
+/// allocates in MEM2 is released by the caller (`mwf_mem2_release`); the MEM1 parts drop here.
+#[allow(clippy::too_many_arguments)]
 fn run_map(
     gfx: &mut Shim,
     name: &str,
@@ -700,7 +700,9 @@ fn run_map(
     loadouts: Loadouts<'_>,
     setup: (arena::Mode, arena::Limits),
     input: &mut front::Input,
+    debug: &mut game_core::debug::DebugSettings,
 ) -> Exit {
+    let bots = usize::from(debug.bots);
     let weapons = weapon_section(common);
     // Thrown weapons' numbers (fuse, blast, bounce; empty with an older pack).
     let equips = wpk::Pack::parse(common, false)
@@ -763,7 +765,7 @@ fn run_map(
     devlog::start(
         load_start,
         format_args!(
-            "build={} map={name} bots={BOTS} class={} mem1_free={}k mem2_free={}k widescreen={}",
+            "build={} map={name} bots={bots} class={} mem1_free={}k mem2_free={}k widescreen={}",
             option_env!("MWF_BUILD_ID").unwrap_or("dev"),
             loadouts
                 .class
@@ -833,7 +835,7 @@ fn run_map(
     };
     // The players' bodies (none with an older pack: placeholder boxes then).
     let mut characters = character::Characters::load(bytes, common, |i| world.texture(i));
-    let mut poses: Vec<character::Pose> = Vec::with_capacity(BOTS);
+    let mut poses: Vec<character::Pose> = Vec::with_capacity(bots);
     let clip: Option<MapClip<'_>> = clip_data.as_ref().map(MapClip::new);
     devlog::event(
         ffi::ms(),
@@ -878,28 +880,44 @@ fn run_map(
     // A class change applies at the next spawn, as in MW2.
     let mut class = loadouts.class;
     // Arm for a spawn; returns the class's perks (with their Pro perks: everything is unlocked).
-    let equip = |arsenal: &mut arsenal::Arsenal, gfx: &mut Shim, class: Option<usize>| {
-        let l = class.and_then(|c| loadouts.classes.get(c));
-        arsenal.equip(
-            gfx,
-            &arsenal::WeaponTables {
-                weapons,
-                kicks,
-                moves,
-                aims,
-                equips,
-                pens,
-                pen_table,
-            },
-            loadouts.catalog,
-            l,
-        );
-        match (loadouts.catalog, l) {
-            (Some(c), Some(l)) => game_core::perks::of_loadout(c, l),
-            _ => game_core::perks::PerkSet::default(),
-        }
+    // The debug menu's primary weapon replaces the class's (no attachments).
+    let equip =
+        |arsenal: &mut arsenal::Arsenal, gfx: &mut Shim, class: Option<usize>, primary: u8| {
+            let mut l = class.and_then(|c| loadouts.classes.get(c)).cloned();
+            if primary != wpk::classes::NONE
+                && let Some(l) = l.as_mut()
+            {
+                l.primary = primary;
+                l.primary_attachments = [wpk::classes::NONE; 2];
+            }
+            let l = l.as_ref();
+            arsenal.equip(
+                gfx,
+                &arsenal::WeaponTables {
+                    weapons,
+                    kicks,
+                    moves,
+                    aims,
+                    equips,
+                    pens,
+                    pen_table,
+                },
+                loadouts.catalog,
+                l,
+            );
+            match (loadouts.catalog, l) {
+                (Some(c), Some(l)) => game_core::perks::of_loadout(c, l),
+                _ => game_core::perks::PerkSet::default(),
+            }
+        };
+    let mut perk_set = equip(&mut arsenal, gfx, class, debug.primary);
+    // Debug: every killstreak reward at once.
+    let all_rewards = || -> Vec<alloc::string::String> {
+        loadouts
+            .catalog
+            .map(|c| c.killstreaks.iter().map(|k| k.name.clone()).collect())
+            .unwrap_or_default()
     };
-    let mut perk_set = equip(&mut arsenal, gfx, class);
     // The mode's spawns (free-for-all or team deathmatch spawns when the map has them).
     let spawn_kind = match setup.0 {
         arena::Mode::Ffa => wpk::records::spawn_kind::DM,
@@ -959,7 +977,7 @@ fn run_map(
     };
     let mut arena = match (&clip, &player) {
         (Some(c), Some(p)) if !spawn_list.is_empty() => {
-            Some(Arena::new(c, &spawn_list, BOTS, p.clone(), rules, |i| {
+            Some(Arena::new(c, &spawn_list, bots, p.clone(), rules, |i| {
                 if i == 0 { None } else { bot_gun(i) }
             }))
         }
@@ -980,8 +998,8 @@ fn run_map(
     let mut events: Vec<Event> = Vec::with_capacity(32);
     let mut feed: [(Option<(usize, usize)>, u32); 4] = [(None, 0); 4];
     let mut hitmarker_ms: Option<u32> = None;
-    let mut boxes: Vec<[f32; 6]> = Vec::with_capacity(BOTS * 10);
-    let mut box_colours: Vec<u32> = Vec::with_capacity(BOTS * 10);
+    let mut boxes: Vec<[f32; 6]> = Vec::with_capacity(bots * 10 + 64);
+    let mut box_colours: Vec<u32> = Vec::with_capacity(bots * 10 + 64);
     let mut impacts: [(Option<[f32; 3]>, u32); 8] = [(None, 0); 8];
     // World sounds (explosions, grenade bounces, throws) from the common pack's bank.
     let mut world_sounds = sound::Sounds::load(common);
@@ -1006,9 +1024,10 @@ fn run_map(
     let mut next_impact = 0usize;
     let mut hud_rects: Vec<Rect> = Vec::with_capacity(512);
     let mut life = Life::with_rules(&rules);
-    let clock = MatchClock::with_limit(ffi::ms(), setup.1.time_limit_ms);
+    let mut clock = MatchClock::with_limit(ffi::ms(), setup.1.time_limit_ms);
     if let Some(a) = arena.as_mut() {
         a.set_mode(setup.0, setup.1);
+        a.set_bot_skill(debug.skill());
         if setup.0 == arena::Mode::Dom {
             a.dom = game_core::dom::Domination::from_objectives(&objectives);
         }
@@ -1022,10 +1041,18 @@ fn run_map(
         - life::OUT_OF_WORLD_DEPTH;
     let mut flying = player.is_none();
     let mut last = ffi::ms();
-    let mut show_overlay = true;
+    let mut show_overlay = debug.perf_overlay;
+    // Debug: where the last teleports went, your recent bullet paths (start, end, when).
+    let (mut tp_spawn, mut tp_objective) = (0usize, 0usize);
+    let mut shot_trails: [Trail; 6] = [(None, 0); 6];
+    let mut next_trail = 0usize;
     // Killstreaks: kills since your last death, the rewards earned and not yet used (newest last), the UAV's radar.
     let mut streak = 0u32;
-    let mut rewards: Vec<alloc::string::String> = Vec::new();
+    let mut rewards: Vec<alloc::string::String> = if debug.all_killstreaks {
+        all_rewards()
+    } else {
+        Vec::new()
+    };
     let mut reward_note: Option<(&'static str, u32)> = None;
     let mut radar = game_core::minimap::Radar::default();
     let mut radar_at = last;
@@ -1037,7 +1064,7 @@ fn run_map(
     let mut sticks = look::StickRange::default();
     let mut look_state = look::LookState::default();
     let look_settings = look::LookSettings::default();
-    let mut aim_targets: Vec<look::AimTarget> = Vec::with_capacity(BOTS);
+    let mut aim_targets: Vec<look::AimTarget> = Vec::with_capacity(bots);
     // The current field of view over the hip one (look speed and aim assist scale with the zoom).
     let mut hip_fov_scale = 1.0f32;
     // When X started being held over a knife you can pick up (IW4L: the use button held 250 ms takes the item).
@@ -1081,6 +1108,19 @@ fn run_map(
         last = now;
         let dt = msec as f32 / 1000.0;
         let pad = ffi::pad0();
+        // The debug settings, every frame (the pause menu's debug page can change them).
+        if let Some(a) = arena.as_mut() {
+            a.god_mode = debug.god_mode;
+            a.bots_passive = debug.bots_passive;
+            a.bots_frozen = debug.bots_frozen;
+        }
+        world.draw_models = debug.world_models;
+        sound::MUTED.store(!debug.sound, core::sync::atomic::Ordering::Relaxed);
+        if debug.infinite_ammo
+            && let Some(g) = arsenal.guns[arsenal.active].as_mut()
+        {
+            g.refill_ammo();
+        }
         // Z + D-pad down: the performance overlay (D-pad down alone is the tactical grenade).
         if pad.down & ffi::BTN_DOWN != 0 && pad.held & ffi::BTN_Z != 0 {
             show_overlay = !show_overlay;
@@ -1120,6 +1160,92 @@ fn run_map(
                 front::Pause::ChangeClass(c) => {
                     devlog::event(now, "class_change", format_args!("class={c}"));
                     class = Some(c);
+                }
+                front::Pause::Debug => {
+                    use game_core::debug::Action;
+                    let cat = loadouts.catalog;
+                    let weapon_name = |i: u8| {
+                        cat.and_then(|c| c.weapons.get(usize::from(i)))
+                            .map(|w| w.name.to_ascii_uppercase())
+                    };
+                    let count = cat.map_or(0, |c| c.weapons.len().min(254) as u8);
+                    let mut sel = 0usize;
+                    let action =
+                        front::debug_menu(gfx, input, debug, &weapon_name, count, true, &mut sel);
+                    front::save_debug(debug);
+                    show_overlay = debug.perf_overlay;
+                    let now = ffi::ms();
+                    let yaw_of = |p: &Player| p.view().1;
+                    match (action, clip.as_ref()) {
+                        (Some(Action::TeleportSpawn), Some(c)) if !spawn_list.is_empty() => {
+                            tp_spawn = (tp_spawn + 1) % spawn_list.len();
+                            let (o, yaw) = spawn_list[tp_spawn];
+                            player = Some(Player::spawn(c, o, yaw));
+                        }
+                        (Some(Action::TeleportObjective), Some(c)) if !objectives.is_empty() => {
+                            tp_objective = (tp_objective + 1) % objectives.len();
+                            let o = objectives[tp_objective].origin;
+                            let yaw = player.as_ref().map_or(0.0, yaw_of);
+                            player = Some(Player::spawn(c, [o[0] + 48.0, o[1], o[2] + 8.0], yaw));
+                        }
+                        (Some(Action::BotInFront), Some(c)) => {
+                            if let (Some(a), Some(p)) = (arena.as_mut(), player.as_ref()) {
+                                let yaw = yaw_of(p);
+                                let o = p.ps.origin;
+                                let at = [
+                                    o[0] + libm::cosf(yaw.to_radians()) * 150.0,
+                                    o[1] + libm::sinf(yaw.to_radians()) * 150.0,
+                                    o[2] + 8.0,
+                                ];
+                                if let Some(f) =
+                                    a.fighters.iter_mut().skip(1).find(|f| f.life.alive())
+                                {
+                                    f.player = Player::spawn(c, at, yaw + 180.0);
+                                }
+                            }
+                        }
+                        (Some(Action::KillBots), _) => {
+                            if let Some(a) = arena.as_mut() {
+                                for f in a.fighters.iter_mut().skip(1) {
+                                    if f.life.alive() {
+                                        f.life.damage(f.life.max_health * 10, now);
+                                    }
+                                }
+                            }
+                        }
+                        (Some(Action::CallUav), _) => radar.activate(now, rules.uav_time_ms),
+                        (Some(Action::CallCounterUav), _) => {
+                            if let Some(a) = arena.as_mut() {
+                                a.fighters[0].counter_uav_until =
+                                    Some(now.wrapping_add(rules.uav_time_ms));
+                            }
+                        }
+                        (Some(Action::CallEmp), _) => {
+                            if let Some(a) = arena.as_mut() {
+                                a.fighters[0].emp_until = Some(now.wrapping_add(rules.emp_ms));
+                            }
+                        }
+                        (Some(Action::CallNuke), _) => {
+                            if let Some(a) = arena.as_mut()
+                                && a.nuke.is_none()
+                            {
+                                a.nuke = Some(arena::Nuke {
+                                    owner: 0,
+                                    detonate_ms: now.wrapping_add(rules.nuke_timer_ms),
+                                    done: false,
+                                });
+                            }
+                        }
+                        (Some(Action::RefillRewards), _) => rewards = all_rewards(),
+                        (Some(Action::ResetClock), _) => {
+                            clock = MatchClock::with_limit(now, setup.1.time_limit_ms);
+                        }
+                        (Some(Action::WriteLog), _) => devlog::flush(now),
+                        _ => {}
+                    }
+                    if let Some(a) = action {
+                        devlog::event(now, "debug", format_args!("action={a:?}"));
+                    }
                 }
                 front::Pause::Resume => {}
             }
@@ -1378,10 +1504,10 @@ fn run_map(
                         cam.pitch += g.kick_angles[0];
                         cam.yaw += g.kick_angles[1];
                     }
-                    if fall > 0 {
+                    if fall > 0 && !debug.god_mode {
                         life.damage(fall, now);
                     }
-                    if p.ps.origin[2] < floor_z {
+                    if p.ps.origin[2] < floor_z && !debug.god_mode {
                         life.damage(life.max_health, now);
                     }
                     if let Some(a) = arena.as_mut() {
@@ -1489,6 +1615,8 @@ fn run_map(
                         }
                         if let Some(s) = shot.as_ref() {
                             last_shot_ms = Some(now);
+                            shot_trails[next_trail] = (Some((s.start, s.pen_end)), now);
+                            next_trail = (next_trail + 1) % shot_trails.len();
                             if let Some(a) = arena.as_mut() {
                                 a.fighters[0].last_fire_ms = Some(now);
                                 let facts = *g.facts();
@@ -1548,7 +1676,10 @@ fn run_map(
                         }
                         _ => spawn_player(&world, c, spawn),
                     });
-                    perk_set = equip(&mut arsenal, gfx, class);
+                    perk_set = equip(&mut arsenal, gfx, class, debug.primary);
+                    if debug.all_killstreaks {
+                        rewards = all_rewards();
+                    }
                     life.respawn();
                     stance_button.reset();
                 }
@@ -1697,7 +1828,7 @@ fn run_map(
         let stats = world.draw(gfx, &cam, scratch);
         sections[section::WORLD] = lap(&mut mark);
         // The other players' bodies (timed with the placeholder boxes as `bod`).
-        if let (Some(ch), Some(a)) = (characters.as_mut(), arena.as_ref()) {
+        if let (Some(ch), Some(a), true) = (characters.as_mut(), arena.as_ref(), debug.characters) {
             poses.clear();
             for (i, f) in a
                 .fighters
@@ -1761,7 +1892,7 @@ fn run_map(
                 .iter()
                 .enumerate()
                 .skip(1)
-                .filter(|(_, f)| f.life.alive() && characters.is_none())
+                .filter(|(_, f)| f.life.alive() && (characters.is_none() || !debug.characters))
             {
                 let ally = !a.enemies(0, i);
                 for h in game_core::damage::boxes(f.draw_origin(now), f.player.hull_height()) {
@@ -1784,6 +1915,89 @@ fn run_map(
                     let h = r * 0.8;
                     boxes.push([o[0] - h, o[1] - h, o[2], o[0] + h, o[1] + h, o[2] + 2.0 * h]);
                     box_colours.push(0xa8a8a000 | u32::from(alpha / 3).min(254));
+                }
+            }
+            // Debug overlays (see-through boxes): hit boxes, bot goals, objectives, your recent bullet paths.
+            if debug.show_hitboxes {
+                for (_, f) in a
+                    .fighters
+                    .iter()
+                    .enumerate()
+                    .skip(1)
+                    .filter(|(_, f)| f.life.alive())
+                {
+                    for h in game_core::damage::boxes(f.draw_origin(now), f.player.hull_height()) {
+                        boxes.push([
+                            h.mins[0], h.mins[1], h.mins[2], h.maxs[0], h.maxs[1], h.maxs[2],
+                        ]);
+                        box_colours.push(if h.loc <= game_core::damage::hitloc::NECK {
+                            0xff404070
+                        } else {
+                            0x40a0ff50
+                        });
+                    }
+                }
+            }
+            if debug.show_bot_goals {
+                for f in a.fighters.iter().skip(1).filter(|f| f.life.alive()) {
+                    if let Some(g) = f.brain.as_ref().and_then(|b| b.goal()) {
+                        boxes.push([
+                            g[0] - 4.0,
+                            g[1] - 4.0,
+                            g[2],
+                            g[0] + 4.0,
+                            g[1] + 4.0,
+                            g[2] + 96.0,
+                        ]);
+                        box_colours.push(0xffe040c0);
+                    }
+                }
+            }
+            if debug.show_objectives {
+                for o in &objectives {
+                    let owner = a
+                        .dom
+                        .as_ref()
+                        .and_then(|d| d.flags.iter().find(|f| f.label == o.label))
+                        .map_or(0, |f| f.owner);
+                    let r = o.radius;
+                    boxes.push([
+                        o.origin[0] - r,
+                        o.origin[1] - r,
+                        o.origin[2],
+                        o.origin[0] + r,
+                        o.origin[1] + r,
+                        o.origin[2] + o.height,
+                    ]);
+                    box_colours.push(match owner {
+                        arena::TEAM_ALLIES => 0x4080ff40,
+                        arena::TEAM_AXIS => 0xff404040,
+                        _ => 0xe0e0e040,
+                    });
+                }
+            }
+            if debug.show_shots {
+                for (s, t) in shot_trails.iter().filter_map(|(s, t)| s.map(|s| (s, *t))) {
+                    if now.wrapping_sub(t) > 3000 {
+                        continue;
+                    }
+                    let (a0, b0) = s;
+                    let d: [f32; 3] = core::array::from_fn(|k| b0[k] - a0[k]);
+                    let len = libm::sqrtf(d.iter().map(|x| x * x).sum());
+                    let n = ((len / 32.0) as usize).clamp(1, 96);
+                    for k in 1..=n {
+                        let f = k as f32 / n as f32;
+                        let p: [f32; 3] = core::array::from_fn(|j| a0[j] + d[j] * f);
+                        boxes.push([
+                            p[0] - 1.0,
+                            p[1] - 1.0,
+                            p[2] - 1.0,
+                            p[0] + 1.0,
+                            p[1] + 1.0,
+                            p[2] + 1.0,
+                        ]);
+                        box_colours.push(0x40fff0c0);
+                    }
                 }
             }
             unsafe {
@@ -1957,9 +2171,33 @@ pub extern "C" fn mwf_game_main() -> i32 {
         .unwrap_or_default();
     let mut mode = arena::Mode::Ffa;
     let mut limits = arena::Limits::of(&rules, mode);
+    // Debug settings (`debug.dat`), kept between runs.
+    let mut debug = front::load_debug();
+    sound::MUTED.store(!debug.sound, core::sync::atomic::Ordering::Relaxed);
+    let mut debug_sel = 0usize;
     loop {
         match front::main_menu(&mut gfx, &mut input, &mut main_sel, catalog.is_some()) {
             front::Main::Quit => return 0,
+            front::Main::Debug => {
+                let cat = catalog.as_ref();
+                let weapon_name = |i: u8| {
+                    cat.and_then(|c| c.weapons.get(usize::from(i)))
+                        .map(|w| w.name.to_ascii_uppercase())
+                };
+                let count = cat.map_or(0, |c| c.weapons.len().min(254) as u8);
+                // No sandbox actions outside a match: the menu only returns on B.
+                front::debug_menu(
+                    &mut gfx,
+                    &mut input,
+                    &mut debug,
+                    &weapon_name,
+                    count,
+                    false,
+                    &mut debug_sel,
+                );
+                front::save_debug(&debug);
+                sound::MUTED.store(!debug.sound, core::sync::atomic::Ordering::Relaxed);
+            }
             front::Main::CreateAClass => {
                 let Some(cat) = catalog.as_ref() else {
                     continue;
@@ -2018,6 +2256,7 @@ pub extern "C" fn mwf_game_main() -> i32 {
                         },
                         (mode, limits),
                         &mut input,
+                        &mut debug,
                     );
                     unsafe { ffi::mwf_snd_stop_all() };
                     unsafe { ffi::mwf_mem2_release(mark) };

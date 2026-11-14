@@ -24,6 +24,7 @@ pub mod camera;
 pub mod character;
 pub mod collision;
 pub mod damage;
+pub mod debug;
 pub mod dom;
 pub mod fly;
 pub mod gfx;

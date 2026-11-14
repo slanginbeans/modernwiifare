@@ -162,6 +162,16 @@ fn dist2(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 impl Brain {
+    /// Change how good this bot is (the debug menu's bot skill).
+    pub fn set_skill(&mut self, skill: Skill) {
+        self.skill = skill;
+    }
+
+    /// Where the bot is walking to (its route's goal), if anywhere.
+    pub fn goal(&self) -> Option<[f32; 3]> {
+        self.route_goal
+    }
+
     pub fn new(skill: Skill, seed: u32) -> Brain {
         Brain {
             skill,
