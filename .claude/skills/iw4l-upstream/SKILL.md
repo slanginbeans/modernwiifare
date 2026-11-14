@@ -1,6 +1,6 @@
 ---
 name: iw4l-upstream
-description: How modernwiifare consumes, ports and patches IW4L (the Apache-2.0 Rust MW2 runtime) — pinning, the no_std boundary, lifting sim::step out of bevy_ecs, building IW4L crates for the Wii's PowerPC target, and upstreaming fixes. Use whenever adding or bumping an IW4L dependency, porting an IW4L crate, or debugging a difference between IW4L behaviour and the Wii build.
+description: How modernwiifare consumes, ports and patches IW4L (the Apache-2.0 Rust MW2 runtime) — pinning, the no_std boundary, using IW4L's simulation logic in game_core (ADR 0007), building IW4L crates for the Wii's PowerPC target, and upstreaming fixes. Use whenever adding or bumping an IW4L dependency, porting an IW4L crate, or debugging a difference between IW4L behaviour and the Wii build.
 ---
 
 # Working with IW4L upstream
@@ -31,13 +31,13 @@ lighting, asset, fastfile and structured_data (all `*_iw4`). `entity_iw4` says `
 - Build-check the set for big-endian 32-bit (`powerpc-unknown-linux-gnu`, `cargo check`) in CI. This is the cheap
   smoke test before the real Wii target.
 
-## Lifting the simulation
-IW4L funnels all authoritative change through `sim::step(world, tick, input, msec, reason)`, which server, prediction
-and replay all share. Our `wii_sim` crate keeps **that exact contract** (TickInput → TickResult) but stores the world in
-plain arenas instead of bevy_ecs. Rules:
-1. Port system by system, keeping upstream function names so diffs stay readable.
-2. For every ported system, a host test runs IW4L's original and ours on the same inputs and compares `TickResult` hashes.
-3. The GSC runtime (`sim::script`) moves in the same way. Its IR is produced on the host by the converter (ADR 0002).
+## Using IW4L's simulation logic (ADR 0007)
+IW4L's `sim` crate (bevy_ecs, GSC runtime) is **not** ported. `wii/game_core` owns the match loop and calls IW4L's
+`no_std` functions the way `sim::step` calls them (pmove, `advance_weapon_command`, melee, damage timers, ...). Rules:
+1. When adding a system, read how IW4L's `sim` drives it and call the same `*_iw4` functions in the same order.
+   Name the IW4L function in a comment so the two stay comparable.
+2. Copy IW4L's numbers and branches, not its ECS plumbing. Our state lives in plain structs and arenas.
+3. Game rules MW2 keeps in scripts come from the user's scripts as values (`converter/src/rules.rs`), never by running them.
 
 ## Wii target build
 - Per ADR 0006, IW4L crates compile for `powerpc-unknown-linux-gnu` on stable as part of our Wii staticlib. No nightly is needed
