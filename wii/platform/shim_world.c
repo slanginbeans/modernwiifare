@@ -6,7 +6,9 @@
  *   stage 1: x lightmap x 2                              (lit draws)
  *   stage 2: alpha from the I4 alpha plane x vertex alpha (split textures)
  */
+#include <dirent.h>
 #include <fat.h>
+#include <strings.h>
 #include <gccore.h>
 #include <stdio.h>
 #include <string.h>
@@ -43,13 +45,111 @@ uint32_t mwf_mem2_free_bytes(void) {
 
 /* ---- SD card ------------------------------------------------------------------------------------------------- */
 
+uint32_t mwf_mem2_mark(void) {
+    mem2_init();
+    return (uint32_t)mem2_lo;
+}
+
+void mwf_mem2_release(uint32_t mark) {
+    mem2_init();
+    if (mark && (uintptr_t)mark <= mem2_lo) mem2_lo = (uintptr_t)mark;
+}
+
 static int fat_state = -1; /* -1 not tried, 0 failed, 1 mounted */
 
-void *mwf_file_load(const char *path, uint32_t *size_out) {
+int mwf_list_dir(const char *dir, const char *suffix, char *out, uint32_t cap) {
     if (fat_state < 0) fat_state = fatInitDefault() ? 1 : 0;
-    if (!fat_state) return NULL;
+    if (!fat_state || cap == 0) return 0;
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    size_t sl = strlen(suffix);
+    uint32_t used = 0;
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        size_t l = strlen(e->d_name);
+        if (l <= sl || strcasecmp(e->d_name + l - sl, suffix) != 0) continue;
+        size_t stem = l - sl;
+        if (used + stem + 1 >= cap) break;
+        memcpy(out + used, e->d_name, stem);
+        used += (uint32_t)stem;
+        out[used++] = '\n';
+        n++;
+    }
+    closedir(d);
+    out[used < cap ? used : cap - 1] = 0;
+    return n;
+}
+
+static int32_t file_error = 0;
+
+int32_t mwf_file_error(void) {
+    return file_error;
+}
+
+static FILE *open_at(const char *path, uint32_t offset) {
+    if (fat_state < 0) fat_state = fatInitDefault() ? 1 : 0;
+    if (!fat_state) {
+        file_error = 1;
+        return NULL;
+    }
     FILE *f = fopen(path, "rb");
+    if (!f) {
+        file_error = 2;
+        return NULL;
+    }
+    if (fseek(f, (long)offset, SEEK_SET) != 0) {
+        fclose(f);
+        file_error = 4;
+        return NULL;
+    }
+    return f;
+}
+
+int32_t mwf_file_read(const char *path, uint32_t offset, uint32_t len, void *dst) {
+    file_error = 0;
+    FILE *f = open_at(path, offset);
+    if (!f) return -1;
+    size_t got = fread(dst, 1, len, f);
+    fclose(f);
+    if (got != len) file_error = 4;
+    return (int32_t)got;
+}
+
+void *mwf_file_load_range(const char *path, uint32_t offset, uint32_t len) {
+    file_error = 0;
+    uint32_t padded = (len + 31u) & ~31u;
+    if (padded == 0) return NULL;
+    void *p = mwf_mem2_alloc(padded, 32);
+    if (!p) {
+        file_error = 3;
+        return NULL;
+    }
+    FILE *f = open_at(path, offset);
     if (!f) return NULL;
+    size_t got = fread(p, 1, len, f);
+    fclose(f);
+    if (got != len) {
+        file_error = 4;
+        return NULL;
+    }
+    memset((uint8_t *)p + len, 0, padded - len);
+    DCFlushRange(p, padded);
+    return p;
+}
+
+void *mwf_file_load(const char *path, uint32_t *size_out) {
+    file_error = 0;
+    if (fat_state < 0) fat_state = fatInitDefault() ? 1 : 0;
+    if (!fat_state) {
+        file_error = 1;
+        return NULL;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        file_error = 2;
+        return NULL;
+    }
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -61,6 +161,7 @@ void *mwf_file_load(const char *path, uint32_t *size_out) {
     void *p = mwf_mem2_alloc(padded, 32);
     if (!p) {
         fclose(f);
+        file_error = 3;
         return NULL;
     }
     size_t got = fread(p, 1, (size_t)n, f);
@@ -80,6 +181,11 @@ static GXTexObj tex_obj[MAX_TEX];
 static GXTexObj tex_alpha[MAX_TEX];
 static uint8_t tex_has_alpha[MAX_TEX];
 static int32_t tex_count = 0;
+
+void mwf_tex_reset(void) {
+    tex_count = 0;
+    GX_InvalidateTexAll();
+}
 
 static u8 gx_wrap(uint8_t w) {
     return w == 1 ? GX_CLAMP : (w == 2 ? GX_MIRROR : GX_REPEAT);

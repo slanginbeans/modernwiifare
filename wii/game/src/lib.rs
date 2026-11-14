@@ -12,8 +12,6 @@ extern crate alloc;
 mod ffi;
 mod rt;
 
-use alloc::boxed::Box;
-
 use alloc::vec::Vec;
 
 use dpvs_iw4::WalkScratch;
@@ -23,10 +21,8 @@ use game_core::fly::{self, PadInput};
 use game_core::gfx::{DrawState, Gfx, Mtx34, TexDesc};
 use game_core::hud::{self, Rect, heapless_str::Str};
 use game_core::player::{MovePad, Player};
-use game_core::world::FrameStats;
 use game_core::world::World;
-
-const MAP_PATH: &core::ffi::CStr = c"sd:/modernwiifare/maps/mp_rust.wpk";
+use game_core::world::{FrameStats, VisData};
 
 /// Portal-walk scratch for `World::draw` (single-threaded; only `mwf_game_main` touches it).
 static mut WALK_SCRATCH: WalkScratch = WalkScratch::new();
@@ -168,8 +164,17 @@ fn overlay(gfx: &mut Shim, rects: &mut Vec<Rect>, t: &Timing, s: &FrameStats, ey
     gfx.hud_rects(rects, 0xffff_60ff);
 }
 
-/// Show a solid colour until START or RESET (no console while GX owns the screen).
-fn fail(colour: u32) -> i32 {
+/// Screen colour for the last file error: red = no SD card or no such file, orange = out of memory, magenta = other.
+fn file_error_colour() -> u32 {
+    match unsafe { ffi::mwf_file_error() } {
+        1 | 2 => 0xc02020ff,
+        3 => 0xe08020ff,
+        _ => 0xc020c0ff,
+    }
+}
+
+/// Show a solid colour until START (back to the menu) or RESET (quit); no console while GX owns the screen.
+fn fail(colour: u32) -> Exit {
     let cam = Camera::new([0.0; 3], 0.0, 0.0);
     loop {
         unsafe {
@@ -177,8 +182,11 @@ fn fail(colour: u32) -> i32 {
             ffi::mwf_frame_end();
         }
         let pad = ffi::pad0();
-        if pad.down & ffi::BTN_START != 0 || ffi::should_exit() {
-            return 1;
+        if ffi::should_exit() {
+            return Exit::Quit;
+        }
+        if pad.down & ffi::BTN_START != 0 {
+            return Exit::Menu;
         }
     }
 }
@@ -197,32 +205,178 @@ fn spawn_camera(world: &World<'_>, i: usize) -> Camera {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn mwf_game_main() -> i32 {
-    unsafe { ffi::mwf_gx_init(0x202020ff) };
-    let mut size = 0u32;
-    let ptr = unsafe { ffi::mwf_file_load(MAP_PATH.as_ptr(), &mut size) };
-    if ptr.is_null() {
+/// Where `run_map` goes back to.
+enum Exit {
+    Menu,
+    Quit,
+}
+
+const MAP_DIR: &core::ffi::CStr = c"sd:/modernwiifare/maps";
+
+/// The map packs on the SD card (file stems, sorted).
+fn list_maps(buf: &mut [u8; 2048]) -> Vec<&str> {
+    let n = unsafe {
+        ffi::mwf_list_dir(
+            MAP_DIR.as_ptr(),
+            c".wpk".as_ptr(),
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+        )
+    };
+    let text = buf
+        .iter()
+        .position(|&b| b == 0)
+        .map_or(&buf[..], |end| &buf[..end]);
+    let mut maps: Vec<&str> = core::str::from_utf8(text)
+        .unwrap_or("")
+        .split('\n')
+        .filter(|m| !m.is_empty())
+        .take(n.max(0) as usize)
+        .collect();
+    maps.sort_unstable();
+    maps
+}
+
+/// Pick a map: D-pad / main stick up and down, A plays, START or RESET quits. None = quit.
+fn menu(gfx: &mut Shim, maps: &[&str], selected: &mut usize) -> Option<usize> {
+    let cam = Camera::new([0.0; 3], 0.0, 0.0);
+    let mut rects: Vec<Rect> = Vec::with_capacity(4096);
+    let mut held_y = 0i8;
+    loop {
+        let pad = ffi::pad0();
+        if pad.down & ffi::BTN_START != 0 || ffi::should_exit() {
+            return None;
+        }
+        if pad.down & ffi::BTN_A != 0 && !maps.is_empty() {
+            return Some(*selected);
+        }
+        // Edge-triggered stick so one push moves one line.
+        let stick = if pad.sy > 60 {
+            1
+        } else if pad.sy < -60 {
+            -1
+        } else {
+            0
+        };
+        let up = pad.down & ffi::BTN_UP != 0 || (stick == 1 && held_y != 1);
+        let down = pad.down & ffi::BTN_DOWN != 0 || (stick == -1 && held_y != -1);
+        held_y = stick;
+        if !maps.is_empty() {
+            if up {
+                *selected = (*selected + maps.len() - 1) % maps.len();
+            }
+            if down {
+                *selected = (*selected + 1) % maps.len();
+            }
+        }
+        unsafe { ffi::mwf_frame_begin(&cam.view(), cam.fovy, 4.0, 100.0, 0x1a1e24ff) };
+        rects.clear();
+        hud::text(&mut rects, 64, 48, 6, "MODERN WIIFARE");
+        gfx.hud_rects(&rects, 0xf0e8d0ff);
+        rects.clear();
+        if maps.is_empty() {
+            hud::text(
+                &mut rects,
+                64,
+                140,
+                3,
+                "NO MAPS IN SD:/MODERNWIIFARE/MAPS\nCONVERT THEM WITH MWF-CONVERT PACK",
+            );
+            gfx.hud_rects(&rects, 0xe08060ff);
+        }
+        // Up to 14 lines, scrolled so the selection stays visible.
+        let first = selected.saturating_sub(13);
+        for (row, (i, m)) in maps.iter().enumerate().skip(first).take(14).enumerate() {
+            rects.clear();
+            let y = 130 + row as i16 * 22;
+            if i == *selected {
+                hud::text(&mut rects, 64, y, 3, ">");
+            }
+            hud::text(&mut rects, 88, y, 3, m);
+            gfx.hud_rects(
+                &rects,
+                if i == *selected {
+                    0xffd040ff
+                } else {
+                    0xb0b8c0ff
+                },
+            );
+        }
+        rects.clear();
+        hud::text(
+            &mut rects,
+            64,
+            446,
+            2,
+            "A PLAY   START EXIT   IN GAME: START BACK TO THIS MENU",
+        );
+        gfx.hud_rects(&rects, 0x808890ff);
+        gfx.frame_end();
+    }
+}
+
+/// Load `sd:/modernwiifare/maps/<name>.wpk` and play it until START (menu) or RESET (quit). Everything the map
+/// allocates in MEM2 is released by the caller (`mwf_mem2_release`); the MEM1 parts drop here.
+fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch) -> Exit {
+    let mut path = [0u8; 128];
+    let prefix = b"sd:/modernwiifare/maps/";
+    let n = prefix.len() + name.len() + 4;
+    if n + 1 > path.len() {
         return fail(0xc02020ff);
     }
-    // The pack stays in MEM2 for the program's lifetime.
-    let bytes: &'static [u8] = unsafe { core::slice::from_raw_parts(ptr, size as usize) };
-    let mut gfx = Shim::default();
-    // Visibility lives as long as the world; the portal walk's scratch (~0.2 MiB) is static, never on the stack.
-    let vis = World::decode_vis(bytes);
-    let scratch: &'static mut WalkScratch = unsafe { &mut *core::ptr::addr_of_mut!(WALK_SCRATCH) };
-    let mut world = match World::load(bytes, vis.as_ref(), &mut gfx) {
+    path[..prefix.len()].copy_from_slice(prefix);
+    path[prefix.len()..prefix.len() + name.len()].copy_from_slice(name.as_bytes());
+    path[n - 4..n].copy_from_slice(b".wpk");
+    unsafe { ffi::mwf_tex_reset() };
+    let cpath = path.as_ptr().cast();
+    // Header and section table first, to plan the load.
+    let mut head = [0u8; wpk::HEADER_LEN + 64 * wpk::SECTION_ENTRY_LEN];
+    let got = unsafe { ffi::mwf_file_read(cpath, 0, head.len() as u32, head.as_mut_ptr()) };
+    if got < wpk::HEADER_LEN as i32 {
+        return fail(file_error_colour());
+    }
+    let Ok(table) = wpk::Pack::parse_prefix(&head[..got as usize]) else {
+        return fail(0xc020c0ff);
+    };
+    let file_len = table.header.file_len as usize;
+    let in_place = table.in_place_len();
+    // GPU data (textures, vertices, display lists) stays in MEM2 until the caller releases it.
+    let ptr = unsafe { ffi::mwf_file_load_range(cpath, 0, in_place as u32) };
+    if ptr.is_null() {
+        return fail(file_error_colour());
+    }
+    let bytes: &[u8] = unsafe { core::slice::from_raw_parts(ptr, in_place) };
+    // The tail (visibility, cell tables, collision) is decoded into MEM1 from a temporary buffer.
+    let (vis, clip_data) = {
+        let mut tail: Vec<u8> = Vec::new();
+        if tail.try_reserve_exact(file_len - in_place).is_err() {
+            return fail(0xe08020ff);
+        }
+        tail.resize(file_len - in_place, 0);
+        let n = unsafe {
+            ffi::mwf_file_read(cpath, in_place as u32, tail.len() as u32, tail.as_mut_ptr())
+        };
+        if n != tail.len() as i32 {
+            return fail(file_error_colour());
+        }
+        let sec = |t: wpk::Tag| {
+            let (off, len, _) = table.section_location(t)?;
+            tail.get(off.checked_sub(in_place)?..off - in_place + len)
+        };
+        let vis = VisData::decode(
+            sec(wpk::tag::VIS),
+            sec(wpk::tag::BATCH_CELLS),
+            sec(wpk::tag::INSTANCE_CELLS),
+        );
+        let clip = sec(wpk::tag::CLIP).and_then(|d| wpk::clip::Clip::decode(d).ok());
+        (vis, clip)
+    };
+    let mut world = match World::load(bytes, vis.as_ref(), gfx) {
         Ok(w) => w,
         Err(game_core::world::LoadError::TooManyTextures) => return fail(0xe08020ff),
         Err(_) => return fail(0xc020c0ff),
     };
-    // Collision: decoded once into the MEM1 heap (traces are hot; MEM1 is the fast memory) and kept for the
-    // program's lifetime.
-    let clip: Option<MapClip<'static>> = wpk::Pack::parse(bytes, false)
-        .ok()
-        .and_then(|p| p.section(wpk::tag::CLIP))
-        .and_then(|s| wpk::clip::Clip::decode(s.data).ok())
-        .map(|c| MapClip::new(Box::leak(Box::new(c))));
+    let clip: Option<MapClip<'_>> = clip_data.as_ref().map(MapClip::new);
     let aspect = if unsafe { ffi::mwf_widescreen() } != 0 {
         16.0 / 9.0
     } else {
@@ -247,8 +401,11 @@ pub extern "C" fn mwf_game_main() -> i32 {
         if pad.down & ffi::BTN_DOWN != 0 {
             show_overlay = !show_overlay;
         }
-        if pad.down & ffi::BTN_START != 0 || ffi::should_exit() {
-            return 0;
+        if ffi::should_exit() {
+            return Exit::Quit;
+        }
+        if pad.down & ffi::BTN_START != 0 {
+            return Exit::Menu;
         }
         if pad.down & ffi::BTN_Y != 0 {
             spawn += 1;
@@ -302,14 +459,36 @@ pub extern "C" fn mwf_game_main() -> i32 {
                 dt,
             ),
         }
-        let stats = world.draw(&mut gfx, &cam, scratch);
+        let stats = world.draw(gfx, &cam, scratch);
         if show_overlay {
-            overlay(&mut gfx, &mut rects, &timing, &stats, cam.eye);
+            overlay(gfx, &mut rects, &timing, &stats, cam.eye);
         }
         let cpu_us = ffi::us().wrapping_sub(frame_start);
         gfx.frame_end();
         let end = ffi::us();
         timing.add(end, end.wrapping_sub(frame_start), cpu_us, gfx.gpu_wait_us);
         frame_start = end;
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mwf_game_main() -> i32 {
+    unsafe { ffi::mwf_gx_init(0x202020ff) };
+    let mut gfx = Shim::default();
+    // The portal walk's scratch (~0.2 MiB) is static, never on the stack.
+    let scratch: &'static mut WalkScratch = unsafe { &mut *core::ptr::addr_of_mut!(WALK_SCRATCH) };
+    let mut selected = 0usize;
+    loop {
+        let mut names = [0u8; 2048];
+        let maps = list_maps(&mut names);
+        let Some(i) = menu(&mut gfx, &maps, &mut selected) else {
+            return 0;
+        };
+        let mark = unsafe { ffi::mwf_mem2_mark() };
+        let exit = run_map(&mut gfx, maps[i], scratch);
+        unsafe { ffi::mwf_mem2_release(mark) };
+        if let Exit::Quit = exit {
+            return 0;
+        }
     }
 }

@@ -135,6 +135,22 @@ impl<'a> Pack<'a> {
     /// Parse and validate the header and section table. `check_hash` also verifies the content hash (a full pass over
     /// the file; do it once after loading from SD).
     pub fn parse(bytes: &'a [u8], check_hash: bool) -> Result<Pack<'a>, ParseError> {
+        Self::parse_inner(bytes, false, check_hash)
+    }
+
+    /// Parse the first part of a pack (at least the header and section table): sections that lie past the end of
+    /// `bytes` are not loaded ([`Pack::section`] returns None) but [`Pack::section_location`] still finds them. No
+    /// hash check. The Wii loads a pack's GPU data this way and reads the decoded-at-load tail into a temporary
+    /// buffer (see [`decoded_at_load`]).
+    pub fn parse_prefix(bytes: &'a [u8]) -> Result<Pack<'a>, ParseError> {
+        Self::parse_inner(bytes, true, false)
+    }
+
+    fn parse_inner(
+        bytes: &'a [u8],
+        partial: bool,
+        check_hash: bool,
+    ) -> Result<Pack<'a>, ParseError> {
         if bytes.len() < HEADER_LEN {
             return Err(ParseError::TooShort);
         }
@@ -155,7 +171,8 @@ impl<'a> Pack<'a> {
             file_len: be::u32(bytes, 24),
             name,
         };
-        if header.file_len as usize != bytes.len() {
+        let file_len = header.file_len as usize;
+        if file_len != bytes.len() && !(partial && bytes.len() < file_len) {
             return Err(ParseError::BadLength);
         }
         let table_end = HEADER_LEN
@@ -169,7 +186,7 @@ impl<'a> Pack<'a> {
             let (tag, off, len) = (s.0, s.1 as usize, s.2 as usize);
             if off % ALIGN != 0
                 || off < table_end
-                || off.checked_add(len).is_none_or(|e| e > bytes.len())
+                || off.checked_add(len).is_none_or(|e| e > file_len)
             {
                 return Err(ParseError::BadSection(tag));
             }
@@ -199,11 +216,29 @@ impl<'a> Pack<'a> {
         let bytes = self.bytes;
         self.entries()
             .find(|e| e.0 == tag)
+            .filter(|e| (e.1 as usize + e.2 as usize) <= bytes.len())
             .map(|(tag, off, len, count)| Section {
                 tag,
                 count,
                 data: &bytes[off as usize..off as usize + len as usize],
             })
+    }
+
+    /// Where a section is in the file (offset, length, record count), loaded or not.
+    pub fn section_location(&self, tag: Tag) -> Option<(usize, usize, u32)> {
+        self.entries()
+            .find(|e| e.0 == tag)
+            .map(|e| (e.1 as usize, e.2 as usize, e.3))
+    }
+
+    /// Bytes from the start of the file that hold every section the GPU reads in place: everything before the first
+    /// section in [`decoded_at_load`] (the whole file when there is none).
+    pub fn in_place_len(&self) -> usize {
+        self.entries()
+            .filter(|e| decoded_at_load().contains(&e.0))
+            .map(|e| e.1 as usize)
+            .min()
+            .unwrap_or(self.header.file_len as usize)
     }
 
     /// Offset of a section's data within the file (for computing addresses once the file is in memory).
@@ -214,6 +249,12 @@ impl<'a> Pack<'a> {
     pub fn bytes(&self) -> &'a [u8] {
         self.bytes
     }
+}
+
+/// Sections the runtime decodes into its own memory at load and never reads in place. The converter writes them
+/// last, so a loader can keep only the bytes before them ([`Pack::in_place_len`]).
+pub const fn decoded_at_load() -> [Tag; 4] {
+    [tag::VIS, tag::BATCH_CELLS, tag::INSTANCE_CELLS, tag::CLIP]
 }
 
 /// Builds a pack in memory. Sections are written in the order they are added.
@@ -286,6 +327,34 @@ mod tests {
         b.section(tag::TEXTURE_DATA, 2, vec![1u8; 40]);
         b.section(tag::SPAWNS, 1, vec![7u8; 5]);
         b.finish()
+    }
+
+    #[test]
+    fn prefix_parse_finds_unloaded_tail() {
+        let mut b = PackBuilder::new("mp_x");
+        b.section(tag::TEXTURES, 1, alloc::vec![1u8; 40]);
+        b.section(tag::CLIP, 1, alloc::vec![2u8; 100]);
+        let bytes = b.finish();
+        let full = Pack::parse(&bytes, true).unwrap();
+        let cut = full.in_place_len();
+        let (clip_off, clip_len, _) = full.section_location(tag::CLIP).unwrap();
+        assert_eq!(cut, clip_off);
+        let p = Pack::parse_prefix(&bytes[..cut]).unwrap();
+        assert!(p.section(tag::TEXTURES).is_some());
+        assert!(p.section(tag::CLIP).is_none());
+        assert_eq!(p.section_location(tag::CLIP), Some((clip_off, clip_len, 1)));
+        assert_eq!(
+            Pack::parse(&bytes[..cut], false).unwrap_err(),
+            ParseError::BadLength
+        );
+        // The header and table alone are enough to plan the load.
+        let table_end = HEADER_LEN + 2 * SECTION_ENTRY_LEN;
+        assert_eq!(
+            Pack::parse_prefix(&bytes[..table_end])
+                .unwrap()
+                .in_place_len(),
+            cut
+        );
     }
 
     #[test]

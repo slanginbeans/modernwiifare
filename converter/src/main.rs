@@ -13,7 +13,7 @@
 //!       Converts every texture (GfxImage) of one map zone to Wii `.gxt` files, taking pixels from the zone or
 //!       from main/*.iwd, and writes a content-free report.json beside them. Default folder: out/textures/<zone>.
 //!       --verbose prints one line per texture (with its name) to the console only.
-//!   mwf-convert pack <game folder> [--map <zone>] [--zone <file.ff>] [--out <file.wpk>]
+//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>]
 //!       Builds the Wii pack of one map: its textures (as `textures` does), lightmaps, materials, world geometry as
 //!       display lists, skybox and spawns. Default output: out/packs/<zone>.wpk (+ a content-free .json report).
 //!   mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw <deg> --pitch <deg>] [--out <file.png>]
@@ -45,7 +45,7 @@ const SHARED_TABLES_ZONE: &str = "code_post_gfx_mp";
 const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <report.json>]\n  \
      mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]\n  \
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
-     mwf-convert pack <game folder> [--map <zone>] [--zone <file.ff>] [--out <file.wpk>]\n  \
+     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>]\n  \
      mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n  \
      mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask|minimap] [--out <folder>]";
 
@@ -149,6 +149,7 @@ fn run_inventory(args: &[String]) -> ExitCode {
 }
 
 /// Arguments shared by the per-map commands: `<game folder> [--map <zone>] [--zone <file.ff>] [--out <path>]`.
+#[derive(Clone)]
 struct MapArgs {
     game: PathBuf,
     map: String,
@@ -370,11 +371,60 @@ Wii textures (.gxt) written to {}",
     Ok((index, tables))
 }
 
+/// The 16 multiplayer maps of the base game (`pack --map all`).
+const BASE_MAPS: [&str; 16] = [
+    "mp_afghan",
+    "mp_boneyard",
+    "mp_brecourt",
+    "mp_checkpoint",
+    "mp_derail",
+    "mp_estate",
+    "mp_favela",
+    "mp_highrise",
+    "mp_invasion",
+    "mp_nightshift",
+    "mp_quarry",
+    "mp_rundown",
+    "mp_rust",
+    "mp_subbase",
+    "mp_terminal",
+    "mp_underpass",
+];
+
 fn run_pack(args: &[String]) -> ExitCode {
     let a = match parse_map_args(args) {
         Ok(a) => a,
         Err(code) => return code,
     };
+    if a.map == "all" {
+        let mut failed = Vec::new();
+        for m in BASE_MAPS {
+            println!("== {m}");
+            let one = MapArgs {
+                map: m.to_owned(),
+                out: None,
+                zone: None,
+                ..a.clone()
+            };
+            if run_pack_one(one) != ExitCode::SUCCESS {
+                failed.push(m);
+            }
+        }
+        println!(
+            "Packed {} of {} maps into out/packs/",
+            BASE_MAPS.len() - failed.len(),
+            BASE_MAPS.len()
+        );
+        if !failed.is_empty() {
+            eprintln!("failed: {}", failed.join(", "));
+            return ExitCode::FAILURE;
+        }
+        return ExitCode::SUCCESS;
+    }
+    run_pack_one(a)
+}
+
+fn run_pack_one(a: MapArgs) -> ExitCode {
     let (image, label, _) = match open_map_zone(&a) {
         Ok(x) => x,
         Err(code) => return code,

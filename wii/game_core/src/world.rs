@@ -203,20 +203,56 @@ fn max_scale(m: &Mtx34) -> f32 {
 /// Background colour behind everything (when a map has no skybox).
 pub const CLEAR: u32 = 0x4a5a6aff;
 
-impl<'a> World<'a> {
-    /// Parse a pack held in memory for the program's lifetime and create its textures.
-    /// The pack's visibility, decoded (the caller keeps it alive as long as the world: `World::load` borrows it).
-    pub fn decode_vis(bytes: &[u8]) -> Option<Vis> {
-        let pack = Pack::parse(bytes, false).ok()?;
-        Vis::decode(pack.section(tag::VIS)?.data).ok()
+/// A map's visibility and the cell of each batch and instance: decoded at load from the `VISD`, `WBCL` and `SMCL`
+/// sections (which need not stay in memory). The caller keeps it alive as long as the world.
+#[derive(Clone, Debug, Default)]
+pub struct VisData {
+    pub vis: Vis,
+    pub batch_cells: Vec<u16>,
+    pub instance_cells: Vec<u16>,
+}
+
+impl VisData {
+    /// From the three sections' bytes (any may be missing: no visibility then).
+    pub fn decode(
+        vis: Option<&[u8]>,
+        batch_cells: Option<&[u8]>,
+        instance_cells: Option<&[u8]>,
+    ) -> Option<VisData> {
+        let be16 = |d: Option<&[u8]>| -> Vec<u16> {
+            d.unwrap_or(&[])
+                .chunks_exact(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect()
+        };
+        Some(VisData {
+            vis: Vis::decode(vis?).ok()?,
+            batch_cells: be16(batch_cells),
+            instance_cells: be16(instance_cells),
+        })
     }
 
+    /// From a whole pack in memory (host tools and tests).
+    pub fn from_pack(bytes: &[u8]) -> Option<VisData> {
+        let pack = Pack::parse(bytes, false).ok()?;
+        let sec = |t| pack.section(t).map(|s| s.data);
+        VisData::decode(
+            sec(tag::VIS),
+            sec(tag::BATCH_CELLS),
+            sec(tag::INSTANCE_CELLS),
+        )
+    }
+}
+
+impl<'a> World<'a> {
+    /// Create the textures and tables of a pack held in memory. `bytes` may be the whole pack or just its in-place
+    /// prefix (`Pack::in_place_len`); visibility comes in `vis` (see [`VisData`]).
     pub fn load(
         bytes: &'a [u8],
-        vis: Option<&'a Vis>,
+        vis: Option<&'a VisData>,
         gfx: &mut impl Gfx,
     ) -> Result<World<'a>, LoadError> {
-        let pack = Pack::parse(bytes, true).map_err(LoadError::Pack)?;
+        let pack = Pack::parse_prefix(bytes).map_err(LoadError::Pack)?;
         let need = |t: [u8; 4]| pack.section(t).ok_or(LoadError::MissingSection(t));
         let tex_sec = need(tag::TEXTURES)?;
         let txda = need(tag::TEXTURE_DATA)?.data;
@@ -295,25 +331,12 @@ impl<'a> World<'a> {
         {
             return Err(LoadError::BadRecord(tag::MODEL_INSTANCES, i));
         }
-        let u16s = |t: [u8; 4], n: usize| -> Vec<u16> {
-            let d = opt(t);
-            if d.len() < n * 2 {
-                return Vec::new();
-            }
-            d.chunks_exact(2)
-                .take(n)
-                .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                .collect()
+        let runtime = vis.and_then(|v| VisRuntime::new(&v.vis));
+        let (batch_cells, instance_cells) = match (vis, &runtime) {
+            (Some(v), Some(_)) => (v.batch_cells.clone(), v.instance_cells.clone()),
+            _ => (Vec::new(), Vec::new()),
         };
-        let vis = vis.and_then(VisRuntime::new);
-        let (batch_cells, instance_cells) = if vis.is_some() {
-            (
-                u16s(tag::BATCH_CELLS, batches.len()),
-                u16s(tag::INSTANCE_CELLS, instances.len()),
-            )
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        let vis = runtime;
         let handle = |t: u16| -> i32 { textures.get(usize::from(t)).copied().unwrap_or(-1) };
         let sky = pack
             .section(tag::SKYBOX)
@@ -765,20 +788,17 @@ mod tests {
         }
     }
 
-    fn cells_pack() -> Vec<u8> {
-        let be = |v: &[u16]| v.iter().flat_map(|c| c.to_be_bytes()).collect::<Vec<u8>>();
-        // Batches (sample pack): x = 100 cell 0, x = 200 cell 1, x = 300 cell 1, x = -100 cell 0 (behind).
-        sample_pack_with(|b| {
-            b.section(tag::BATCH_CELLS, 4, be(&[0, 1, 1, 0]));
-        })
-    }
-
     #[test]
     fn portals_hide_cells_out_of_view() {
-        let bytes = cells_pack();
+        // Sample pack batches: x = 100 (cell 0), 200 (cell 1), 300 (cell 1), -100 (cell 0, behind the camera).
+        let bytes = sample_pack();
         let cam = Camera::new([0.0; 3], 0.0, 0.0);
         for (y0, drawn, cells) in [(-5.0, 3, 2), (400.0, 1, 1)] {
-            let vis = two_cells(y0);
+            let vis = VisData {
+                vis: two_cells(y0),
+                batch_cells: vec![0, 1, 1, 0],
+                instance_cells: Vec::new(),
+            };
             let mut gfx = Rec::default();
             let mut world = World::load(&bytes, Some(&vis), &mut gfx).unwrap();
             assert!(world.has_cells());
@@ -808,7 +828,7 @@ mod tests {
             std::println!("local pack is version {v}, re-run `mwf-convert pack`; skipped");
             return;
         }
-        let vis = World::decode_vis(&bytes).expect("pack has visibility");
+        let vis = VisData::from_pack(&bytes).expect("pack has visibility");
         let mut gfx = Rec::default();
         let mut world = World::load(&bytes, Some(&vis), &mut gfx).unwrap();
         let mut sc = scratch();
@@ -819,7 +839,7 @@ mod tests {
             let cam = Camera::new([s.origin[0], s.origin[1], s.origin[2] + 60.0], s.yaw, 0.0);
             let st = world.draw(&mut gfx, &cam, &mut sc);
             inside += usize::from(st.in_cell);
-            partial += usize::from(st.cells_visible < vis.cells.len() as u32);
+            partial += usize::from(st.cells_visible < vis.vis.cells.len() as u32);
             tris_vis += u64::from(st.triangles);
             model_vis += u64::from(st.model_triangles);
             let saved = world.vis.take();

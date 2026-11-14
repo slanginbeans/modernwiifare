@@ -97,11 +97,24 @@ typedef struct {
 /* Allocate from MEM2 (bump allocator over the MEM2 arena; never freed). NULL when out of memory. */
 void *mwf_mem2_alloc(uint32_t size, uint32_t align);
 uint32_t mwf_mem2_free_bytes(void);
+/* Mark / release the MEM2 bump allocator (everything allocated after the mark is freed; for map changes). */
+uint32_t mwf_mem2_mark(void);
+void mwf_mem2_release(uint32_t mark);
+/* File names in `dir` ending in `suffix` (suffix removed), '\n'-separated into `out`. Returns how many. */
+int mwf_list_dir(const char *dir, const char *suffix, char *out, uint32_t cap);
 /* Read a whole file from the SD card into MEM2 (32-byte aligned, flushed for GX). Returns NULL on failure. */
 void *mwf_file_load(const char *path, uint32_t *size_out);
+/* Read bytes [offset, offset + len) of a file into MEM2 (32-byte aligned, flushed for GX). NULL on failure. */
+void *mwf_file_load_range(const char *path, uint32_t offset, uint32_t len);
+/* Read bytes [offset, offset + len) of a file into `dst` (any memory). Returns the bytes read, or -1. */
+int32_t mwf_file_read(const char *path, uint32_t offset, uint32_t len, void *dst);
+/* Why the last file call failed: 0 none, 1 no SD card, 2 no such file, 3 out of MEM2, 4 read error. */
+int32_t mwf_file_error(void);
 
 /* Create a GX texture object; returns a handle >= 0, or -1 when the table is full. */
 int32_t mwf_tex_create(const mwf_tex_desc *desc);
+/* Forget every texture (before loading another map). */
+void mwf_tex_reset(void);
 
 /* Frame: clear, set the camera. view is a GX 3x4 world->eye matrix (row-major); fovy in degrees. */
 void mwf_frame_begin(const float view[3][4], float fovy_deg, float znear, float zfar, uint32_t clear_rgba);

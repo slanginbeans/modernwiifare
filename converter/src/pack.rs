@@ -235,6 +235,8 @@ pub fn spawns(entities: &[BTreeMap<String, String>]) -> Vec<SpawnRecord> {
 pub struct PackReport {
     pub map: String,
     pub pack_bytes: u64,
+    /// What the Wii keeps in MEM2 (everything before the sections decoded at load).
+    pub mem2_bytes: u64,
     pub sections: BTreeMap<String, u64>,
     pub textures: usize,
     pub lightmaps: usize,
@@ -845,6 +847,7 @@ pub fn build(
         }
     }
     report.pack_bytes = bytes.len() as u64;
+    report.mem2_bytes = pack.in_place_len() as u64;
     report.content_hash = format!("{:016x}", pack.header.content_hash);
     Ok((bytes, report))
 }
@@ -859,13 +862,22 @@ fn display_list(blended: bool, tris: &[u16]) -> Vec<u8> {
     }
 }
 
+/// MEM2 the pack may use on the Wii (~52 MiB usable, the rest for sound and other runtime data).
+pub const MEM2_BUDGET: u64 = 44 << 20;
+
 pub fn render_text(r: &PackReport) -> String {
     let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
     let mut s = format!(
-        "Modern Wiifare pack: {} ({:.2} MiB, hash {})\n",
+        "Modern Wiifare pack: {} ({:.2} MiB, hash {}; {:.2} MiB stays in MEM2{})\n",
         r.map,
         mib(r.pack_bytes),
-        r.content_hash
+        r.content_hash,
+        mib(r.mem2_bytes),
+        if r.mem2_bytes > MEM2_BUDGET {
+            " - OVER the 44 MiB budget, may not load"
+        } else {
+            ""
+        }
     );
     for (k, v) in &r.sections {
         s.push_str(&format!("  {k} {:>9.2} MiB\n", mib(*v)));

@@ -66,7 +66,13 @@ unsafe extern "C" {
 
     pub fn mwf_gx_init(clear_rgba: u32);
 
-    pub fn mwf_file_load(path: *const c_char, size_out: *mut u32) -> *const u8;
+    pub fn mwf_file_load_range(path: *const c_char, offset: u32, len: u32) -> *const u8;
+    pub fn mwf_file_read(path: *const c_char, offset: u32, len: u32, dst: *mut u8) -> i32;
+    pub fn mwf_file_error() -> i32;
+    pub fn mwf_mem2_mark() -> u32;
+    pub fn mwf_mem2_release(mark: u32);
+    pub fn mwf_list_dir(dir: *const c_char, suffix: *const c_char, out: *mut u8, cap: u32) -> i32;
+    pub fn mwf_tex_reset();
     pub fn mwf_tex_create(desc: *const TexDesc) -> i32;
     pub fn mwf_frame_begin(
         view: *const Mtx34,
