@@ -6,10 +6,10 @@
 
 use alloc::vec::Vec;
 
+use crate::nav::Navigator;
 use weapon_iw4::WeaponTickEvent;
-use wpk::nav::NavGraph;
 
-use crate::bot::{self, Brain, Contact, Senses, Skill};
+use crate::bot::{self, Act, Brain, Contact, Senses, Skill};
 use crate::collision::MapClip;
 use crate::damage;
 use crate::gun::{Gun, GunInput, MASK_SHOT, Shot, SpreadInput};
@@ -18,10 +18,17 @@ use crate::player::Player;
 
 /// MW2 FFA score limit in kills.
 pub const KILL_LIMIT: u32 = 30;
-/// How far a bot looks to either side of where it faces.
-const VIEW_HALF_DEG: f32 = 75.0;
+/// How far a bot looks to either side of where it faces, and how far it sees (IW4L `bots` sensor: a 90° field of
+/// view, 5906 units).
+const VIEW_HALF_DEG: f32 = 45.0;
+const SIGHT_RANGE: f32 = 5906.0;
 /// How far gunfire is heard.
 const HEARING: f32 = 2000.0;
+/// Bots run like IW4's server runs them: one usercmd (movement and weapon step) every 50 ms, thinking every second
+/// one (IW4L `bots`: commands per server frame, a decision every 2 ticks). Steps are staggered across frames, and
+/// bodies are drawn between their last two positions.
+pub const BOT_TICK_MS: u32 = 50;
+const THINK_EVERY: u32 = 2;
 
 pub struct Fighter {
     pub player: Player,
@@ -33,6 +40,42 @@ pub struct Fighter {
     pub last_fire_ms: Option<u32>,
     /// Who last hurt this fighter (credited with the kill).
     pub last_attacker: Option<usize>,
+    /// Bot stepping: when the next step is due, steps taken, the decision being carried out, and the position
+    /// before the last step (with its time) for drawing in between.
+    next_step_ms: Option<u32>,
+    steps: u32,
+    act: Act,
+    prev_origin: [f32; 3],
+    last_step_ms: u32,
+}
+
+impl Fighter {
+    fn new(player: Player, gun: Option<Gun>, brain: Option<Brain>) -> Fighter {
+        Fighter {
+            prev_origin: player.ps.origin,
+            player,
+            life: Life::default(),
+            gun,
+            brain,
+            kills: 0,
+            last_fire_ms: None,
+            last_attacker: None,
+            next_step_ms: None,
+            steps: 0,
+            act: Act::default(),
+            last_step_ms: 0,
+        }
+    }
+
+    /// Where to draw this fighter at `now`: between its last two steps (bots step every 50 ms).
+    pub fn draw_origin(&self, now: u32) -> [f32; 3] {
+        if self.brain.is_none() {
+            return self.player.ps.origin;
+        }
+        let t = (now.wrapping_sub(self.last_step_ms) as f32 / BOT_TICK_MS as f32).clamp(0.0, 1.0);
+        let o = self.player.ps.origin;
+        core::array::from_fn(|k| self.prev_origin[k] + (o[k] - self.prev_origin[k]) * t)
+    }
 }
 
 /// Something that happened this frame (for the HUD and sounds).
@@ -105,26 +148,14 @@ impl Arena {
             human_present: true,
             spawn_count: 0,
         };
-        a.fighters.push(Fighter {
-            player: human,
-            life: Life::default(),
-            gun: gun(0),
-            brain: None,
-            kills: 0,
-            last_fire_ms: None,
-            last_attacker: None,
-        });
+        a.fighters.push(Fighter::new(human, gun(0), None));
         for i in 1..=bots {
             let p = a.spawn_point(spawns, i);
-            a.fighters.push(Fighter {
-                player: Player::spawn(clip, p.0, p.1),
-                life: Life::default(),
-                gun: gun(i),
-                brain: Some(Brain::new(Skill::REGULAR, 0x51ed_270b ^ (i as u32 * 7919))),
-                kills: 0,
-                last_fire_ms: None,
-                last_attacker: None,
-            });
+            a.fighters.push(Fighter::new(
+                Player::spawn(clip, p.0, p.1),
+                gun(i),
+                Some(Brain::new(Skill::REGULAR, 0x51ed_270b ^ (i as u32 * 7919))),
+            ));
         }
         a
     }
@@ -152,6 +183,8 @@ impl Arena {
         let (o, yaw) = self.spawn_point(spawns, i);
         let f = &mut self.fighters[i];
         f.player = Player::spawn(clip, o, yaw);
+        f.prev_origin = o;
+        f.act = Act::default();
         f.life.respawn();
         f.gun = gun;
         f.last_attacker = None;
@@ -203,6 +236,13 @@ impl Arena {
         let d = damage::bullet(facts, &facts.location_damage, t * length, loc);
         let v = &mut self.fighters[victim];
         v.last_attacker = Some(from);
+        // The hit slows the victim for a moment (IW4L `update_damage_timer`: 100 ms a point, at most 750 ms).
+        let dir = [
+            shot.end[0] - shot.start[0],
+            shot.end[1] - shot.start[1],
+            shot.end[2] - shot.start[2],
+        ];
+        movement_iw4::update_damage_timer(&mut v.player.ps, d, Some(dir));
         out.push(Event::Hit {
             attacker: from,
             victim,
@@ -234,7 +274,8 @@ impl Arena {
                 let (_, to_yaw) = bot::look_angles(eye, aim);
                 let mut off = to_yaw - yaw;
                 off -= libm::floorf((off + 180.0) / 360.0) * 360.0;
-                let in_view = libm::fabsf(off) <= VIEW_HALF_DEG;
+                let in_view = libm::fabsf(off) <= VIEW_HALF_DEG
+                    && dist2(aim, eye) <= SIGHT_RANGE * SIGHT_RANGE;
                 let visible = in_view && {
                     let t = clip.trace(eye, aim, [0.0; 3], [0.0; 3], MASK_SHOT);
                     t.fraction >= 1.0
@@ -254,18 +295,24 @@ impl Arena {
             .collect()
     }
 
-    /// Run every bot for `msec`: think, move, shoot. Dead bots wait out the respawn delay.
+    /// Run the bots that are due at `now`: each steps every [`BOT_TICK_MS`] (thinking every second step), so a
+    /// frame steps about one or two of them. Dead bots wait out the respawn delay. (`_frame_msec`: the frame's time,
+    /// unused: bots keep their own tick.)
     #[allow(clippy::too_many_arguments)]
     pub fn update_bots(
         &mut self,
         clip: &MapClip<'_>,
-        nav: Option<&NavGraph>,
+        mut nav: Option<&mut Navigator>,
         spawns: &[([f32; 3], f32)],
         now: u32,
-        msec: i32,
+        _frame_msec: i32,
         mut regun: impl FnMut(usize) -> Option<Gun>,
         out: &mut Vec<Event>,
     ) {
+        // At most one new route a frame across all bots (A* is the costly part of a bot's turn).
+        if let Some(n) = nav.as_deref_mut() {
+            n.routes_left = 1;
+        }
         for i in 1..self.fighters.len() {
             if !self.fighters[i].life.alive() {
                 if self.fighters[i].life.ready_to_respawn(now) {
@@ -274,23 +321,51 @@ impl Arena {
                 }
                 continue;
             }
-            let contacts = self.contacts(clip, i, now);
-            let f = &mut self.fighters[i];
-            let clip_ammo = f.gun.as_ref().map_or(0, |g| g.ammo().0);
-            let senses = Senses {
-                now_ms: now,
-                msec,
-                feet: f.player.ps.origin,
-                eye: f.player.eye(),
-                view: f.player.view(),
-                enemies: &contacts,
-                clip: clip_ammo,
-            };
-            let Some(brain) = f.brain.as_mut() else {
+            // Due for a step? (Staggered: bot i starts i × 17 ms in.)
+            let due = *self.fighters[i]
+                .next_step_ms
+                .get_or_insert(now.wrapping_add((i as u32 * 17) % BOT_TICK_MS));
+            if (now.wrapping_sub(due) as i32) < 0 {
                 continue;
+            }
+            // Catch up at most one step behind; never step faster than the tick.
+            let next = if now.wrapping_sub(due) > BOT_TICK_MS {
+                now.wrapping_add(BOT_TICK_MS)
+            } else {
+                due.wrapping_add(BOT_TICK_MS)
             };
-            let act = brain.think(nav, &senses);
-            let fall = f.player.steer(clip, &act.steer, msec);
+            self.fighters[i].next_step_ms = Some(next);
+            let msec = BOT_TICK_MS as i32;
+            let think = self.fighters[i].steps.is_multiple_of(THINK_EVERY);
+            self.fighters[i].steps += 1;
+            if think {
+                let contacts = self.contacts(clip, i, now);
+                let f = &mut self.fighters[i];
+                let senses = Senses {
+                    now_ms: now,
+                    msec: msec * THINK_EVERY as i32,
+                    feet: f.player.ps.origin,
+                    eye: f.player.eye(),
+                    view: f.player.view(),
+                    enemies: &contacts,
+                    clip: f.gun.as_ref().map_or(0, |g| g.ammo().0),
+                };
+                if let Some(brain) = f.brain.as_mut() {
+                    f.act = brain.think(nav.as_deref_mut(), &senses);
+                }
+            }
+            let f = &mut self.fighters[i];
+            if f.brain.is_none() {
+                continue;
+            }
+            let act = f.act;
+            f.prev_origin = f.player.ps.origin;
+            f.last_step_ms = now;
+            let w = f.gun.as_ref().map(Gun::move_context).unwrap_or_default();
+            let mut steer = act.steer;
+            steer.fire = act.fire;
+            steer.reload = act.reload;
+            let fall = f.player.steer(clip, &steer, &w, msec);
             if fall > 0 && f.life.damage(fall, now) {
                 out.push(Event::Kill {
                     attacker: i,
@@ -325,13 +400,18 @@ impl Arena {
                 cam.right(),
                 cam.up(),
             );
+            g.sync_player(&mut f.player.ps);
             if matches!(ev, Some(WeaponTickEvent::ShotAccepted { .. })) {
                 f.last_fire_ms = Some(now);
                 out.push(Event::BotFired { bot: i });
             }
             if let Some(s) = shot {
                 let facts = *g.facts();
+                let extra: Vec<Shot> = g.extra_pellets().to_vec();
                 self.bullet(i, &s, &facts, now, out);
+                for p in &extra {
+                    self.bullet(i, p, &facts, now, out);
+                }
             }
         }
     }
@@ -468,7 +548,7 @@ mod tests {
             return;
         };
         let clip = wpk::clip::Clip::decode(c.data).expect("clip");
-        let nav = NavGraph::decode(n.data).expect("nav");
+        let mut nav = Navigator::new(wpk::nav::NavGraph::decode(n.data).expect("nav"));
         let mc = MapClip::new(&clip);
         let spawns: Vec<([f32; 3], f32)> = wpk::records::iter::<wpk::records::SpawnRecord>(
             pack.section(wpk::tag::SPAWNS).expect("spawns").data,
@@ -486,7 +566,7 @@ mod tests {
         for f in 0..(120 * 60u32) {
             a.update_bots(
                 &mc,
-                Some(&nav),
+                Some(&mut nav),
                 &spawns,
                 1000 + f * 16,
                 16,

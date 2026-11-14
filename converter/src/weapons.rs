@@ -51,6 +51,15 @@ pub fn with_global_location(
     c
 }
 
+/// Movement scales (IW4L `weapon_def_scales`: moveSpeedScale, adsMoveSpeedScale, sprintDurationScale).
+pub fn moves(g: &WeaponGeometry) -> wpk::weapon::MoveRecord {
+    wpk::weapon::MoveRecord {
+        move_speed_scale: g.move_speed_scale,
+        ads_move_speed_scale: g.ads_move_speed_scale,
+        sprint_duration_scale: g.sprint_duration_scale,
+    }
+}
+
 /// Recoil numbers (IW4L `WeaponKickFacts` from the same capture).
 pub fn kick(g: &WeaponGeometry) -> wpk::weapon::KickRecord {
     let k = &g.kick;

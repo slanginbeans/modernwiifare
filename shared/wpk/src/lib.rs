@@ -82,6 +82,8 @@ pub mod tag {
     pub const VIEWMODEL: Tag = *b"VIEW";
     /// Recoil of every weapon (`weapon::KickRecord`, parallel to `WEAP`).
     pub const KICK: Tag = *b"KICK";
+    /// Each weapon's effect on movement (`weapon::MoveRecord`, parallel to `WEAP`).
+    pub const WEAPON_MOVE: Tag = *b"WMOV";
     /// Sound alias lists ([`crate::sound::AliasRecord`]).
     pub const SOUND_ALIASES: Tag = *b"SNDA";
     /// Sound variants ([`crate::sound::VariantRecord`]).

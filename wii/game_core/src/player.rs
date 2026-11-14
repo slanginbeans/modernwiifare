@@ -26,6 +26,9 @@ pub struct Steer {
     pub crouch: bool,
     pub sprint: bool,
     pub ads: bool,
+    /// Fire and reload held: pmove sees them (they end a sprint, IW4 `SPRINT_INTERFERING`).
+    pub fire: bool,
+    pub reload: bool,
 }
 
 /// Pad state for one frame, already mapped from the GameCube controller.
@@ -40,6 +43,8 @@ pub struct MovePad {
     pub crouch: bool,
     pub sprint: bool,
     pub ads: bool,
+    pub fire: bool,
+    pub reload: bool,
 }
 
 /// Degrees per second at full C-stick deflection (placeholder, see the module note).
@@ -62,7 +67,54 @@ pub struct Player {
     pitch: f32,
 }
 
-fn context(old_buttons: u32) -> PmoveSingleContext {
+/// What the held weapon changes in movement (IW4L `sim::step::pmove_context` inputs): move-speed scales and sprint
+/// time, ADS rates and whether ADS is allowed, melee delays, scope and breath.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeaponMove {
+    pub move_speed_scale: f32,
+    pub ads_move_speed_scale: f32,
+    pub sprint_duration_scale: f32,
+    pub ads_allowed: bool,
+    pub aim_down_sight: bool,
+    pub ads_in_rate: f32,
+    pub ads_out_rate: f32,
+    pub ads_reload_trans_time_ms: i32,
+    pub segmented_reload: bool,
+    pub rechamber_while_ads: bool,
+    pub ads_fire_only: bool,
+    pub melee_delay_ms: i32,
+    pub melee_charge_delay_ms: i32,
+    pub scope: bool,
+    pub can_hold_breath: bool,
+}
+
+impl Default for WeaponMove {
+    /// No weapon: IW4L's fallbacks (200 ms ADS, no ADS allowed, full speed).
+    fn default() -> Self {
+        WeaponMove {
+            move_speed_scale: 1.0,
+            ads_move_speed_scale: 0.5,
+            sprint_duration_scale: 1.0,
+            ads_allowed: false,
+            aim_down_sight: false,
+            ads_in_rate: 1.0 / 200.0,
+            ads_out_rate: 1.0 / 200.0,
+            ads_reload_trans_time_ms: 0,
+            segmented_reload: false,
+            rechamber_while_ads: true,
+            ads_fire_only: false,
+            melee_delay_ms: 0,
+            melee_charge_delay_ms: 0,
+            scope: false,
+            can_hold_breath: false,
+        }
+    }
+}
+
+/// IW4 `player_sprintTime` (seconds).
+const PLAYER_SPRINT_TIME: f32 = 4.0;
+
+fn context(old_buttons: u32, w: &WeaponMove) -> PmoveSingleContext {
     let air = AirMoveContext {
         player_spectate_speed_scale: 1.0,
         shellshock_gravity_scale: 1.0,
@@ -74,9 +126,9 @@ fn context(old_buttons: u32) -> PmoveSingleContext {
                 player_back_speed_scale: 0.7,
                 player_strafe_speed_scale: 0.8,
                 player_sprint_speed_scale: 1.5,
-                player_last_stand_crawl_speed_scale: 0.2,
-                weapon_move_speed_scale: 1.0,
-                weapon_ads_move_speed_scale: 0.5,
+                player_last_stand_crawl_speed_scale: 0.15,
+                weapon_move_speed_scale: w.move_speed_scale,
+                weapon_ads_move_speed_scale: w.ads_move_speed_scale,
                 shellshock_affects_movement: false,
             },
             weapon_move_scale: 1.0,
@@ -101,25 +153,39 @@ fn context(old_buttons: u32) -> PmoveSingleContext {
             unclamped_pitch_bit: false,
         },
         sprint: SprintContext {
-            weapon_max_sprint_time: 4000,
+            weapon_max_sprint_time: movement_iw4::get_max_sprint_time(
+                w.sprint_duration_scale,
+                PLAYER_SPRINT_TIME,
+            ),
             sprint_forever: false,
             min_sprint_time_seconds: 1.0,
-            sprint_delay_seconds: 0.25,
+            sprint_delay_seconds: 0.0,
             sprint_forward_minimum: 105,
             stand_up_clear: true,
             sprint_recharge_pause_seconds: 0.0,
         },
         ads_intent: AdsIntentContext {
-            ads_allowed: true,
-            weapon_def_scope: false,
+            ads_allowed: w.ads_allowed,
+            weapon_def_scope: w.scope,
             sprint_hold_ads: false,
         },
-        ads_frac: AdsFracContext::default(),
-        melee_charge: MeleeChargeWeaponDelays::default(),
+        ads_frac: AdsFracContext {
+            aim_down_sight: w.aim_down_sight,
+            ads_in_rate: w.ads_in_rate,
+            ads_out_rate: w.ads_out_rate,
+            ads_reload_trans_time_ms: w.ads_reload_trans_time_ms,
+            segmented_reload: w.segmented_reload,
+            rechamber_while_ads: w.rechamber_while_ads,
+            ads_fire_only: w.ads_fire_only,
+        },
+        melee_charge: MeleeChargeWeaponDelays {
+            melee_delay_ms: w.melee_delay_ms,
+            melee_charge_delay_ms: w.melee_charge_delay_ms,
+        },
         player_melee_range: 64.0,
         old_buttons,
         weapon_blocks_prone: false,
-        can_hold_breath: false,
+        can_hold_breath: w.can_hold_breath,
     }
 }
 
@@ -165,7 +231,7 @@ impl Player {
     }
 
     /// Run one frame of `msec` milliseconds. Returns the fall damage of a landing this frame (IW4L's crash land).
-    pub fn update(&mut self, clip: &MapClip<'_>, pad: &MovePad, msec: i32) -> i32 {
+    pub fn update(&mut self, clip: &MapClip<'_>, pad: &MovePad, w: &WeaponMove, msec: i32) -> i32 {
         let dt = msec as f32 / 1000.0;
         let yaw = self.yaw - axis(pad.cx) * LOOK_YAW_RATE * dt;
         let pitch = self.pitch - axis(pad.cy) * LOOK_PITCH_RATE * dt;
@@ -181,13 +247,16 @@ impl Player {
                 crouch: pad.crouch,
                 sprint: pad.sprint,
                 ads: pad.ads,
+                fire: pad.fire,
+                reload: pad.reload,
             },
+            w,
             msec,
         )
     }
 
     /// Run one frame with absolute view angles and move amounts (bots). Same as [`Player::update`] otherwise.
-    pub fn steer(&mut self, clip: &MapClip<'_>, st: &Steer, msec: i32) -> i32 {
+    pub fn steer(&mut self, clip: &MapClip<'_>, st: &Steer, w: &WeaponMove, msec: i32) -> i32 {
         self.yaw = st.yaw - libm::floorf(st.yaw / 360.0) * 360.0;
         self.pitch = st.pitch.clamp(-85.0, 85.0);
         let mut btn = 0;
@@ -202,6 +271,12 @@ impl Player {
         }
         if st.ads {
             btn |= buttons::ADS;
+        }
+        if st.fire {
+            btn |= buttons::ATTACK;
+        }
+        if st.reload {
+            btn |= buttons::RELOAD;
         }
         self.server_time += msec;
         let short = |deg: f32| (deg * ANGLE2SHORT) as i32 & 0xffff;
@@ -223,7 +298,7 @@ impl Player {
         let result = pmove(
             &mut self.ps,
             &mut cmd,
-            context(self.old_buttons),
+            context(self.old_buttons, w),
             clip,
             &FlatMantleAnimLength::default(),
             &ZeroMantleRootDelta,
@@ -288,7 +363,7 @@ mod tests {
 
     fn run(p: &mut Player, clip: &MapClip<'_>, pad: MovePad, ms: i32) {
         for _ in 0..ms / 16 {
-            p.update(clip, &pad, 16);
+            p.update(clip, &pad, &WeaponMove::default(), 16);
         }
     }
 
@@ -323,6 +398,7 @@ mod tests {
                 jump: true,
                 ..MovePad::default()
             },
+            &WeaponMove::default(),
             16,
         );
         run(&mut p, &clip, MovePad::default(), 48);

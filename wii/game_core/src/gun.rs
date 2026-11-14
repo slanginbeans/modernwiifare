@@ -19,9 +19,14 @@ use weapon_iw4::{
     calculate_weapon_position_gun_recoil, fire_recoil_gun_range, fire_recoil_view_range,
     recoil_ads_weight, weapon_fire_recoil,
 };
-use wpk::weapon::{KickRecord, WeaponRecord};
+use wpk::weapon::{KickRecord, MoveRecord, WeaponRecord};
+
+use crate::player::WeaponMove;
 
 use crate::collision::MapClip;
+
+/// Most pellets one shot traces.
+const MAX_PELLETS: usize = 16;
 
 /// IW4 `MASK_SHOT`.
 pub const MASK_SHOT: u32 = 0x0280_6831;
@@ -71,6 +76,12 @@ pub struct Gun {
     ads_frac: f32,
     /// Recoil numbers, when the pack has them.
     kick: Option<KickRecord>,
+    /// Pellets after the first of the last shot (shotguns).
+    extra_pellets: alloc::vec::Vec<Shot>,
+    /// Movement scales (`WMOV`; MW2's usual numbers when the pack has none).
+    moves: MoveRecord,
+    /// `pm_flags` after the last weapon step (the weapon clears and sets some, IW4L `advance_weapon_command`).
+    pm_flags_out: Option<u32>,
     /// Camera kick springs (pitch, yaw, roll) and their angles in degrees; gun (viewmodel) kick.
     camera: [RecoilAxis; 3],
     pub kick_angles: [f32; 3],
@@ -105,6 +116,9 @@ impl Gun {
             rng: 0x1234_5678 ^ index,
             ads_frac: 0.0,
             kick: None,
+            moves: MoveRecord::default(),
+            extra_pellets: alloc::vec::Vec::with_capacity(MAX_PELLETS),
+            pm_flags_out: None,
             camera: Default::default(),
             kick_angles: [0.0; 3],
             gun_recoil: GunRecoilPlacementState::default(),
@@ -165,6 +179,54 @@ impl Gun {
     /// Recoil numbers for this weapon (`KICK` record); without them the gun has no recoil.
     pub fn set_kick(&mut self, kick: Option<KickRecord>) {
         self.kick = kick;
+    }
+
+    /// The pellets after the first of this frame's shot (shotguns; empty otherwise).
+    pub fn extra_pellets(&self) -> &[Shot] {
+        &self.extra_pellets
+    }
+
+    /// Movement scales for this weapon (`WMOV` record).
+    pub fn set_moves(&mut self, m: Option<MoveRecord>) {
+        self.moves = m.unwrap_or_default();
+    }
+
+    /// What this weapon does to movement right now (IW4L `sim::step` builds the same from the weapon's facts). ADS is
+    /// allowed when the weapon aims down sights, and not on an empty magazine for weapons that forbid it.
+    pub fn move_context(&self) -> WeaponMove {
+        let f = &self.facts;
+        let (ads_in_rate, ads_out_rate, rechamber_while_ads, ads_fire_only) = f.ads_frac_context();
+        WeaponMove {
+            move_speed_scale: self.moves.move_speed_scale,
+            ads_move_speed_scale: self.moves.ads_move_speed_scale,
+            sprint_duration_scale: self.moves.sprint_duration_scale,
+            ads_allowed: f.aim_down_sight && !(f.no_ads_when_mag_empty && self.hand.clip <= 0),
+            aim_down_sight: f.aim_down_sight,
+            ads_in_rate,
+            ads_out_rate,
+            ads_reload_trans_time_ms: f.ads_reload_trans_time_ms,
+            segmented_reload: f.segmented_reload,
+            rechamber_while_ads,
+            ads_fire_only,
+            melee_delay_ms: f.melee_delay_ms,
+            melee_charge_delay_ms: f.melee_charge_delay_ms,
+            scope: f.overlay_reticle != 0,
+            can_hold_breath: f.can_hold_breath,
+        }
+    }
+
+    /// Copy the weapon's state into the player's (IW4L `advance_weapon_command`): pmove reads the weapon, its state
+    /// and the `pm_flags` the weapon step changed (sprint, ADS, reload blocks).
+    pub fn sync_player(&self, ps: &mut playerstate_iw4::PlayerState) {
+        ps.weapon = self.hand.weapon;
+        ps.weaponstate_primary = self.hand.weaponstate;
+        ps.weapon_time = self.hand.weapon_time;
+        ps.weapon_delay = self.hand.weapon_delay;
+        ps.weap_anim = self.hand.weap_anim;
+        ps.weapon_restrict_kick_time = self.hand.weapon_restrict_kick_time;
+        if let Some(f) = self.pm_flags_out {
+            ps.pm_flags = f;
+        }
     }
 
     /// Viewmodel kick, degrees (pitch, yaw).
@@ -341,18 +403,36 @@ impl Gun {
         self.old_buttons = btn;
         self.advance_recoil(msec as f32 / 1000.0);
         let event = weapon_ordinary(&mut self.hand, &self.facts, &mut cmd);
+        self.pm_flags_out = Some(cmd.pm_flags);
+        self.extra_pellets.clear();
         let shot = match event {
-            Some(WeaponTickEvent::ShotAccepted { .. }) => {
+            Some(WeaponTickEvent::ShotAccepted { ammo_used }) => {
                 self.shots += 1;
-                // A random direction in the cone (angle and radius uniform, so hits gather towards the centre),
-                // then the shot widens the spread (IW4L add_aim_spread_fire).
+                // Each pellet in a random direction in the cone (angle and radius uniform, so hits gather towards the
+                // centre); shotguns fire several (IW4L `pellet_count`, times the barrels for double-barrel fire), then
+                // the shot widens the spread (IW4L add_aim_spread_fire).
+                let barrels = if self.facts.fire_type == 5 {
+                    ammo_used.max(1)
+                } else {
+                    1
+                };
+                let pellets = (self.facts.pellet_count() * barrels).clamp(1, MAX_PELLETS as i32);
                 let t = libm::tanf(self.spread_degrees.to_radians());
-                let a = self.random() * core::f32::consts::TAU;
-                let r = self.random() * t;
-                let (x, y) = (libm::cosf(a) * r, libm::sinf(a) * r);
-                let d: [f32; 3] = core::array::from_fn(|k| dir[k] + right[k] * x + up[k] * y);
-                let len = libm::sqrtf(d.iter().map(|v| v * v).sum::<f32>()).max(1e-6);
-                let shot = self.trace_bullet(clip, eye, d.map(|v| v / len));
+                let mut first = None;
+                for _ in 0..pellets {
+                    let a = self.random() * core::f32::consts::TAU;
+                    let r = self.random() * t;
+                    let (x, y) = (libm::cosf(a) * r, libm::sinf(a) * r);
+                    let d: [f32; 3] = core::array::from_fn(|k| dir[k] + right[k] * x + up[k] * y);
+                    let len = libm::sqrtf(d.iter().map(|v| v * v).sum::<f32>()).max(1e-6);
+                    let s = self.trace_bullet(clip, eye, d.map(|v| v / len));
+                    if first.is_none() {
+                        first = Some(s);
+                    } else {
+                        self.extra_pellets.push(s);
+                    }
+                }
+                let shot = first.expect("at least one pellet");
                 self.seed_recoil();
                 add_aim_spread_fire(
                     &mut self.spread.aim_spread_scale,
@@ -553,6 +633,32 @@ mod tests {
             g.update_spread(16, &input);
         }
         assert!(g.spread_degrees < widest, "and it recovers");
+    }
+
+    #[test]
+    fn shotguns_trace_every_pellet() {
+        let c = wall();
+        let clip = MapClip::new(&c);
+        let mut rec = rifle();
+        rec.combat.weap_class = weapon_iw4::WEAPCLASS_SPREAD;
+        rec.combat.shots_per_fire = 6;
+        let mut g = Gun::new(&rec).expect("usable");
+        let (eye, x) = ([0.0, 0.0, 60.0], [1.0, 0.0, 0.0]);
+        for _ in 0..40 {
+            g.update(&clip, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        let fire = GunInput {
+            fire: true,
+            ..GunInput::default()
+        };
+        let mut pellets = 0;
+        for _ in 0..10 {
+            if let (_, Some(_)) = g.update(&clip, 16, &fire, eye, x, Y, Z) {
+                pellets = 1 + g.extra_pellets().len();
+                break;
+            }
+        }
+        assert_eq!(pellets, 6);
     }
 
     #[test]

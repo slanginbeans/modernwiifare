@@ -212,6 +212,121 @@ pub fn route(g: &NavGraph, start: u16, goal: u16, budget: usize) -> Option<Vec<u
     None
 }
 
+/// The walk graph as the bots use it at run time: a grid index for finding the nearest point without scanning
+/// them all, and one A* scratch reused by every search (no allocation or clearing per route: entries are stamped
+/// with the search they belong to). `routes_left` caps new routes per frame (the arena sets it each frame).
+pub struct Navigator {
+    pub graph: NavGraph,
+    cells: BTreeMap<(i32, i32), Vec<u16>>,
+    cost: Vec<f32>,
+    from: Vec<u16>,
+    stamp: Vec<u32>,
+    search: u32,
+    heap: BinaryHeap<Open>,
+    pub routes_left: u32,
+}
+
+impl Navigator {
+    pub fn new(graph: NavGraph) -> Navigator {
+        let mut cells: BTreeMap<(i32, i32), Vec<u16>> = BTreeMap::new();
+        for (i, p) in graph.nodes.iter().enumerate() {
+            cells
+                .entry((cell(p[0]), cell(p[1])))
+                .or_default()
+                .push(i as u16);
+        }
+        let n = graph.nodes.len();
+        Navigator {
+            graph,
+            cells,
+            cost: alloc::vec![0.0; n],
+            from: alloc::vec![u16::MAX; n],
+            stamp: alloc::vec![0; n],
+            search: 0,
+            heap: BinaryHeap::new(),
+            routes_left: u32::MAX,
+        }
+    }
+
+    /// The point nearest `feet` within `max` units, preferring the same floor (as [`nearest`]), from the grid cells
+    /// around it.
+    pub fn nearest(&self, feet: [f32; 3], max: f32) -> Option<u16> {
+        let r = libm::ceilf(max / GRID) as i32;
+        let (cx, cy) = (cell(feet[0]), cell(feet[1]));
+        let mut best: Option<(u16, f32)> = None;
+        for x in cx - r..=cx + r {
+            for y in cy - r..=cy + r {
+                for &i in self.cells.get(&(x, y)).into_iter().flatten() {
+                    let p = self.graph.nodes[usize::from(i)];
+                    let d = [p[0] - feet[0], p[1] - feet[1], p[2] - feet[2]];
+                    let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                    if d2 > max * max {
+                        continue;
+                    }
+                    let score = d2 + 3.0 * d[2] * d[2];
+                    // Ties go to the lower index, as in the plain scan.
+                    if best.is_none_or(|(bi, b)| score < b || (score == b && i < bi)) {
+                        best = Some((i, score));
+                    }
+                }
+            }
+        }
+        best.map(|b| b.0)
+    }
+
+    /// A* from `start` to `goal` (as [`route`]), with the shared scratch.
+    pub fn route(&mut self, start: u16, goal: u16, budget: usize) -> Option<Vec<u16>> {
+        let n = self.graph.nodes.len();
+        if usize::from(start) >= n || usize::from(goal) >= n {
+            return None;
+        }
+        self.search = self.search.wrapping_add(1).max(1);
+        let search = self.search;
+        let g = &self.graph;
+        let q = g.nodes[usize::from(goal)];
+        // Squared-free heuristic: straight-line distance (one square root per push).
+        let h = |a: u16| {
+            let p = g.nodes[usize::from(a)];
+            let d = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+            libm::sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+        };
+        self.heap.clear();
+        self.stamp[usize::from(start)] = search;
+        self.cost[usize::from(start)] = 0.0;
+        self.from[usize::from(start)] = u16::MAX;
+        self.heap.push(Open(h(start), start));
+        let mut expanded = 0;
+        while let Some(Open(_, a)) = self.heap.pop() {
+            if a == goal {
+                let mut path = Vec::new();
+                let mut c = goal;
+                while c != start {
+                    path.push(c);
+                    c = self.from[usize::from(c)];
+                }
+                path.reverse();
+                return Some(path);
+            }
+            expanded += 1;
+            if expanded > budget {
+                return None;
+            }
+            let ca = self.cost[usize::from(a)];
+            for e in g.edges_of(a) {
+                let t = usize::from(e.to);
+                let c = ca + f32::from(e.cost);
+                if self.stamp[t] != search || c < self.cost[t] {
+                    self.stamp[t] = search;
+                    self.cost[t] = c;
+                    self.from[t] = a;
+                    self.heap.push(Open(c + h(e.to), e.to));
+                }
+            }
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +346,23 @@ mod tests {
             path.iter()
                 .any(|&n| g.nodes[usize::from(n)][1].abs() > 100.0)
         );
+    }
+
+    #[test]
+    fn the_navigator_matches_the_plain_search() {
+        let clip = floor_with_wall();
+        let mc = MapClip::new(&clip);
+        let g = bake(&mc, &[[-200.0, 0.0, 0.0]]);
+        let mut nav = Navigator::new(g.clone());
+        for feet in [[-200.0, 0.0, 0.0], [210.0, -150.0, 0.0], [5.0, 300.0, 0.0]] {
+            assert_eq!(nav.nearest(feet, 256.0), nearest(&g, feet, 256.0));
+        }
+        let a = nav.nearest([-200.0, 0.0, 0.0], 64.0).unwrap();
+        let b = nav.nearest([200.0, 0.0, 0.0], 64.0).unwrap();
+        // Twice: the stamped scratch must not leak from one search into the next.
+        for _ in 0..2 {
+            assert_eq!(nav.route(a, b, 20000), route(&g, a, b, 20000));
+        }
     }
 
     #[test]

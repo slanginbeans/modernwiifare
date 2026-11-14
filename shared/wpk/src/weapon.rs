@@ -246,6 +246,42 @@ impl crate::records::Record for KickRecord {
     }
 }
 
+/// A weapon's effect on movement (`WMOV` section, parallel to `WEAP`): IW4 `moveSpeedScale`, `adsMoveSpeedScale`
+/// and `sprintDurationScale` (IW4L's `weapon_def_scales`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MoveRecord {
+    pub move_speed_scale: f32,
+    pub ads_move_speed_scale: f32,
+    pub sprint_duration_scale: f32,
+}
+
+impl Default for MoveRecord {
+    /// No record: full speed, MW2's usual half speed in ADS, the standard sprint.
+    fn default() -> Self {
+        MoveRecord {
+            move_speed_scale: 1.0,
+            ads_move_speed_scale: 0.5,
+            sprint_duration_scale: 1.0,
+        }
+    }
+}
+
+impl crate::records::Record for MoveRecord {
+    const LEN: usize = 12;
+    fn write(&self, o: &mut Vec<u8>) {
+        o.f32(self.move_speed_scale);
+        o.f32(self.ads_move_speed_scale);
+        o.f32(self.sprint_duration_scale);
+    }
+    fn read(b: &[u8]) -> Self {
+        MoveRecord {
+            move_speed_scale: be::f32(b, 0),
+            ads_move_speed_scale: be::f32(b, 4),
+            sprint_duration_scale: be::f32(b, 8),
+        }
+    }
+}
+
 /// The record named `name` in a `WEAP` section, with its index.
 pub fn find_indexed(section: &[u8], name: &str) -> Option<(u32, WeaponRecord)> {
     section.chunks_exact(LEN).enumerate().find_map(|(i, r)| {

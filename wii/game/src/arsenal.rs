@@ -68,6 +68,7 @@ impl Arsenal {
         gfx: &mut impl game_core::gfx::Gfx,
         weapons: &[u8],
         kicks: &[u8],
+        moves: &[u8],
         cat: Option<&Catalog>,
         class: Option<&Loadout>,
     ) {
@@ -109,6 +110,7 @@ impl Arsenal {
                     kicks,
                     index as usize,
                 ));
+                g.set_moves(wpk::records::get(moves, index as usize));
                 Some(g)
             });
         }

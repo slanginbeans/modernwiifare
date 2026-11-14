@@ -584,21 +584,26 @@ fn run_common(args: &[String]) -> ExitCode {
     }
     let links = &collector.links;
     // Weapons with their recoil, sorted by name, first of each name kept.
-    let mut both: Vec<(wpk::weapon::WeaponRecord, wpk::weapon::KickRecord)> = links
+    type Row = (
+        wpk::weapon::WeaponRecord,
+        (wpk::weapon::KickRecord, wpk::weapon::MoveRecord),
+    );
+    let mut both: Vec<Row> = links
         .weapons
         .iter()
         .zip(&links.weapon_combat)
-        .zip(&links.weapon_kick)
+        .zip(links.weapon_kick.iter().zip(&links.weapon_moves))
         .filter(|((n, _), _)| !n.is_empty())
-        .map(|((n, c), k)| {
+        .map(|((n, c), (k, m))| {
             // MW2's per-location damage table, baked into each weapon as IW4L does.
             let c = weapons::with_global_location(*c, links.lochit);
-            (wpk::weapon::WeaponRecord::new(n, c), *k)
+            (wpk::weapon::WeaponRecord::new(n, c), (*k, *m))
         })
         .collect();
     both.sort_by_key(|(w, _)| w.name);
     both.dedup_by(|x, y| x.0.name == y.0.name);
-    let (weapons, kicks): (Vec<_>, Vec<_>) = both.into_iter().unzip();
+    let (weapons, extra): (Vec<_>, Vec<_>) = both.into_iter().unzip();
+    let (kicks, moves): (Vec<_>, Vec<_>) = extra.into_iter().unzip();
     let files: HashSet<String> = weapons.iter().map(|w| w.name().to_owned()).collect();
     println!(
         "hit-location damage table: {}",
@@ -633,6 +638,11 @@ fn run_common(args: &[String]) -> ExitCode {
         wpk::tag::KICK,
         kicks.len() as u32,
         wpk::records::encode(&kicks),
+    );
+    b.section(
+        wpk::tag::WEAPON_MOVE,
+        moves.len() as u32,
+        wpk::records::encode(&moves),
     );
     b.section(wpk::tag::CLASSES, 0, catalog.encode());
     let bytes = b.finish();

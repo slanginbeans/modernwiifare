@@ -10,7 +10,8 @@ use alloc::vec::Vec;
 
 use wpk::nav::NavGraph;
 
-use crate::nav;
+use crate::nav::Navigator;
+
 use crate::player::Steer;
 
 const MAX_YAW_DEG_PER_MS: f32 = 0.36;
@@ -200,7 +201,7 @@ impl Brain {
     /// The point to walk to now along a route to `goal` (computing the route when the goal moved).
     fn next_waypoint(
         &mut self,
-        g: &NavGraph,
+        nv: &mut Navigator,
         feet: [f32; 3],
         goal: [f32; 3],
         now: u32,
@@ -208,18 +209,18 @@ impl Brain {
         let moved = self
             .route_goal
             .is_none_or(|old| dist2(old, goal) > 128.0 * 128.0);
-        if (moved || self.route.is_empty()) && now >= self.next_repath_ms {
+        // New routes are rationed (one per frame across all bots): a bot without its turn keeps its old route.
+        if (moved || self.route.is_empty()) && now >= self.next_repath_ms && nv.routes_left > 0 {
+            nv.routes_left -= 1;
             self.next_repath_ms = now + 500;
             self.route_goal = Some(goal);
-            self.route = match (nav::nearest(g, feet, SNAP), nav::nearest(g, goal, SNAP)) {
-                (Some(a), Some(b)) if a != b => {
-                    nav::route(g, a, b, ROUTE_BUDGET).unwrap_or_default()
-                }
+            self.route = match (nv.nearest(feet, SNAP), nv.nearest(goal, SNAP)) {
+                (Some(a), Some(b)) if a != b => nv.route(a, b, ROUTE_BUDGET).unwrap_or_default(),
                 _ => Vec::new(),
             };
         }
         while let Some(&n) = self.route.first() {
-            let p = g.nodes[usize::from(n)];
+            let p = nv.graph.nodes[usize::from(n)];
             let flat = (p[0] - feet[0]) * (p[0] - feet[0]) + (p[1] - feet[1]) * (p[1] - feet[1]);
             if flat < ARRIVE * ARRIVE && libm::fabsf(p[2] - feet[2]) < 40.0 {
                 self.route.remove(0);
@@ -230,7 +231,7 @@ impl Brain {
         None
     }
 
-    pub fn think(&mut self, nav: Option<&NavGraph>, s: &Senses<'_>) -> Act {
+    pub fn think(&mut self, nav: Option<&mut Navigator>, s: &Senses<'_>) -> Act {
         let now = s.now_ms;
         let dt = s.msec.max(1) as f32;
         if !self.armed {
@@ -290,7 +291,9 @@ impl Brain {
         let mut wander = false;
         if move_goal.is_none() && target.is_none() {
             if self.route_goal.is_none() || self.route.is_empty() {
-                let g = nav.and_then(|g| self.roam_goal(g, s.feet));
+                let g = nav
+                    .as_deref()
+                    .and_then(|n| self.roam_goal(&n.graph, s.feet));
                 self.route_goal = None;
                 if let Some(g) = g {
                     self.route_goal = Some(g);
@@ -395,6 +398,7 @@ mod tests {
     use super::*;
     use crate::collision::MapClip;
     use crate::collision::test_clips::floor_with_wall;
+    use crate::nav;
     use crate::player::Player;
 
     fn enemy(at: [f32; 3], visible: bool) -> Contact {
@@ -456,7 +460,7 @@ mod tests {
     fn walks_around_a_wall_to_a_heard_enemy() {
         let clip = floor_with_wall();
         let mc = MapClip::new(&clip);
-        let g = nav::bake(&mc, &[[-200.0, 0.0, 0.0]]);
+        let mut nv = Navigator::new(nav::bake(&mc, &[[-200.0, 0.0, 0.0]]));
         let mut p = Player::spawn(&mc, [-200.0, 0.0, 0.0], 0.0);
         let mut b = Brain::new(Skill::REGULAR, 3);
         let goal = [250.0, 0.0, 0.0];
@@ -476,8 +480,8 @@ mod tests {
                 enemies: &e,
                 clip: 30,
             };
-            let a = b.think(Some(&g), &s);
-            p.steer(&mc, &a.steer, 16);
+            let a = b.think(Some(&mut nv), &s);
+            p.steer(&mc, &a.steer, &crate::player::WeaponMove::default(), 16);
             best = best.min(dist2(p.ps.origin, goal).sqrt());
         }
         assert!(best < 80.0, "got within {best} of the enemy");

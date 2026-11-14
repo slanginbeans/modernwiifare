@@ -562,7 +562,7 @@ fn run_map(
     }
     let bytes: &[u8] = unsafe { core::slice::from_raw_parts(ptr, in_place) };
     // The tail (visibility, cell tables, collision) is decoded into MEM1 from a temporary buffer.
-    let (vis, clip_data, nav) = {
+    let (vis, clip_data, mut nav) = {
         let mut tail: Vec<u8> = Vec::new();
         if tail.try_reserve_exact(file_len - in_place).is_err() {
             return fail(0xe08020ff);
@@ -584,7 +584,9 @@ fn run_map(
             sec(wpk::tag::INSTANCE_CELLS),
         );
         let clip = sec(wpk::tag::CLIP).and_then(|d| wpk::clip::Clip::decode(d).ok());
-        let nav = sec(wpk::tag::NAV).and_then(wpk::nav::NavGraph::decode);
+        let nav = sec(wpk::tag::NAV)
+            .and_then(wpk::nav::NavGraph::decode)
+            .map(game_core::nav::Navigator::new);
         (vis, clip, nav)
     };
     let mut world = match World::load(bytes, vis.as_ref(), gfx) {
@@ -602,7 +604,7 @@ fn run_map(
             unsafe { ffi::mwf_mem1_free_bytes() } / 1024,
             unsafe { ffi::mwf_mem2_free_bytes() } / 1024,
             clip.is_some(),
-            nav.as_ref().map_or(0, |n| n.nodes.len()),
+            nav.as_ref().map_or(0, |n| n.graph.nodes.len()),
         ),
     );
     let aspect = if unsafe { ffi::mwf_widescreen() } != 0 {
@@ -615,16 +617,21 @@ fn run_map(
     cam.aspect = aspect;
     let mut player = clip.as_ref().map(|c| spawn_player(&world, c, spawn));
     // The class's weapons (when common.wpk is on the SD card), first-person files loaded above the map's data.
-    let kicks = wpk::Pack::parse(common, false)
-        .ok()
+    let common_pack = wpk::Pack::parse(common, false).ok();
+    let kicks = common_pack
+        .as_ref()
         .and_then(|p| p.section(wpk::tag::KICK))
+        .map_or(&[][..], |s| s.data);
+    let moves = common_pack
+        .as_ref()
+        .and_then(|p| p.section(wpk::tag::WEAPON_MOVE))
         .map_or(&[][..], |s| s.data);
     let mut arsenal = arsenal::Arsenal::new();
     // A class change applies at the next spawn, as in MW2.
     let mut class = loadouts.class;
     let equip = |arsenal: &mut arsenal::Arsenal, gfx: &mut Shim, class: Option<usize>| {
         let l = class.and_then(|c| loadouts.classes.get(c));
-        arsenal.equip(gfx, weapons, kicks, loadouts.catalog, l);
+        arsenal.equip(gfx, weapons, kicks, moves, loadouts.catalog, l);
     };
     equip(&mut arsenal, gfx, class);
     // Free-for-all against bots (MW2's FFA spawns when the map has them).
@@ -659,7 +666,9 @@ fn run_map(
             .unwrap_or_else(|| alloc::vec![alloc::string::String::from("m4_mp")]);
         names.iter().find_map(|n| {
             let (index, rec) = wpk::weapon::find_indexed(weapons, n)?;
-            Gun::with_index(&rec, index)
+            let mut g = Gun::with_index(&rec, index)?;
+            g.set_moves(wpk::records::get(moves, index as usize));
+            Some(g)
         })
     };
     let mut arena = match (&clip, &player) {
@@ -695,6 +704,9 @@ fn run_map(
     let mut rects: Vec<Rect> = Vec::with_capacity(4096);
     let mut frame_start = ffi::us();
     let mut last_mem_s = u32::MAX;
+    // Fixed-step clock for the player: milliseconds × 3 not yet simulated, and steps taken.
+    let mut tick_acc3 = 0u32;
+    let mut sim_ticks = 0u64;
     let lap = |mark: &mut u32| {
         let t = ffi::us();
         let d = t.wrapping_sub(*mark);
@@ -767,85 +779,108 @@ fn run_map(
                 }
             }
         }
+        // Player steps due this frame (60 Hz, at most 6 = 100 ms).
+        tick_acc3 += msec * 3;
+        let player_ticks = (tick_acc3 / 50).min(6);
+        tick_acc3 -= player_ticks * 50;
+        tick_acc3 = tick_acc3.min(50);
         sections[section::INPUT] = lap(&mut mark);
         match (&mut player, &clip) {
             (Some(p), Some(c)) if !flying && life.alive() => {
-                let fall = p.update(
-                    c,
-                    &MovePad {
-                        sx: pad.sx,
-                        sy: pad.sy,
-                        cx: pad.cx,
-                        cy: pad.cy,
-                        jump: pad.held & ffi::BTN_A != 0,
-                        crouch: pad.held & ffi::BTN_B != 0,
-                        sprint: pad.held & ffi::BTN_Z != 0,
-                        ads: pad.held & ffi::BTN_L != 0 || pad.l > 128,
-                    },
-                    msec as i32,
-                );
-                cam = p.camera(aspect);
-                // Recoil kicks the view (IW4: kick angles on top of the view; shots follow the kicked view).
-                if let Some(g) = arsenal.gun() {
-                    cam.pitch += g.kick_angles[0];
-                    cam.yaw += g.kick_angles[1];
-                }
-                if fall > 0 {
-                    life.damage(fall, now);
-                }
-                if p.ps.origin[2] < floor_z {
-                    life.damage(life.max_health, now);
-                }
-                if let Some(a) = arena.as_mut() {
-                    a.fighters[0].player = p.clone();
-                    a.fighters[0].life = life;
-                }
-                sections[section::PLAYER] = lap(&mut mark);
-                let a = arsenal.active;
-                if let (Some(g), true) = (arsenal.guns[a].as_mut(), life.alive()) {
-                    g.update_spread(
-                        msec as i32,
-                        &SpreadInput {
-                            ps: &p.ps,
-                            cmd_angles: p.cmd_angles,
-                            old_cmd_angles: p.old_cmd_angles,
-                            forwardmove: p.cmd_move.0,
-                            rightmove: p.cmd_move.1,
-                        },
-                    );
-                    let (event, shot) = g.update(
+                // Fixed 60 Hz for the player, like IW4 at 60 fps (usercmds of 16 / 17 ms): the fire rate and
+                // movement don't depend on the frame rate. A slow frame runs several steps.
+                for _ in 0..player_ticks {
+                    if !life.alive() {
+                        break;
+                    }
+                    let tick_ms = ((sim_ticks + 1) * 50 / 3 - sim_ticks * 50 / 3) as i32;
+                    sim_ticks += 1;
+                    let weapon_move = arsenal.gun().map(Gun::move_context).unwrap_or_default();
+                    let fall = p.update(
                         c,
-                        msec as i32,
-                        &GunInput {
+                        &MovePad {
+                            sx: pad.sx,
+                            sy: pad.sy,
+                            cx: pad.cx,
+                            cy: pad.cy,
+                            jump: pad.held & ffi::BTN_A != 0,
+                            crouch: pad.held & ffi::BTN_B != 0,
+                            sprint: pad.held & ffi::BTN_Z != 0,
+                            ads: pad.held & ffi::BTN_L != 0 || pad.l > 128,
                             fire: pad.held & ffi::BTN_R != 0 || pad.r > 100,
                             reload: pad.held & ffi::BTN_X != 0,
-                            pm_flags: p.ps.pm_flags,
                         },
-                        cam.eye,
-                        cam.forward(),
-                        cam.right(),
-                        cam.up(),
+                        &weapon_move,
+                        tick_ms,
                     );
-                    if let Some(s) = shot.as_ref() {
-                        last_shot_ms = Some(now);
-                        if let Some(a) = arena.as_mut() {
-                            a.fighters[0].last_fire_ms = Some(now);
-                            let facts = *g.facts();
-                            a.bullet(0, s, &facts, now, &mut events);
+                    cam = p.camera(aspect);
+                    // Recoil kicks the view (IW4: kick angles on top of the view; shots follow the kicked view).
+                    if let Some(g) = arsenal.gun() {
+                        cam.pitch += g.kick_angles[0];
+                        cam.yaw += g.kick_angles[1];
+                    }
+                    if fall > 0 {
+                        life.damage(fall, now);
+                    }
+                    if p.ps.origin[2] < floor_z {
+                        life.damage(life.max_health, now);
+                    }
+                    if let Some(a) = arena.as_mut() {
+                        a.fighters[0].player = p.clone();
+                        a.fighters[0].life = life;
+                    }
+                    sections[section::PLAYER] += lap(&mut mark);
+                    let a = arsenal.active;
+                    if let (Some(g), true) = (arsenal.guns[a].as_mut(), life.alive()) {
+                        g.update_spread(
+                            tick_ms,
+                            &SpreadInput {
+                                ps: &p.ps,
+                                cmd_angles: p.cmd_angles,
+                                old_cmd_angles: p.old_cmd_angles,
+                                forwardmove: p.cmd_move.0,
+                                rightmove: p.cmd_move.1,
+                            },
+                        );
+                        let (event, shot) = g.update(
+                            c,
+                            tick_ms,
+                            &GunInput {
+                                fire: pad.held & ffi::BTN_R != 0 || pad.r > 100,
+                                reload: pad.held & ffi::BTN_X != 0,
+                                pm_flags: p.ps.pm_flags,
+                            },
+                            cam.eye,
+                            cam.forward(),
+                            cam.right(),
+                            cam.up(),
+                        );
+                        // The weapon's state goes into the player's (pmove reads it next step).
+                        g.sync_player(&mut p.ps);
+                        if let Some(s) = shot.as_ref() {
+                            last_shot_ms = Some(now);
+                            if let Some(a) = arena.as_mut() {
+                                a.fighters[0].last_fire_ms = Some(now);
+                                let facts = *g.facts();
+                                a.bullet(0, s, &facts, now, &mut events);
+                                for pellet in g.extra_pellets() {
+                                    a.bullet(0, pellet, &facts, now, &mut events);
+                                }
+                            }
+                        }
+                        if let (Some(e), Some(v)) = (event.as_ref(), arsenal.views[a].as_mut())
+                            && let Some(s) =
+                                game_core::weapon_sound::for_event(&v.sounds, e, g.ammo().0)
+                        {
+                            v.play(s);
+                        }
+                        if let Some(s) = shot.filter(|s| s.hit) {
+                            impacts[next_impact] = (Some(s.end), now);
+                            next_impact = (next_impact + 1) % impacts.len();
                         }
                     }
-                    if let (Some(e), Some(v)) = (event.as_ref(), arsenal.views[a].as_mut())
-                        && let Some(s) =
-                            game_core::weapon_sound::for_event(&v.sounds, e, g.ammo().0)
-                    {
-                        v.play(s);
-                    }
-                    if let Some(s) = shot.filter(|s| s.hit) {
-                        impacts[next_impact] = (Some(s.end), now);
-                        next_impact = (next_impact + 1) % impacts.len();
-                    }
+                    sections[section::GUN] += lap(&mut mark);
                 }
-                sections[section::GUN] = lap(&mut mark);
             }
             (Some(_), Some(c)) if !flying => {
                 // Dead: the view stays where the player fell until the respawn.
@@ -885,7 +920,7 @@ fn run_map(
             a.fighters[0].life = life;
             a.update_bots(
                 c,
-                nav.as_ref(),
+                nav.as_mut(),
                 &spawn_list,
                 now,
                 msec as i32,
@@ -893,6 +928,13 @@ fn run_map(
                 &mut events,
             );
             life = a.fighters[0].life;
+            // Hits slow you (IW4 damage timer, set on the arena's copy of you).
+            if let Some(p) = player.as_mut() {
+                let ps = &a.fighters[0].player.ps;
+                p.ps.damage_timer = ps.damage_timer;
+                p.ps.damage_duration = ps.damage_duration;
+                p.ps.flinch_yaw_anim = ps.flinch_yaw_anim;
+            }
         }
         for e in events.drain(..) {
             match e {
@@ -933,7 +975,7 @@ fn run_map(
             boxes.clear();
             box_colours.clear();
             for f in a.fighters[1..].iter().filter(|f| f.life.alive()) {
-                for h in game_core::damage::boxes(f.player.ps.origin, f.player.crouched()) {
+                for h in game_core::damage::boxes(f.draw_origin(now), f.player.crouched()) {
                     boxes.push([
                         h.mins[0], h.mins[1], h.mins[2], h.maxs[0], h.maxs[1], h.maxs[2],
                     ]);

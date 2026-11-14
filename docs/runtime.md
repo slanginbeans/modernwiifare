@@ -113,8 +113,8 @@ feed, and hits show MW2's hitmarker.
   sized from IW4's hull and view heights, standing or crouched, until the character models are converted: where a
   shot lands on the body is approximated, the damage numbers are not.
 - **Bots** play with the same IW4L movement and weapon code as you, their guns from MW2's five default classes. They
-  see in front of them (150°) with a clear line, hear gunfire within 2000 units, react after about a third of a
-  second, turn at limited speed (IW4L's bot motor), fire inside an 8° cone with a small aim error that settles,
+  see 90° in front of them up to 5906 units with a clear line (IW4L's bot sensor), hear gunfire within 2000 units,
+  step every 50 ms and decide every 100 ms like IW4's server bots, react after about a third of a second, turn at limited speed (IW4L's bot motor), fire inside an 8° cone with a small aim error that settles,
   strafe while fighting, chase what they saw or heard, and otherwise roam the map. They walk a graph the converter
   bakes from the map's collision (`NAVG` in the pack, flooded out from the spawn points on a 48-unit grid) with A*
   routes, and jump when stuck. Not yet: mantling, ladders, doors, grenades, knifing, their weapon sounds, and other
