@@ -63,7 +63,17 @@ fn draw_viewmodel(
         })
         .unwrap_or_default();
     let (mut world, mut skin, mut pos) = (Vec::new(), Vec::new(), Vec::new());
-    vmod::pose(&vm, vm.clip(slot).map(|c| (c, time)), &mut world);
+    if slot == wpk::view::slot::ADS_UP {
+        // ADS through the Wii's anim tree: idle with the ADS overlays at fraction `time` (0 hip .. 1 at the sights).
+        use game_core::weapon_anim::{Animator, BlendScratch, Timers, pose_blend};
+        let mut a = Animator::new(&vm, Timers::default());
+        a.ads(time.clamp(0.0, 1.0));
+        let mut playing = Vec::new();
+        a.playing(&mut playing);
+        pose_blend(&vm, &playing, &mut BlendScratch::default(), &mut world);
+    } else {
+        vmod::pose(&vm, vm.clip(slot).map(|c| (c, time)), &mut world);
+    }
     vmod::skin_matrices(&vm, &world, &mut skin);
     vmod::skin(&vm, &skin, &mut pos);
     let eye = vmod::eye_from_model(&world[usize::from(vm.view_bone)]);
