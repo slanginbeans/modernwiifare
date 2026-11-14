@@ -229,7 +229,7 @@ struct SkinnedSurface {
     indices: Vec<u16>,
 }
 
-/// LOD 0 surfaces of model `m`, except those using a bone in `hidden` (model-local bone indices; IW4: a surface is
+/// The surfaces of LOD `lod` (or the most detailed below it that has any) of model `m`, except those using a bone in `hidden` (model-local bone indices; IW4: a surface is
 /// hidden when its part bits meet the hidden bones).
 fn read_surfaces(
     s: &ZoneStream<'_>,
@@ -238,13 +238,18 @@ fn read_surfaces(
     m: usize,
     bone_base: usize,
     hidden: &[usize],
+    lod: usize,
 ) -> Result<(Vec<SkinnedSurface>, usize), String> {
     let g = links.model_geometry.get(m).ok_or("no model geometry")?;
     let e = |e: fastfile_iw4::ZoneError| format!("{e:?}");
-    let surfaces = match g.lod_xsurfaces[0] {
+    let lod = (0..=lod.min(g.lod_numsurfs.len() - 1))
+        .rev()
+        .find(|&l| g.lod_numsurfs[l] > 0)
+        .unwrap_or(0);
+    let surfaces = match g.lod_xsurfaces[lod] {
         Some(p) => p,
         None => {
-            let name = g.lod_surface_names[0].ok_or("no LOD 0 surfaces")?;
+            let name = g.lod_surface_names[lod].ok_or("no LOD surfaces")?;
             let name = s.cstr(s.resolve_alias(name)).map_err(e)?;
             *sets
                 .get(name.trim_start_matches(','))
@@ -253,7 +258,7 @@ fn read_surfaces(
     };
     let mut out = Vec::new();
     let mut hidden_count = 0;
-    for i in 0..usize::from(g.lod_numsurfs[0]) {
+    for i in 0..usize::from(g.lod_numsurfs[lod]) {
         let surf = surfaces.at(i * sz::XSURFACE);
         let part_bits: [u32; 6] =
             std::array::from_fn(|k| s.u32_at(surf, s.layout(40, 64) + k * 4).unwrap_or(0));
@@ -290,7 +295,7 @@ fn read_surfaces(
         for t in 0..tri_count * 3 {
             indices.push(s.u16_at(tris, t * 2).map_err(e)?);
         }
-        let slot = usize::from(g.lod_surf_index[0]) + i;
+        let slot = usize::from(g.lod_surf_index[lod]) + i;
         let material = (slot < g.material_handle_count)
             .then(|| {
                 g.material_handles
@@ -533,7 +538,7 @@ pub fn build(
             hide_bone[i] = named || parent_hidden;
         }
         let hidden: Vec<usize> = (0..mb.names.len()).filter(|&i| hide_bone[i]).collect();
-        let (surfaces, h) = read_surfaces(s, links, &sets, m, bone_base, &hidden)?;
+        let (surfaces, h) = read_surfaces(s, links, &sets, m, bone_base, &hidden, 0)?;
         hidden_surfaces += h;
         for surf in surfaces {
             let Some(mat) = surf.material else { continue };
@@ -607,6 +612,186 @@ pub fn build(
     Ok((vm, report))
 }
 
+/// A player character for the map pack: body model `body` with head model `head` attached as IW4 attaches a head
+/// (no tag: the head's bones that share a name with the body's are the body's; its other bones hang under their
+/// mapped parents), skinned surfaces of LOD `lod` (or the nearest more detailed one). Surfaces carry their material
+/// index in `texture` until the pack resolves them. Returns the model and its bone names.
+pub fn build_character(
+    s: &ZoneStream<'_>,
+    links: &Links,
+    body: usize,
+    head: Option<usize>,
+    lod: usize,
+) -> Result<(ViewModel, Vec<String>), String> {
+    let sets = surface_sets(s, links);
+    let bb = read_bones(s, links, body)?;
+    let mut names: Vec<String> = bb.names.clone();
+    let mut vm = ViewModel::default();
+    for i in 0..bb.names.len() {
+        let (bq, bt) = bb.bind[i];
+        vm.bones.push(Bone {
+            parent: bb.parent[i].map_or(-1, |p| p as i16),
+            local_rot: bb.local_rot[i],
+            local_trans: bb.local_trans[i],
+            inv_bind: inverse_rigid(bq, bt),
+        });
+    }
+    let mut parts: Vec<(usize, Vec<usize>)> = vec![(body, (0..bb.names.len()).collect())];
+    if let Some(h) = head {
+        let hb = read_bones(s, links, h)?;
+        let mut map = Vec::with_capacity(hb.names.len());
+        for i in 0..hb.names.len() {
+            if let Some(k) = names
+                .iter()
+                .position(|n| !n.is_empty() && *n == hb.names[i])
+            {
+                map.push(k);
+                continue;
+            }
+            let (bq, bt) = hb.bind[i];
+            let parent = hb.parent[i].map(|p| map[p]);
+            vm.bones.push(Bone {
+                parent: parent.map_or(-1, |p| p as i16),
+                local_rot: hb.local_rot[i],
+                local_trans: hb.local_trans[i],
+                inv_bind: inverse_rigid(bq, bt),
+            });
+            names.push(hb.names[i].clone());
+            map.push(vm.bones.len() - 1);
+        }
+        parts.push((h, map));
+    }
+    if vm.bones.len() > 255 {
+        return Err("more than 255 bones".into());
+    }
+    for (m, map) in &parts {
+        let (surfaces, _) = read_surfaces(s, links, &sets, *m, 0, &[], lod)?;
+        for mut surf in surfaces {
+            for v in &mut surf.verts {
+                v.bones = v
+                    .bones
+                    .map(|b| map.get(usize::from(b)).copied().unwrap_or(0) as u8);
+            }
+            let (blend, alpha_ref) = match surf.material.map(|m| links.material_info[m].blend) {
+                Some(BlendMode::AlphaTest(t)) => (wpk::records::Blend::AlphaTest, t),
+                Some(BlendMode::Blend) => (wpk::records::Blend::Blend, 0),
+                Some(BlendMode::Additive) => (wpk::records::Blend::Additive, 0),
+                Some(BlendMode::Multiply) => (wpk::records::Blend::Multiply, 0),
+                _ => (wpk::records::Blend::Opaque, 0),
+            };
+            let first_vertex = vm.verts.len();
+            if first_vertex + surf.verts.len() > 65535 {
+                return Err("more than 65535 character vertices".into());
+            }
+            vm.surfaces.push(Surface {
+                first_index: vm.indices.len() as u32,
+                index_count: surf.indices.len() as u32,
+                texture: surf.material.map_or(NONE, |m| m as u16),
+                blend: blend as u8,
+                alpha_ref,
+            });
+            vm.indices
+                .extend(surf.indices.iter().map(|&i| i + first_vertex as u16));
+            vm.verts.extend(surf.verts);
+        }
+    }
+    vm.flash_bone = u16::MAX;
+    vm.validate().map_err(|e| format!("character: {e:?}"))?;
+    Ok((vm, names))
+}
+
+/// Player animations baked by bone name (`common.wpk`): each `(xanim, slot)` that exists becomes a clip whose
+/// tracks index the returned name list. A track with no rotation keeps the model's bind rotation (stored as the
+/// zero quaternion); frames a track leaves out repeat its first. The clips ride in a [`ViewModel`] with one
+/// placeholder bone per name. Returns the clips, the names and how many animations were missing.
+pub fn bake_player_anims(
+    s: &ZoneStream<'_>,
+    links: &Links,
+    list: &[(&str, u8)],
+) -> (ViewModel, Vec<String>, usize) {
+    let xanim: HashMap<String, &XAnimPartsGeometry> = links
+        .xanims
+        .iter()
+        .map(|(n, g)| (n.to_ascii_lowercase(), g))
+        .collect();
+    let mut names: Vec<String> = Vec::new();
+    let mut vm = ViewModel::default();
+    let mut missing = 0;
+    for &(name, slot_id) in list {
+        let Some(g) = xanim.get(name) else {
+            missing += 1;
+            continue;
+        };
+        let Ok(clip) = AnimClip::from_parts(&raw_parts(s, links, name, g)) else {
+            missing += 1;
+            continue;
+        };
+        let frames = usize::from(clip.numframes) + 1;
+        let rate = if clip.framerate > 0.0 {
+            clip.framerate
+        } else {
+            30.0
+        };
+        let mut tracks = Vec::new();
+        for (ti, t) in clip.tracks.iter().enumerate() {
+            let bone = match names.iter().position(|n| *n == t.name) {
+                Some(b) => b,
+                None => {
+                    names.push(t.name.clone());
+                    names.len() - 1
+                }
+            };
+            let samples: Vec<_> = (0..frames)
+                .map(|f| {
+                    clip.sample_track(ti, f as f32 / rate)
+                        .map_or((None, None), |x| (x.rotation, x.translation))
+                })
+                .collect();
+            let first_rot = samples.iter().find_map(|s| s.0);
+            let first_trans = samples.iter().find_map(|s| s.1);
+            if first_rot.is_none() && first_trans.is_none() {
+                continue;
+            }
+            let mut rot: Vec<[i16; 4]> = match first_rot {
+                Some(r0) => samples
+                    .iter()
+                    .map(|s| quat_to_i16(s.0.unwrap_or(r0)))
+                    .collect(),
+                None => vec![[0; 4]],
+            };
+            if rot.iter().all(|q| *q == rot[0]) {
+                rot.truncate(1);
+            }
+            let mut trans: Vec<[f32; 3]> = match first_trans {
+                Some(t0) => samples.iter().map(|s| s.1.unwrap_or(t0)).collect(),
+                None => Vec::new(),
+            };
+            if trans.iter().all(|v| *v == trans[0]) {
+                trans.truncate(1);
+            }
+            tracks.push(Track {
+                bone: bone as u16,
+                rot,
+                trans,
+            });
+        }
+        vm.clips.push(Clip {
+            slot: slot_id,
+            looping: clip.looping,
+            framerate: rate,
+            frames: frames as u16,
+            tracks,
+        });
+    }
+    vm.bones = vec![
+        Bone {
+            parent: -1,
+            ..Bone::default()
+        };
+        names.len().max(1)
+    ];
+    (vm, names, missing)
+}
 #[cfg(test)]
 mod tests {
     use super::*;

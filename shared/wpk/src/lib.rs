@@ -67,6 +67,11 @@ pub mod tag {
     pub const SPAWNS: Tag = *b"SPWN";
     /// Game-mode objectives (`records::ObjectiveRecord`: Domination flags).
     pub const OBJECTIVES: Tag = *b"OBJS";
+    /// Player characters, allies then axis (`view::encode_characters`).
+    pub const CHARACTERS: Tag = *b"CHAR";
+    /// Player animations (`view::ViewModel` clips, tracks by `PANB` bone name).
+    pub const PLAYER_ANIMS: Tag = *b"PANM";
+    pub const PLAYER_ANIM_BONES: Tag = *b"PANB";
     /// Static model vertices (`WorldVertex`, model space, lightmap UV unused).
     pub const MODEL_VERTICES: Tag = *b"MVTX";
     /// Static model surfaces (`BatchRecord` over `MVTX`; display lists in `WDLS`).

@@ -58,7 +58,7 @@ const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <repor
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
      mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force]\n  \
      mwf-convert report <log file>...\n  \
-     mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n  \
+     mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n      [--viewmodel <view.wpk> --anim <slot> --time <s>] [--character <common.wpk> --team 0|1 --pslot <slot>]\n  \
      mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask|minimap] [--out <folder>]";
 
 /// IW4L's `ZoneStream` keeps the latest record of every asset type inline, so walking a zone needs far more stack than
@@ -678,9 +678,11 @@ fn run_common(args: &[String]) -> ExitCode {
                 }
             }
         }
-        (views, failed)
+        // The player animations the characters play (MW2's `pb_*` body animations), by bone name.
+        let anims = viewmodel::bake_player_anims(s, links, &PLAYER_ANIMS);
+        (views, failed, anims)
     });
-    let (mut collector, (views, failed)) = match walked {
+    let (mut collector, (views, failed, player_anims)) = match walked {
         Ok(x) => x,
         Err(e) => {
             eprintln!("reading {label}: {e}");
@@ -892,6 +894,24 @@ fn run_common(args: &[String]) -> ExitCode {
         0,
         std::mem::take(&mut world_bank.data),
     );
+    // Player animations by bone name.
+    let (panm, panb, missing_anims) = player_anims;
+    println!(
+        "player animations: {} clips, {} bones, {} missing",
+        panm.clips.len(),
+        panb.len(),
+        missing_anims
+    );
+    b.section(
+        wpk::tag::PLAYER_ANIMS,
+        panm.clips.len() as u32,
+        panm.encode(),
+    );
+    b.section(
+        wpk::tag::PLAYER_ANIM_BONES,
+        panb.len() as u32,
+        wpk::view::encode_names(&panb),
+    );
     b.section(
         wpk::tag::FOOTSTEPS,
         steps.len() as u32,
@@ -1061,6 +1081,23 @@ fn stamp_of(a: &MapArgs, zones: &[&str]) -> stamp::Stamp {
     stamp::Stamp::of(&paths)
 }
 
+/// The player animations `common.wpk` carries: MW2's body animation for each player animation slot.
+const PLAYER_ANIMS: [(&str, u8); 10] = {
+    use wpk::view::player_slot as p;
+    [
+        ("pb_stand_alert", p::STAND),
+        ("pb_combatrun_forward_loop", p::RUN_FORWARD),
+        ("pb_combatrun_back_loop", p::RUN_BACK),
+        ("pb_combatrun_left_loop", p::RUN_LEFT),
+        ("pb_combatrun_right_loop", p::RUN_RIGHT),
+        ("pb_crouch_alert", p::CROUCH),
+        ("pb_crouch_run_forward", p::CROUCH_RUN),
+        ("pb_sprint", p::SPRINT),
+        ("pb_prone_aim", p::PRONE),
+        ("pb_prone_crawl", p::PRONE_CRAWL),
+    ]
+};
+
 fn run_pack_one(a: MapArgs) -> ExitCode {
     let out = a
         .out
@@ -1177,6 +1214,7 @@ fn run_preview(args: &[String]) -> ExitCode {
     let (mut spawn, mut pos, mut yaw, mut pitch, mut out) = (0usize, None, None, 0.0f32, None);
     let (mut view_pack, mut anim, mut anim_time): (Option<PathBuf>, u8, f32) =
         (None, wpk::view::slot::IDLE, 0.0);
+    let (mut char_pack, mut char_team, mut char_slot): (Option<PathBuf>, usize, u8) = (None, 0, 0);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().cloned().unwrap_or_default();
@@ -1194,6 +1232,9 @@ fn run_preview(args: &[String]) -> ExitCode {
             "--out" => out = Some(PathBuf::from(value())),
             "--viewmodel" => view_pack = Some(PathBuf::from(value())),
             "--anim" => anim = value().parse().unwrap_or(wpk::view::slot::IDLE),
+            "--character" => char_pack = Some(PathBuf::from(value())),
+            "--team" => char_team = value().parse().unwrap_or(0),
+            "--pslot" => char_slot = value().parse().unwrap_or(0),
             "--time" => anim_time = value().parse().unwrap_or(0.0),
             _ if file.is_none() => file = Some(PathBuf::from(a)),
             _ => {
@@ -1237,6 +1278,9 @@ fn run_preview(args: &[String]) -> ExitCode {
         width: 640,
         height: 480,
         hfov_deg: 65.0,
+        character: char_pack
+            .and_then(|p| std::fs::read(p).ok())
+            .map(|b| (b, char_team, char_slot, anim_time)),
         viewmodel: match view_pack {
             Some(p) => match std::fs::read(&p) {
                 Ok(b) => Some((b, anim, anim_time)),

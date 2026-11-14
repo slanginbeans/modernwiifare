@@ -537,6 +537,12 @@ void mwf_view_begin(float fovy_deg, float znear, float zfar) {
     GX_SetCurrentMtx(GX_PNMTX0);
 }
 
+void mwf_world_view(void) {
+    GX_LoadProjectionMtx(world_proj, GX_PERSPECTIVE);
+    GX_SetViewport(0, 0, mwf_rmode->fbWidth, mwf_rmode->efbHeight, VIEW_DEPTH, 1.0f);
+    GX_SetCurrentMtx(GX_PNMTX0);
+}
+
 void mwf_view_arrays(const void *pos, const void *attr) {
     if (mode != MODE_VIEW) {
         mode = MODE_VIEW;

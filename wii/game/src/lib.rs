@@ -11,6 +11,7 @@
 extern crate alloc;
 
 mod arsenal;
+mod character;
 mod devlog;
 mod ffi;
 mod front;
@@ -830,6 +831,9 @@ fn run_map(
         Err(game_core::world::LoadError::TooManyTextures) => return fail(0xe08020ff),
         Err(_) => return fail(0xc020c0ff),
     };
+    // The players' bodies (none with an older pack: placeholder boxes then).
+    let mut characters = character::Characters::load(bytes, common, |i| world.texture(i));
+    let mut poses: Vec<character::Pose> = Vec::with_capacity(BOTS);
     let clip: Option<MapClip<'_>> = clip_data.as_ref().map(MapClip::new);
     devlog::event(
         ffi::ms(),
@@ -1691,6 +1695,33 @@ fn run_map(
         }
         sections[section::BOTS] = lap(&mut mark);
         let stats = world.draw(gfx, &cam, scratch);
+        // The other players' bodies.
+        if let (Some(ch), Some(a)) = (characters.as_mut(), arena.as_ref()) {
+            poses.clear();
+            for (i, f) in a
+                .fighters
+                .iter()
+                .enumerate()
+                .skip(1)
+                .filter(|(_, f)| f.life.alive())
+            {
+                let (_, yaw) = f.player.view();
+                poses.push(character::Pose {
+                    team: match f.team {
+                        arena::TEAM_AXIS => 1,
+                        arena::TEAM_ALLIES => 0,
+                        _ => i % 2,
+                    },
+                    origin: f.draw_origin(now),
+                    yaw,
+                    prone: f.player.prone(),
+                    crouched: f.player.crouched(),
+                    sprinting: f.player.ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING != 0,
+                    velocity: f.player.ps.velocity,
+                });
+            }
+            ch.draw(gfx, &cam.view(), &poses, now);
+        }
         sections[section::WORLD] = lap(&mut mark);
         // Bots: placeholder bodies, one shaded box per hit volume, until the character models are converted.
         if let Some(a) = arena.as_ref() {
@@ -1730,7 +1761,7 @@ fn run_map(
                 .iter()
                 .enumerate()
                 .skip(1)
-                .filter(|(_, f)| f.life.alive())
+                .filter(|(_, f)| f.life.alive() && characters.is_none())
             {
                 let ally = !a.enemies(0, i);
                 for h in game_core::damage::boxes(f.draw_origin(now), f.player.hull_height()) {

@@ -437,3 +437,77 @@ mod tests {
         );
     }
 }
+
+/// Bone names (characters' bones, player animations' tracks): a u16 count, then each name as a u8 length and
+/// its bytes.
+pub fn encode_names(names: &[alloc::string::String]) -> Vec<u8> {
+    let mut o = Vec::new();
+    o.extend_from_slice(&(names.len() as u16).to_be_bytes());
+    for n in names {
+        let b = &n.as_bytes()[..n.len().min(255)];
+        o.push(b.len() as u8);
+        o.extend_from_slice(b);
+    }
+    o
+}
+
+pub fn decode_names(b: &[u8]) -> Option<Vec<alloc::string::String>> {
+    let n = usize::from(u16::from_be_bytes([*b.first()?, *b.get(1)?]));
+    let mut at = 2;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let len = usize::from(*b.get(at)?);
+        let s = core::str::from_utf8(b.get(at + 1..at + 1 + len)?).ok()?;
+        out.push(alloc::string::String::from(s));
+        at += 1 + len;
+    }
+    Some(out)
+}
+
+/// A map's player characters (`CHAR`), one per team (allies, then axis): each a skinned model and its bone names,
+/// as a u32 length and bytes each.
+pub fn encode_characters(teams: &[(ViewModel, Vec<alloc::string::String>)]) -> Vec<u8> {
+    let mut o = Vec::new();
+    for (vm, names) in teams {
+        for part in [vm.encode(), encode_names(names)] {
+            o.extend_from_slice(&(part.len() as u32).to_be_bytes());
+            o.extend_from_slice(&part);
+        }
+    }
+    o
+}
+
+pub fn decode_characters(b: &[u8]) -> Vec<(ViewModel, Vec<alloc::string::String>)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    let part = |at: &mut usize| -> Option<&[u8]> {
+        let len = be::u32(b.get(*at..*at + 4)?, 0) as usize;
+        let p = b.get(*at + 4..*at + 4 + len)?;
+        *at += 4 + len;
+        Some(p)
+    };
+    while at < b.len() {
+        let (Some(m), Some(n)) = (part(&mut at), part(&mut at)) else {
+            break;
+        };
+        match (ViewModel::decode(m), decode_names(n)) {
+            (Ok(vm), Some(names)) => out.push((vm, names)),
+            _ => break,
+        }
+    }
+    out
+}
+
+/// Player animation slots (`PANM` clips in `common.wpk`; MW2's `pb_*` animations).
+pub mod player_slot {
+    pub const STAND: u8 = 0;
+    pub const RUN_FORWARD: u8 = 1;
+    pub const RUN_BACK: u8 = 2;
+    pub const RUN_LEFT: u8 = 3;
+    pub const RUN_RIGHT: u8 = 4;
+    pub const CROUCH: u8 = 5;
+    pub const CROUCH_RUN: u8 = 6;
+    pub const SPRINT: u8 = 7;
+    pub const PRONE: u8 = 8;
+    pub const PRONE_CRAWL: u8 = 9;
+}

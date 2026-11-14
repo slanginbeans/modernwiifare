@@ -21,6 +21,7 @@ extern crate alloc;
 pub mod arena;
 pub mod bot;
 pub mod camera;
+pub mod character;
 pub mod collision;
 pub mod damage;
 pub mod dom;

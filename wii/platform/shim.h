@@ -173,6 +173,9 @@ void mwf_snd_stop_all(void);
 /* Start drawing the first-person model: its own projection (fovy degrees, near / far) and the front slice of the
  * depth range, so it never sinks into walls. World draws use the rest of the range. */
 void mwf_view_begin(float fovy_deg, float znear, float zfar);
+/* Back to the world's projection and depth range (the frame's) for skinned models in the world (player
+ * characters), drawn with `mwf_view_arrays`. */
+void mwf_world_view(void);
 /* Arrays for the model: positions f32x3 (stride 12), and per vertex RGBA8 + UV f32x2 (stride 12). GX_VTXFMT6,
  * display lists index POS, CLR0, TEX0 (u16 each). */
 void mwf_view_arrays(const void *positions, const void *attributes);

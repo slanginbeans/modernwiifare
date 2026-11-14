@@ -25,6 +25,7 @@ Version 3 (2026-11-13): fixed-point vertices. Version 2: LOD tables in `ModelRec
 | `MINI` | `Minimap` (28 B) | the HUD minimap: its texture, northwest / southeast corners (MW2's `setupMiniMap` frame from the `minimap_corner` entities), north yaw, `compassmaxrange` |
 | `SPWN` | `SpawnRecord` (24 B) | origin, yaw, kind (TDM / DM), team, initial flag |
 | `OBJS` | `ObjectiveRecord` (24 B) | game-mode objectives: kind (Domination flag), label (A, B, C ... from `script_label`), the trigger's origin, radius and height |
+| `CHAR` | `view::encode_characters` | the player characters, allies then axis: each team's body (its first assault body) with its first head attached (shared bones by name), skinned surfaces of LOD 3 (or the nearest more detailed), textures in this pack, and the bone names |
 | `MVTX` | `WorldVertex` (28 B) | static model vertices in model space (same format as `WVTX`; lightmap UV unused) |
 | `MSRF` | `BatchRecord` (48 B) | static model surfaces: vertex range in `MVTX`, material, display list in `WDLS`, model-space bounds |
 | `MODL` | `ModelRecord` (68 B) | model-space bounding sphere and up to 4 LODs: each a run of `MSRF` surfaces and IW4's switch distance (`lodDist`); past the last, the model is not drawn |
@@ -60,6 +61,7 @@ ignores the section.
 | `WSMK` | `BlockerRecord` (92 B) | sight-blocking elements of thrown weapons' explosion effects (smoke): weapon index, one-shot / looping, particle count, delay and life ranges, spawn offset radius and height, distance fade, size and alpha at five points of a particle's life |
 | `CLSS` | one blob (`wpk::classes::Catalog`) | Create-a-Class: weapons (group, display name, attachment mask), attachments and the pairs that clash, perks / equipment / deathstreaks by slot, special grenades, killstreaks, MW2's 5 default classes and 5 starting custom classes |
 | `RULE` | one blob (`wpk::rules::Rules`) | match rules read from the user's game-type scripts (`converter/src/rules.rs`): max health, regeneration (delay, step, tick, hurt cutoff, very-hurt wait), free-for-all time and score limits, points for a kill / headshot / assist, move speed by the primary weapon's class and Lightweight's scaler, flashbang / stun durations and shocks, the claymore's trip (cone, minimum distance, grace period, radius) and explosives per player, and which values were read |
+| `PANM` / `PANB` | a `ViewModel` of clips / bone names | the player animations (MW2's `pb_*`: stand, run forward / back / left / right, crouch, crouch run, sprint, prone, prone crawl), tracks by bone name; a track without rotation keeps the bind rotation |
 | `UIPK` | one blob (`wpk::ui::UiPack`, also: owner-draw rects such as the minimap's, and named compass icons) | the menus: fonts (glyph tables over atlas textures), screens (textured quads on 640 × 480, the button style, text labels with their kind: MW2 text, title, or a slot for live text; the back button's rect), and a plain white texture for filled bars |
 | `TEXT` / `TXDA` | as in map packs | the menus' textures (font atlases, backgrounds, gradients, bars) |
 

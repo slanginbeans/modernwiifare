@@ -109,6 +109,7 @@ unsafe extern "C" {
     pub fn mwf_snd_play(pcm: *const u8, bytes: u32, rate: u32, vol_l: u8, vol_r: u8) -> i32;
     pub fn mwf_snd_stop_all();
     pub fn mwf_view_begin(fovy_deg: f32, znear: f32, zfar: f32);
+    pub fn mwf_world_view();
     pub fn mwf_view_arrays(positions: *const u8, attributes: *const u8);
     pub fn mwf_mem2_mark() -> u32;
     pub fn mwf_mem2_release(mark: u32);

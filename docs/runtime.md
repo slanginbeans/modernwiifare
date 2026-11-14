@@ -79,6 +79,8 @@ Counter-UAV (a class killstreak, D-pad left): up as long as a UAV (`_uav.gsc`), 
 
 EMP: jams the enemies' radar as a Counter-UAV does, for `_emp.gsc`'s jam time (60 s in MW2's). Not yet: its HUD blackout and its effect on other killstreaks. Tactical Nuke: `_nuke.gsc`'s countdown on the HUD, then everyone dies (`nukeDeath`'s delay after it) and the match ends with its caller (their team) winning.
 
+Player characters: the other players are MW2's bodies for the map's factions (`CHAR`: each team's assault body and head, a low LOD so the Wii can skin several), animated with MW2's player animations (`PANM`, bound by bone name at load) chosen from each player's stance, sprint and move direction relative to its facing (stand, run forward / back / left / right, sprint, crouch, crouch run, prone, prone crawl; one full-body clip, not MW2's blended leg and torso tree), skinned on the CPU and drawn at the player's position and facing with the world's projection. Players behind you aren't skinned. Without characters in the pack, the placeholder boxes are drawn. Hit detection still uses the boxes.
+
 Footsteps: each player's bob cycle wrapping is a step (IW4L), sounding `step_<gait>[_plr]_<surface>` (sprint, run, walk / crouch, prone; the surface under the feet; `_default` when a surface has none; `STEP` in `common.wpk`); yours as you hear them, others' where they are.
 
 Grenades: your class's frag-type equipment (frag, semtex) is thrown through IW4L's offhand states (pull back, cook

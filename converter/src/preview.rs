@@ -31,6 +31,9 @@ pub struct View {
     pub hfov_deg: f32,
     /// First-person model to draw on top: the common pack, its animation slot and time in seconds.
     pub viewmodel: Option<(Vec<u8>, u8, f32)>,
+    /// A player character to draw 120 units ahead, facing the camera on the floor below the eye: the common pack
+    /// (player animations), the team (0 allies, 1 axis), the player animation slot and time in seconds.
+    pub character: Option<(Vec<u8>, usize, u8, f32)>,
 }
 
 /// Draw the first-person model from `common` (its first `VIEW` section) over the frame, with its own depth.
@@ -645,6 +648,91 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
                     m.alpha_ref,
                     cull,
                 );
+            }
+        }
+    }
+
+    if let Some((common, team, slot, time)) = &view.character {
+        use game_core::viewmodel as vmod;
+        let pack = Pack::parse(bytes, true).map_err(|e| format!("map pack: {e:?}"))?;
+        let teams = wpk::view::decode_characters(
+            pack.section(tag::CHARACTERS)
+                .ok_or("no characters in the map pack")?
+                .data,
+        );
+        let (mut vm, names) = teams.get(*team).cloned().ok_or("no such team")?;
+        let cp = Pack::parse(common, true).map_err(|e| format!("common pack: {e:?}"))?;
+        let anims = cp
+            .section(tag::PLAYER_ANIMS)
+            .and_then(|s| wpk::view::ViewModel::decode(s.data).ok())
+            .unwrap_or_default();
+        let anim_names = cp
+            .section(tag::PLAYER_ANIM_BONES)
+            .and_then(|s| wpk::view::decode_names(s.data))
+            .unwrap_or_default();
+        vm.clips = game_core::character::bind_clips(&vm, &names, &anims, &anim_names);
+        let (mut world, mut skin, mut pos) = (Vec::new(), Vec::new(), Vec::new());
+        vmod::pose(&vm, vm.clip(*slot).map(|c| (c, *time)), &mut world);
+        vmod::skin_matrices(&vm, &world, &mut skin);
+        vmod::skin(&vm, &skin, &mut pos);
+        let y = view.yaw.to_radians();
+        let base = [
+            view.eye[0] + y.cos() * 120.0,
+            view.eye[1] + y.sin() * 120.0,
+            view.eye[2] - 60.0,
+        ];
+        let (s, co) = (
+            (y + std::f32::consts::PI).sin(),
+            (y + std::f32::consts::PI).cos(),
+        );
+        let place = |p: [f32; 3]| {
+            [
+                base[0] + co * p[0] - s * p[1],
+                base[1] + s * p[0] + co * p[1],
+                base[2] + p[2],
+            ]
+        };
+        for surf in &vm.surfaces {
+            let tex = textures
+                .get(usize::from(surf.texture))
+                .and_then(Option::as_ref);
+            let range = surf.first_index as usize..(surf.first_index + surf.index_count) as usize;
+            for t in vm.indices[range].chunks_exact(3) {
+                let v: [CV; 3] = [t[0], t[1], t[2]].map(|i| {
+                    let sv = &vm.verts[usize::from(i)];
+                    CV {
+                        c: cam.to_cam(place(pos[usize::from(i)])),
+                        uv: sv.uv,
+                        lm: [0.0; 2],
+                        rgba: sv.rgba.to_be_bytes().map(|x| f32::from(x) / 255.0),
+                    }
+                });
+                stats.triangles += 1;
+                let poly = clip_near(v);
+                for k in 1..poly.len().saturating_sub(1) {
+                    raster(
+                        [poly[0], poly[k], poly[k + 1]],
+                        &cam,
+                        w,
+                        h,
+                        &mut colour,
+                        &mut depth,
+                        &mut stats,
+                        |cv| {
+                            let b =
+                                tex.map_or([1.0; 4], |img| sample(img, cv.uv[0], cv.uv[1], false));
+                            [
+                                b[0] * cv.rgba[0],
+                                b[1] * cv.rgba[1],
+                                b[2] * cv.rgba[2],
+                                b[3] * cv.rgba[3],
+                            ]
+                        },
+                        Blend::from_u8(surf.blend),
+                        surf.alpha_ref,
+                        0,
+                    );
+                }
             }
         }
     }

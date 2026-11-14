@@ -40,7 +40,7 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
 5. ~~Health regeneration~~ done: MW2's `_healthoverlay.gsc` loop step by step (`life::Life::regen`), the numbers
    read from the user's scripts (`RULE`).
 6. ~~Bullet penetration~~ done: IW4L `fire_penetrate` through world walls (the user's `info/bullet_penetration_mp` depths by type and surface, each weapon's type and multiplier; thickness from a trace back from the far side; up to five walls; damage scaled by what is left). Not yet: through players (collateral), glass panes, impact marks on exits.
-7. **Hit volumes**: turn the boxes with the body's yaw now; the character models' hit boxes later.
+7. **Hit volumes**: turn the boxes with the body's yaw now; the character models' hit boxes later. Character models: drawn (`CHAR` + `PANM`, one full-body clip by stance and direction). Not yet: MW2's leg / torso blend and aim pitch, the held weapon in their hands, per-class bodies (riot, sniper, ghillie) and random heads, death animations and ragdolls, light-grid lighting.
 8. **FFA rules**: points (a kill, the headshot bonus), score and time limits from the user's `dm.gsc`, ties to fewer
    deaths: done. Spawns follow MW2's free-for-all weighting (`_spawnlogic.gsc`: distance to everyone, enemies in
    sight, the nearest enemy, the last spawn used): done. Still to do: the playlist's overrides (the stock script

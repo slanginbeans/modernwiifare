@@ -61,6 +61,40 @@ pub struct WorldData {
     clip: Result<wpk::clip::Clip, String>,
     models: crate::static_models::StaticModels,
     vis: crate::visibility::WorldVis,
+    /// The player characters, allies then axis (surfaces carry material indices until `build`), or why not.
+    characters: Result<Vec<(wpk::view::ViewModel, Vec<String>)>, String>,
+}
+
+/// The LOD the characters are built from (their fourth, or the most detailed below it: a few thousand vertices, which
+/// the Wii skins on the CPU for every player).
+const CHARACTER_LOD: usize = 3;
+
+/// Each team's character in the map zone: MW2's map zones load the allies' faction's models before the axis', each
+/// faction's body followed by its heads. The allies' body is the first assault body (`mp_body_*assault*`); the axis'
+/// the first assault body after it that shares none of its faction words; each team's head the first `head_` model
+/// after its body.
+fn team_models(links: &Links) -> Vec<(usize, Option<usize>)> {
+    let names: Vec<&str> = links.models.iter().map(|m| m.name.as_str()).collect();
+    let words = |n: &str| -> Vec<String> {
+        n.trim_start_matches("mp_body_")
+            .split('_')
+            .filter(|w| !matches!(*w, "assault" | "a" | "b" | "c" | "d" | "e"))
+            .map(str::to_owned)
+            .collect()
+    };
+    let assault = |i: usize| names[i].starts_with("mp_body_") && names[i].contains("assault");
+    let head_after = |b: usize| (b + 1..names.len()).find(|&i| names[i].starts_with("head_"));
+    let Some(allies) = (0..names.len()).find(|&i| assault(i)) else {
+        return Vec::new();
+    };
+    let aw = words(names[allies]);
+    let axis = (allies + 1..names.len())
+        .find(|&i| assault(i) && words(names[i]).iter().all(|w| !aw.contains(w)));
+    let mut out = vec![(allies, head_after(allies))];
+    if let Some(x) = axis {
+        out.push((x, head_after(x)));
+    }
+    out
 }
 
 /// Read the world after a zone walk (the stream still holds its blocks).
@@ -109,6 +143,10 @@ pub fn read_world(s: &ZoneStream<'_>, links: &Links) -> Result<WorldData, String
     let clip = crate::collision::read_clip(s);
     let models = crate::static_models::read(s, links)?;
     let vis = crate::visibility::read(s)?;
+    let characters = team_models(links)
+        .into_iter()
+        .map(|(body, head)| crate::viewmodel::build_character(s, links, body, head, CHARACTER_LOD))
+        .collect();
     Ok(WorldData {
         vertices,
         indices,
@@ -118,6 +156,7 @@ pub fn read_world(s: &ZoneStream<'_>, links: &Links) -> Result<WorldData, String
         clip,
         models,
         vis,
+        characters,
     })
 }
 
@@ -316,6 +355,8 @@ pub struct PackReport {
     /// What the Wii keeps in MEM2 (everything before the sections decoded at load).
     pub mem2_bytes: u64,
     pub sections: BTreeMap<String, u64>,
+    /// Vertices of each team's player character.
+    pub character_vertices: Vec<usize>,
     pub textures: usize,
     pub lightmaps: usize,
     pub materials: usize,
@@ -919,6 +960,40 @@ pub fn build(
         }
     }
 
+    // Player characters: each surface's material to a texture of this pack.
+    let mut character_teams = Vec::new();
+    match &world.characters {
+        Ok(chars) if !chars.is_empty() => {
+            let mut teams = Vec::new();
+            for (vm, names) in chars {
+                let mut vm = vm.clone();
+                for surf in &mut vm.surfaces {
+                    let mat = surf.texture;
+                    surf.texture = records::NONE;
+                    if mat == records::NONE {
+                        continue;
+                    }
+                    if let Some(e) = links
+                        .colour_image(usize::from(mat))
+                        .and_then(|img| files_by_image.get(&img))
+                        .and_then(|v| v.first())
+                    {
+                        surf.texture = tex.add_file(tex_dir, &e.file, records::Wrap::Repeat)?;
+                    }
+                }
+                report.character_vertices.push(vm.verts.len());
+                teams.push((vm, names.clone()));
+            }
+            println!(
+                "player characters: {} teams, vertices {:?}",
+                teams.len(),
+                report.character_vertices
+            );
+            character_teams = teams;
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("warning: no player characters: {e}"),
+    }
     let mut b = wpk::PackBuilder::new(map);
     b.section(wpk::tag::STAMP, 0, stamp.encode());
     b.section(
@@ -994,6 +1069,13 @@ pub fn build(
         spawns.len() as u32,
         records::encode(&spawns),
     );
+    if !character_teams.is_empty() {
+        b.section(
+            wpk::tag::CHARACTERS,
+            character_teams.len() as u32,
+            wpk::view::encode_characters(&character_teams),
+        );
+    }
     let objs = objectives(&entities);
     b.section(
         wpk::tag::OBJECTIVES,

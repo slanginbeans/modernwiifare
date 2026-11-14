@@ -191,6 +191,13 @@ pub struct World<'a> {
 
 const MODEL_DRAW: u32 = 1 << 31;
 
+impl World<'_> {
+    /// The handle of the pack's texture `i` (-1 when there is none).
+    pub fn texture(&self, i: u16) -> i32 {
+        self.textures.get(usize::from(i)).copied().unwrap_or(-1)
+    }
+}
+
 /// `a * b` for affine 3x4 matrices (`b` applied first).
 pub fn mul34(a: &Mtx34, b: &Mtx34) -> Mtx34 {
     core::array::from_fn(|r| {
