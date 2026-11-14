@@ -706,6 +706,24 @@ fn run_map(
     let mut last_mem_s = u32::MAX;
     // Fixed-step clock for the player: milliseconds × 3 not yet simulated, and steps taken.
     let mut tick_acc3 = 0u32;
+    // Largest stick and trigger values seen (calibration: IW4 needs 105 of 127 forward to sprint).
+    let mut stick_max = [0i8; 4];
+    let mut trigger_max = [0u8; 2];
+    let stick_event = |stick_max: &[i8; 4], trigger_max: &[u8; 2], now: u32| {
+        devlog::event(
+            now,
+            "stick",
+            format_args!(
+                "sx={} sy={} cx={} cy={} l={} r={}",
+                stick_max[0],
+                stick_max[1],
+                stick_max[2],
+                stick_max[3],
+                trigger_max[0],
+                trigger_max[1]
+            ),
+        );
+    };
     let mut sim_ticks = 0u64;
     let lap = |mark: &mut u32| {
         let t = ffi::us();
@@ -730,6 +748,7 @@ fn run_map(
         if pad.down & ffi::BTN_START != 0 {
             unsafe { ffi::mwf_snd_stop_all() };
             devlog::event(now, "pause", format_args!(""));
+            stick_event(&stick_max, &trigger_max, now);
             devlog::flush(now);
             match front::pause(
                 gfx,
@@ -779,6 +798,11 @@ fn run_map(
                 }
             }
         }
+        for (m, v) in stick_max.iter_mut().zip([pad.sx, pad.sy, pad.cx, pad.cy]) {
+            *m = (*m).max(v.saturating_abs());
+        }
+        trigger_max[0] = trigger_max[0].max(pad.l);
+        trigger_max[1] = trigger_max[1].max(pad.r);
         // Player steps due this frame (60 Hz, at most 6 = 100 ms).
         tick_acc3 += msec * 3;
         let player_ticks = (tick_acc3 / 50).min(6);
@@ -960,6 +984,7 @@ fn run_map(
                     feed[0] = (Some((attacker, victim)), now);
                     devlog::event(now, "kill", format_args!("by={attacker} on={victim}"));
                     if victim == 0 {
+                        stick_event(&stick_max, &trigger_max, now);
                         // A natural break: write the log while you wait to respawn.
                         devlog::flush(now);
                     }
@@ -1033,6 +1058,7 @@ fn run_map(
             && (a.won() || clock.over(now))
         {
             unsafe { ffi::mwf_snd_stop_all() };
+            stick_event(&stick_max, &trigger_max, now);
             devlog::event(
                 now,
                 "match_end",
