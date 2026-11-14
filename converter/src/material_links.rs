@@ -326,6 +326,17 @@ impl Links {
                 )
             })
         });
+        // A technique set from another zone (its name starts with ',') arrives without its technique list, so the
+        // above finds nothing. The material's own per-technique table still says which row each technique uses
+        // (0xFF: technique absent): take the first colour-band technique it has. Without this, every row counts,
+        // and the additive light passes make lit models see-through.
+        let colour_row = colour_row.or_else(|| {
+            let entries = g.state_bits_entry.as_ref()?;
+            COLOUR_TECHNIQUES
+                .clone()
+                .find(|&t| entries[t] != 0xFF)
+                .and_then(|t| rows.get(usize::from(entries[t])).copied())
+        });
         let pass_rows: &[[u32; 2]] = match &colour_row {
             Some(r) => core::slice::from_ref(r),
             None => &rows,

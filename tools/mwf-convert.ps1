@@ -53,8 +53,11 @@ if (Test-Path $envScript) {
     $env:AR_x86_64_pc_windows_gnullvm = Join-Path $mingw 'bin\llvm-ar.exe'
 }
 
-Write-Host '[convert] Building the converter (the first time takes a few minutes)...'
-& cargo build --release -q -p mwf_convert
+# The converter's own build profile (no LTO, many codegen units, incremental) and every CPU core: rebuilding after an
+# update is quick.
+Remove-Item Env:CARGO_BUILD_JOBS -ErrorAction SilentlyContinue
+Write-Host '[convert] Building the converter (the first time takes a few minutes; after that only what changed)...'
+& cargo build --profile converter -q -p mwf_convert
 if ($LASTEXITCODE -ne 0) { exit 1 }
-& (Join-Path $repo 'target\x86_64-pc-windows-gnullvm\release\mwf-convert.exe') @args
+& (Join-Path $repo 'target\x86_64-pc-windows-gnullvm\converter\mwf-convert.exe') @args
 exit $LASTEXITCODE

@@ -18,3 +18,14 @@ opt-level = 2
 lto = true
 codegen-units = 1
 debug = 1
+
+# The converter (a PC tool) built quickly: optimised, but without the whole-program LTO, single codegen unit and
+# debug info the Wii build wants (`tools/mwf-convert.ps1` uses it: rebuilding after an update takes about a minute
+# instead of many).
+[profile.converter]
+inherits = "release"
+panic = "unwind"
+lto = false
+codegen-units = 16
+debug = 0
+incremental = true
