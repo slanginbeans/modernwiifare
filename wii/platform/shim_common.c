@@ -9,6 +9,13 @@
 /* Shared with shim_gx.c. */
 GXRModeObj *mwf_rmode = NULL;
 void *mwf_xfb[MWF_XFB_COUNT] = {NULL, NULL, NULL};
+/* Retraces so far (libogc has no getter for its own count): counted by a post-retrace callback. */
+volatile u32 mwf_retraces = 0;
+
+static void count_retrace(u32 count) {
+    (void)count;
+    mwf_retraces++;
+}
 
 static u32 pads_connected = 0;
 
@@ -30,6 +37,7 @@ uint32_t mwf_ms(void) {
 
 void mwf_video_init(void) {
     VIDEO_Init();
+    VIDEO_SetPostRetraceCallback(count_retrace);
     mwf_rmode = VIDEO_GetPreferredMode(NULL);
     mwf_xfb[0] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(mwf_rmode));
     mwf_xfb[1] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(mwf_rmode));

@@ -8,6 +8,7 @@
 
 extern GXRModeObj *mwf_rmode;
 extern void *mwf_xfb[MWF_XFB_COUNT];
+extern volatile u32 mwf_retraces;
 /* Pipelined frames: the GPU draws frame N while the CPU builds frame N+1. Frame N's copy goes to XFB `fb`, then a
  * draw-sync token; at the end of frame N+1 the CPU waits for that token (not for its own frame), asks for frame N's XFB
  * at the next retrace, and queues frame N+1. Three XFBs: one on screen, one the GPU may be copying into, one free. */
@@ -96,8 +97,8 @@ void mwf_gx_end_frame(void) {
     }
     gpu_wait = mwf_us() - t0;
     /* At most one frame per retrace (so the XFB the next copy reuses has left the screen). */
-    if (VIDEO_GetRetraceCount() == last_retrace) VIDEO_WaitVSync();
-    last_retrace = VIDEO_GetRetraceCount();
+    if (mwf_retraces == last_retrace) VIDEO_WaitVSync();
+    last_retrace = mwf_retraces;
     /* This frame: its copy, then its token; the GPU works through it while the CPU builds the next frame. */
     GX_CopyDisp(mwf_xfb[fb], GX_TRUE);
     issued = (u16)(issued + 1 == 0 ? 1 : issued + 1);
