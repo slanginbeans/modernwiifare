@@ -61,6 +61,8 @@ unsafe extern "C" {
     pub fn mwf_gx_init(clear_rgba: u32);
     pub fn mwf_gx_draw(mtx: *const [[f32; 4]; 3], v: *const Vtx, n: u32);
     pub fn mwf_gx_end_frame();
+    pub fn mwf_gpu_wait_us() -> u32;
+    pub fn mwf_gpu_idle();
 
     pub fn mwf_net_init(ip: *mut u8, mask: *mut u8, gw: *mut u8) -> i32;
     pub fn mwf_udp_open(port: u16, broadcast_opt_result: *mut i32, bind_result: *mut i32) -> i32;

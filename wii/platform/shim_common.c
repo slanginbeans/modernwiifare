@@ -8,7 +8,7 @@
 
 /* Shared with shim_gx.c. */
 GXRModeObj *mwf_rmode = NULL;
-void *mwf_xfb[2] = {NULL, NULL};
+void *mwf_xfb[MWF_XFB_COUNT] = {NULL, NULL, NULL};
 
 static u32 pads_connected = 0;
 
@@ -33,6 +33,7 @@ void mwf_video_init(void) {
     mwf_rmode = VIDEO_GetPreferredMode(NULL);
     mwf_xfb[0] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(mwf_rmode));
     mwf_xfb[1] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(mwf_rmode));
+    mwf_xfb[2] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(mwf_rmode));
     console_init(mwf_xfb[0], 20, 20, mwf_rmode->fbWidth, mwf_rmode->xfbHeight,
                  mwf_rmode->fbWidth * VI_DISPLAY_PIX_SZ);
     VIDEO_Configure(mwf_rmode);

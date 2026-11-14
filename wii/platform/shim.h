@@ -57,7 +57,14 @@ void mwf_panic(const char *msg, size_t len) __attribute__((noreturn));
 /* ---- GX (shim_gx.c) ---- */
 void mwf_gx_init(uint32_t clear_rgba);
 void mwf_gx_draw(const float mtx[3][4], const mwf_vtx *v, uint32_t n);
+/* End a frame, pipelined: waits for the previous frame's GPU work (not this one's), shows it at the next retrace,
+ * queues this one's copy (at most one frame per retrace). Three XFBs. */
+#define MWF_XFB_COUNT 3
 void mwf_gx_end_frame(void);
+/* How long the last frame end waited for the GPU, microseconds. */
+uint32_t mwf_gpu_wait_us(void);
+/* Wait until the GPU has drawn everything queued (before memory it may read is released or reused). */
+void mwf_gpu_idle(void);
 
 /* ---- game world (shim_world.c) ---- see docs/wii-gx.md and docs/pack.md */
 

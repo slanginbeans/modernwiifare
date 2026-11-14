@@ -60,6 +60,8 @@ Not sacrificed: collision (never simplified), movement and weapon timings, 640×
 
 | World mesh simplification (meshoptimizer, `pack --simplify <ratio> --simplify-error <units>`; locked where batches meet; UV, lightmap UV and colour weighed) | `mp_rust` world 193k triangles: 161k at 0.5 / 4 units, 155k at 0.3 / 8, 151k at 0.2 / 16 (**-17 to -22%**). From 8 units up the textures on curved props warp and the ground shows patches where vertex colours (IW4's terrain blend weights) moved. MW2's world meshes are already low-poly: the count comes from many small surfaces, not dense ones. **Off by default**: too little gain for what it costs to look at. |
 
+| Pipelined frames (`shim_gx.c`: the frame end waits for the previous frame's draw-sync token, shows it at the next retrace, queues this one's copy and token; three XFBs; at most one frame per retrace; first-person and character positions double-buffered; MEM2 / texture release waits for the GPU) | frame time max(CPU, GPU) instead of CPU + GPU, one frame of extra display latency. Expected on `mp_rust` from the last log (CPU 13-20 ms, GPU ~21 ms): ~21 ms frames, a steady 30 fps instead of 20-30. **Not yet measured on hardware.** |
+
 Where that leaves us: `mp_terminal` spends ~244k world + ~91k model triangles per view, still ~3× the 60 fps
 budget. Memory is solved for every map. Next: world draw distance (fog) and `LOD_SCALE` (in `game_core::world`) as
 the per-map 60 fps levers, set from hardware numbers.

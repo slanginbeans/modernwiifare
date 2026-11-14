@@ -35,8 +35,11 @@ struct Draw {
 
 pub struct View {
     vm: ViewModel,
-    /// Skinned positions (MEM2, written each frame).
-    positions: &'static mut [[f32; 3]],
+    /// Skinned positions (MEM2, written each frame), two sets: frames are pipelined, so the GPU may still be drawing
+    /// last frame's while this one is written.
+    positions: [&'static mut [[f32; 3]]; 2],
+    /// Which set this frame writes.
+    parity: usize,
     /// RGBA + UV per vertex (MEM2, fixed).
     attributes: *const u8,
     draws: Vec<Draw>,
@@ -100,10 +103,11 @@ impl View {
         }
         let n = vm.verts.len();
         // Positions and attributes in MEM2.
-        let pos_bytes = mem2(n * 12)?;
-        let positions = unsafe {
-            core::slice::from_raw_parts_mut(pos_bytes.as_mut_ptr().cast::<[f32; 3]>(), n)
+        let set = || -> Option<&'static mut [[f32; 3]]> {
+            let b = mem2(n * 12)?;
+            Some(unsafe { core::slice::from_raw_parts_mut(b.as_mut_ptr().cast::<[f32; 3]>(), n) })
         };
+        let positions = [set()?, set()?];
         let attr = mem2(n * 12)?;
         for (i, v) in vm.verts.iter().enumerate() {
             let at = i * 12;
@@ -150,6 +154,7 @@ impl View {
         }
         Some(View {
             positions,
+            parity: 0,
             attributes: attr.as_ptr(),
             draws,
             world: Vec::with_capacity(vm.bones.len()),
@@ -255,14 +260,13 @@ impl View {
         pose_blend(&self.vm, &self.playing, &mut self.blend, &mut self.world);
         vmod::skin_matrices(&self.vm, &self.world, &mut self.skin);
         vmod::skin(&self.vm, &self.skin, &mut self.skinned);
-        self.positions.copy_from_slice(&self.skinned);
+        self.parity ^= 1;
+        let positions = &mut self.positions[self.parity];
+        positions.copy_from_slice(&self.skinned);
         unsafe {
-            ffi::mwf_flush(
-                self.positions.as_ptr().cast(),
-                (self.positions.len() * 12) as u32,
-            );
+            ffi::mwf_flush(positions.as_ptr().cast(), (positions.len() * 12) as u32);
             ffi::mwf_view_begin(FOVY, ZNEAR, ZFAR);
-            ffi::mwf_view_arrays(self.positions.as_ptr().cast(), self.attributes);
+            ffi::mwf_view_arrays(positions.as_ptr().cast(), self.attributes);
         }
         // MW2's weapon placement (sway, bob, idle sway, movement offsets, recoil) about the eye.
         let placed = self.placement.update(

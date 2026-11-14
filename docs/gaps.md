@@ -72,7 +72,7 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
 ## Next, performance (ranked by expected milliseconds; measure with the logs first)
 1. **World vertex load** (~12-25 ms on big maps): `LOD_SCALE`, fog / far plane per map, vertex welding, more compact
    batches.
-2. **Run the CPU while the GPU draws**: today `GX_DrawDone` then vsync serialise them, so frame = CPU + GPU and any
+2. ~~**Run the CPU while the GPU draws**~~ done (draw-sync tokens, three XFBs, skinned positions double-buffered; frame = max(CPU, GPU), capped at one per retrace; not yet measured on hardware). Was: today `GX_DrawDone` then vsync serialise them, so frame = CPU + GPU and any
    frame over 16.7 ms becomes 33.3 ms. Pipeline with draw-sync tokens and three frame buffers (needs double buffers
    for the viewmodel's skinned positions, and the weapon-file swap after the GPU is done).
 3. Draw submit: a tint-only state change for static models (today every instance reprograms all of TEV), shared

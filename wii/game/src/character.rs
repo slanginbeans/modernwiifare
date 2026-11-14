@@ -34,8 +34,10 @@ struct Team {
 pub struct Characters {
     teams: Vec<Team>,
     /// Skinned positions per drawn player (MEM2; the GPU reads them after the CPU moved on, so each player has its
-    /// own).
+    /// own, and two of them: frames are pipelined, so the GPU may still be drawing last frame's).
     buffers: Vec<(usize, &'static mut [[f32; 3]])>,
+    /// Which of each player's two buffers this frame writes.
+    parity: usize,
     world: Vec<Mtx34>,
     skin: Vec<Mtx34>,
     skinned: Vec<[f32; 3]>,
@@ -139,6 +141,7 @@ impl Characters {
         (!out.is_empty()).then(|| Characters {
             teams: out,
             buffers: Vec::new(),
+            parity: 0,
             world: Vec::new(),
             skin: Vec::new(),
             skinned: Vec::new(),
@@ -148,7 +151,10 @@ impl Characters {
     /// Draw `players` (after the world, before the first-person model) seen through `view` (world to eye) at
     /// `now_ms`.
     pub fn draw(&mut self, gfx: &mut impl Gfx, view: &Mtx34, players: &[Pose], now_ms: u32) {
-        for (k, p) in players.iter().enumerate() {
+        self.parity ^= 1;
+        for (player, p) in players.iter().enumerate() {
+            // This player's buffer for this frame (two per player, alternating).
+            let k = player * 2 + self.parity;
             // Behind the camera (the eye looks down -z): not skinned or drawn.
             let o = p.origin;
             if vmod::apply(view, [o[0], o[1], o[2] + 36.0])[2] > 48.0 {
@@ -157,8 +163,8 @@ impl Characters {
             let t = p.team.min(self.teams.len() - 1);
             let team = &self.teams[t];
             let n = team.vm.verts.len();
-            // This player's positions buffer (per player slot and team model).
-            if self.buffers.len() <= k {
+            // This player's positions buffer (per player slot, frame parity and team model).
+            while self.buffers.len() <= k {
                 let Some(b) = mem2(n * 12) else {
                     return;
                 };
@@ -186,7 +192,7 @@ impl Characters {
             // Players loop their clip from their own start (spread by slot so they don't move in step).
             let time = clip.map_or(0.0, |c| {
                 let d = vmod::duration(c).max(0.001);
-                let t = now_ms.wrapping_add(k as u32 * 377) as f32 / 1000.0;
+                let t = now_ms.wrapping_add(player as u32 * 377) as f32 / 1000.0;
                 t - libm::floorf(t / d) * d
             });
             vmod::pose(&team.vm, clip.map(|c| (c, time)), &mut self.world);

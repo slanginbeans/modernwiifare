@@ -7,8 +7,15 @@
 #define FIFO_SIZE (256 * 1024)
 
 extern GXRModeObj *mwf_rmode;
-extern void *mwf_xfb[2];
+extern void *mwf_xfb[MWF_XFB_COUNT];
+/* Pipelined frames: the GPU draws frame N while the CPU builds frame N+1. Frame N's copy goes to XFB `fb`, then a
+ * draw-sync token; at the end of frame N+1 the CPU waits for that token (not for its own frame), asks for frame N's XFB
+ * at the next retrace, and queues frame N+1. Three XFBs: one on screen, one the GPU may be copying into, one free. */
 static int fb = 0;
+static u16 issued = 0;
+static int queued_xfb = -1;
+static u32 last_retrace = 0;
+static uint32_t gpu_wait = 0;
 
 void mwf_gx_init(uint32_t clear_rgba) {
     void *fifo = memalign(32, FIFO_SIZE);
@@ -63,13 +70,39 @@ void mwf_gx_draw(const float mtx[3][4], const mwf_vtx *v, uint32_t n) {
     GX_End();
 }
 
+/* Wait for the GPU to finish everything queued (before memory it may still read is reused). */
+void mwf_gpu_idle(void) {
+    if (issued != 0) {
+        while (GX_GetDrawSync() != issued) {
+        }
+    }
+    GX_DrawDone();
+}
+
+uint32_t mwf_gpu_wait_us(void) {
+    return gpu_wait;
+}
+
 void mwf_gx_end_frame(void) {
     GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
     GX_SetColorUpdate(GX_TRUE);
+    /* The previous frame: wait until the GPU has passed its token, then show its XFB at the next retrace. */
+    uint32_t t0 = mwf_us();
+    if (queued_xfb >= 0) {
+        while (GX_GetDrawSync() != issued) {
+        }
+        VIDEO_SetNextFramebuffer(mwf_xfb[queued_xfb]);
+        VIDEO_Flush();
+    }
+    gpu_wait = mwf_us() - t0;
+    /* At most one frame per retrace (so the XFB the next copy reuses has left the screen). */
+    if (VIDEO_GetRetraceCount() == last_retrace) VIDEO_WaitVSync();
+    last_retrace = VIDEO_GetRetraceCount();
+    /* This frame: its copy, then its token; the GPU works through it while the CPU builds the next frame. */
     GX_CopyDisp(mwf_xfb[fb], GX_TRUE);
-    GX_DrawDone();
-    VIDEO_SetNextFramebuffer(mwf_xfb[fb]);
-    VIDEO_Flush();
-    VIDEO_WaitVSync();
-    fb ^= 1;
+    issued = (u16)(issued + 1 == 0 ? 1 : issued + 1);
+    GX_SetDrawSync(issued);
+    GX_Flush();
+    queued_xfb = fb;
+    fb = (fb + 1) % MWF_XFB_COUNT;
 }

@@ -54,6 +54,8 @@ uint32_t mwf_mem2_mark(void) {
 }
 
 void mwf_mem2_release(uint32_t mark) {
+    /* The GPU may still be drawing from what is released (frames are pipelined). */
+    mwf_gpu_idle();
     mem2_init();
     if (mark && (uintptr_t)mark <= mem2_lo) mem2_lo = (uintptr_t)mark;
 }
@@ -249,6 +251,7 @@ int32_t mwf_tex_mark(void) {
 }
 
 void mwf_tex_release(int32_t mark) {
+    mwf_gpu_idle();
     if (mark >= 0 && mark <= tex_count) tex_count = mark;
     GX_InvalidateTexAll();
 }
@@ -776,12 +779,7 @@ void mwf_draw_boxes(const float view[3][4], const float (*b)[6], const uint32_t 
 }
 
 uint32_t mwf_frame_end(void) {
-    /* mwf_gx_end_frame waits for the GPU (GX_DrawDone) and then for vsync; time the GPU part. */
-    GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
-    GX_SetColorUpdate(GX_TRUE);
-    uint32_t t0 = mwf_us();
-    GX_DrawDone();
-    uint32_t waited = mwf_us() - t0;
+    /* Pipelined: mwf_gx_end_frame waits for the previous frame's GPU work, not this one's; that wait is returned. */
     mwf_gx_end_frame();
-    return waited;
+    return mwf_gpu_wait_us();
 }
