@@ -214,6 +214,8 @@ pub struct Links {
     weapon_world_names: HashMap<String, BTreeSet<usize>>,
     /// Weapon names, in load order (`Owner::Weapon` indexes this).
     pub weapons: Vec<String>,
+    /// Combat numbers of each weapon (parallel to `weapons`).
+    pub weapon_combat: Vec<weapon_iw4::CapturedCombatInput>,
     /// Every string-table cell in the zone (material names found here are looked up by name).
     table_strings: std::collections::HashSet<String>,
     /// Materials the zone's scripts pass to `setupMiniMap(...)` (lower case).
@@ -367,6 +369,7 @@ impl Links {
         // The driver set `Owner::Weapon(n)` for this entry, n = the weapon count before it.
         let index = self.weapons.len();
         self.weapons.push(w.name.and_then(text).unwrap_or_default());
+        self.weapon_combat.push(crate::weapons::captured(&w));
         for name in w
             .gun_xmodel_names
             .into_iter()

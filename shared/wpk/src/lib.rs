@@ -23,6 +23,7 @@ pub mod quant;
 pub mod records;
 pub mod strips;
 pub mod vis;
+pub mod weapon;
 
 use alloc::vec::Vec;
 
@@ -72,6 +73,8 @@ pub mod tag {
     pub const MODEL_VERTICES_Q: Tag = *b"MVTQ";
     /// How each `MSRF` surface's vertices are stored.
     pub const SURFACE_QUANT: Tag = *b"MSQZ";
+    /// Weapons (`weapon::WeaponRecord`): combat numbers of every weapon (in `common.wpk`).
+    pub const WEAPONS: Tag = *b"WEAP";
     /// World visibility (`vis::Vis`): cell BSP, cells, portals.
     pub const VIS: Tag = *b"VISD";
     /// Cell of each `WBAT` batch (u16, `vis::ALWAYS` = none).

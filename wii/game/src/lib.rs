@@ -19,6 +19,7 @@ use game_core::camera::Camera;
 use game_core::collision::MapClip;
 use game_core::fly::{self, PadInput};
 use game_core::gfx::{DrawState, Gfx, Mtx34, TexDesc};
+use game_core::gun::{Gun, GunInput};
 use game_core::hud::{self, Rect, heapless_str::Str};
 use game_core::player::{MovePad, Player};
 use game_core::world::World;
@@ -205,6 +206,83 @@ fn spawn_camera(world: &World<'_>, i: usize) -> Camera {
     }
 }
 
+/// The weapon a player spawns with (MW2's first default class carries the M4A1).
+const DEFAULT_WEAPON: &str = "m4_mp";
+
+/// Crosshair, ammo, weapon name and bullet impacts (markers that fade over 400 ms).
+fn draw_gun_hud(
+    gfx: &mut Shim,
+    rects: &mut Vec<Rect>,
+    g: &Gun,
+    cam: &Camera,
+    impacts: &[(Option<[f32; 3]>, u32)],
+    now: u32,
+) {
+    // Crosshair: four ticks around the centre (static gap until spread is in).
+    rects.clear();
+    rects.extend_from_slice(&[
+        [312, 239, 6, 2],
+        [322, 239, 6, 2],
+        [319, 232, 2, 6],
+        [319, 242, 2, 6],
+    ]);
+    gfx.hud_rects(rects, 0xffffffc0);
+    rects.clear();
+    for &(at, t) in impacts {
+        let Some(p) = at else { continue };
+        let age = now.wrapping_sub(t);
+        if age > 400 {
+            continue;
+        }
+        if let Some([x, y]) = cam.project(p) {
+            rects.push([x as i16 - 2, y as i16 - 2, 4, 4]);
+        }
+    }
+    gfx.hud_rects(rects, 0xffd040e0);
+    // Ammo and weapon, bottom right.
+    let (clip, stock) = g.ammo();
+    let mut line = Str::default();
+    line.num(clip.max(0) as u32);
+    line.push_str(" / ");
+    line.num(stock.max(0) as u32);
+    rects.clear();
+    hud::text(rects, 520, 430, 4, line.as_str());
+    gfx.hud_rects(rects, if clip > 0 { 0xf0f0f0e0 } else { 0xe04040e0 });
+    rects.clear();
+    let mut name = Str::default();
+    name.push_str(g.name().trim_end_matches("_mp"));
+    hud::text(rects, 520, 412, 2, name.as_str());
+    gfx.hud_rects(rects, 0xc0c8d0c0);
+}
+
+/// `sd:/modernwiifare/common.wpk` (from `mwf-convert common`), or empty when it isn't there.
+fn load_common() -> Vec<u8> {
+    let path = c"sd:/modernwiifare/common.wpk";
+    let mut head = [0u8; wpk::HEADER_LEN];
+    let got = unsafe { ffi::mwf_file_read(path.as_ptr(), 0, head.len() as u32, head.as_mut_ptr()) };
+    if got != head.len() as i32 {
+        return Vec::new();
+    }
+    let len = u32::from_be_bytes([head[24], head[25], head[26], head[27]]) as usize;
+    let mut bytes = Vec::new();
+    if len > 8 << 20 || bytes.try_reserve_exact(len).is_err() {
+        return Vec::new();
+    }
+    bytes.resize(len, 0);
+    let got = unsafe { ffi::mwf_file_read(path.as_ptr(), 0, len as u32, bytes.as_mut_ptr()) };
+    if got != len as i32 || wpk::Pack::parse(&bytes, false).is_err() {
+        return Vec::new();
+    }
+    bytes
+}
+
+fn weapon_section(common: &[u8]) -> &[u8] {
+    wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::WEAPONS))
+        .map_or(&[], |s| s.data)
+}
+
 /// Where `run_map` goes back to.
 enum Exit {
     Menu,
@@ -317,7 +395,7 @@ fn menu(gfx: &mut Shim, maps: &[&str], selected: &mut usize) -> Option<usize> {
 
 /// Load `sd:/modernwiifare/maps/<name>.wpk` and play it until START (menu) or RESET (quit). Everything the map
 /// allocates in MEM2 is released by the caller (`mwf_mem2_release`); the MEM1 parts drop here.
-fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch) -> Exit {
+fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, weapons: &[u8]) -> Exit {
     let mut path = [0u8; 128];
     let prefix = b"sd:/modernwiifare/maps/";
     let n = prefix.len() + name.len() + 4;
@@ -386,6 +464,12 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch) -> Exit {
     let mut cam = spawn_camera(&world, spawn);
     cam.aspect = aspect;
     let mut player = clip.as_ref().map(|c| spawn_player(&world, c, spawn));
+    // The gun (when common.wpk is on the SD card): the M4A1, as in MW2's first default class.
+    let new_gun = || wpk::weapon::find(weapons, DEFAULT_WEAPON).and_then(|r| Gun::new(&r));
+    let mut gun = new_gun();
+    let mut impacts: [(Option<[f32; 3]>, u32); 8] = [(None, 0); 8];
+    let mut next_impact = 0usize;
+    let mut hud_rects: Vec<Rect> = Vec::with_capacity(512);
     let mut flying = player.is_none();
     let mut last = ffi::ms();
     let mut show_overlay = true;
@@ -414,6 +498,7 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch) -> Exit {
             if let Some(c) = &clip {
                 player = Some(spawn_player(&world, c, spawn));
             }
+            gun = new_gun();
         }
         if pad.down & ffi::BTN_UP != 0 && clip.is_some() {
             flying = !flying;
@@ -444,6 +529,23 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch) -> Exit {
                     msec as i32,
                 );
                 cam = p.camera(aspect);
+                if let Some(g) = gun.as_mut() {
+                    let (_, shot) = g.update(
+                        c,
+                        msec as i32,
+                        &GunInput {
+                            fire: pad.held & ffi::BTN_R != 0 || pad.r > 100,
+                            reload: pad.held & ffi::BTN_X != 0,
+                            pm_flags: p.ps.pm_flags,
+                        },
+                        cam.eye,
+                        cam.forward(),
+                    );
+                    if let Some(s) = shot.filter(|s| s.hit) {
+                        impacts[next_impact] = (Some(s.end), now);
+                        next_impact = (next_impact + 1) % impacts.len();
+                    }
+                }
             }
             _ => fly::update(
                 &mut cam,
@@ -460,6 +562,9 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch) -> Exit {
             ),
         }
         let stats = world.draw(gfx, &cam, scratch);
+        if !flying && let Some(g) = &gun {
+            draw_gun_hud(gfx, &mut hud_rects, g, &cam, &impacts, now);
+        }
         if show_overlay {
             overlay(gfx, &mut rects, &timing, &stats, cam.eye);
         }
@@ -478,6 +583,8 @@ pub extern "C" fn mwf_game_main() -> i32 {
     // The portal walk's scratch (~0.2 MiB) is static, never on the stack.
     let scratch: &'static mut WalkScratch = unsafe { &mut *core::ptr::addr_of_mut!(WALK_SCRATCH) };
     let mut selected = 0usize;
+    // Weapons and other shared data (optional): sd:/modernwiifare/common.wpk, kept in MEM1 for the whole run.
+    let common = load_common();
     loop {
         let mut names = [0u8; 2048];
         let maps = list_maps(&mut names);
@@ -485,7 +592,7 @@ pub extern "C" fn mwf_game_main() -> i32 {
             return 0;
         };
         let mark = unsafe { ffi::mwf_mem2_mark() };
-        let exit = run_map(&mut gfx, maps[i], scratch);
+        let exit = run_map(&mut gfx, maps[i], scratch, weapon_section(&common));
         unsafe { ffi::mwf_mem2_release(mark) };
         if let Exit::Quit = exit {
             return 0;

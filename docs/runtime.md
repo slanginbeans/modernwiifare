@@ -3,7 +3,9 @@
 ## Try it
 1. Convert the maps on your PC: `mwf-convert pack "<your MW2 / IW4x folder>" --map all` → `out/packs/<map>.wpk` for
    all 16 multiplayer maps (or `--map mp_rust` for one).
-2. Copy the `.wpk` files to the SD card in **`sd:/modernwiifare/maps/`** (the `.json` reports are not needed).
+   `--map all` also writes `out/packs/common.wpk` (weapons; or run `mwf-convert common "<folder>"`).
+2. Copy the map `.wpk` files to the SD card in **`sd:/modernwiifare/maps/`**, and `common.wpk` to
+   **`sd:/modernwiifare/common.wpk`** (the `.json` reports are not needed). Without `common.wpk` you walk unarmed.
 3. Copy `apps/mwf_game` from the build (`make -C wii package` → `dist/apps`, or CI's `modernwiifare-sd-card`) to
    `sd:/apps/`, and start **Modern Wiifare** from the Homebrew Channel. GameCube controller in port 1.
 
@@ -11,7 +13,7 @@ The game opens on a map list (D-pad or main stick up/down, **A** plays, **START*
 returns to the list.
 
 Controls, walking (IW4L movement and the map's collision): main stick move, C-stick look, **A** jump, **B** crouch
-(held), **Z** sprint, **L** ADS. **D-pad up** toggles free fly (main stick, C-stick, L/R triggers down/up, B fast);
+(held), **Z** sprint, **L** ADS, **R** fire, **X** reload. **D-pad up** toggles free fly (main stick, C-stick, L/R triggers down/up, B fast);
 leaving free fly drops the player where the camera is. **Y** next spawn point, **D-pad down** toggles the
 performance overlay (fps, frame / CPU / GPU-wait ms, triangles (of which static models), draws, state changes,
 visible cells, models, position; see `docs/perf.md`),
@@ -38,6 +40,13 @@ world batches grouped by material and lightmap, then static model instances (eac
 view: view × placement loaded into the position matrix, its surfaces' display lists, its light-grid colour as a TEV
 konst ×2), then blended world and model surfaces back to front. The pack is loaded once into MEM2 and
 used in place; collision is decoded once into the MEM1 heap (about 2.6 MiB for `mp_rust`), where traces are fastest.
+
+## Gun
+The M4A1 (`m4_mp`) from `common.wpk`, run by IW4L's weapon state machine (`weapon_iw4::weapon_ordinary`: raise,
+fire rate, bursts, reload, rechamber), so its timings are the PC game's: 70 ms per round, quantized to whole frames
+like IW4 (every 5th frame at 60 fps), 30-round magazine, 2.03 s / 2.36 s (empty) reload. Bullets are traced against
+the map (IW4 `MASK_SHOT`); impacts show as yellow markers for 400 ms. HUD: crosshair, magazine / reserve, weapon.
+Not yet: spread, recoil, the viewmodel, sounds, damage to players, other weapons and attachments.
 
 ## Movement status
 - `pmove` is IW4L's, unchanged; the context uses MW2's MP dvar defaults (190 speed, 800 gravity, jump 39, sprint ×1.5).

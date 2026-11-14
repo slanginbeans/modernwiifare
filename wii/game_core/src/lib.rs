@@ -8,6 +8,7 @@
 //! - [`collision`]: IW4L traces over the pack's `CLIP` section.
 //! - [`player`]: pad -> `UserCmd` -> IW4L `pmove`.
 //! - [`hud`]: screen-space rectangles and a 3×5 debug font.
+//! - [`gun`]: IW4L weapon state machine + hitscan bullets against the map.
 #![no_std]
 
 extern crate alloc;
@@ -16,6 +17,7 @@ pub mod camera;
 pub mod collision;
 pub mod fly;
 pub mod gfx;
+pub mod gun;
 pub mod hud;
 pub mod player;
 pub mod sky;

@@ -145,6 +145,22 @@ impl Camera {
         }
     }
 
+    /// Screen position (640 × 480 pixels, origin top left) of a world point, or None behind the near plane.
+    pub fn project(&self, p: Vec3) -> Option<[f32; 2]> {
+        let d = sub(p, self.eye);
+        let (x, y, z) = (
+            dot(d, self.right()),
+            dot(d, self.up()),
+            dot(d, self.forward()),
+        );
+        if z < ZNEAR {
+            return None;
+        }
+        let ty = tanf(self.fovy.to_radians() / 2.0);
+        let tx = ty * self.aspect;
+        Some([320.0 + x / (z * tx) * 320.0, 240.0 - y / (z * ty) * 240.0])
+    }
+
     /// Distance along the view direction (for back-to-front sorting).
     pub fn depth_of(&self, p: Vec3) -> f32 {
         dot(sub(p, self.eye), self.forward())
@@ -154,6 +170,18 @@ impl Camera {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projects_to_screen_pixels() {
+        let cam = Camera::new([0.0; 3], 0.0, 0.0);
+        let c = cam.project([100.0, 0.0, 0.0]).unwrap();
+        assert!((c[0] - 320.0).abs() < 1e-3 && (c[1] - 240.0).abs() < 1e-3);
+        // Up is up on screen (smaller y), right is right.
+        let up = cam.project([100.0, 0.0, 10.0]).unwrap();
+        let right = cam.project([100.0, -10.0, 0.0]).unwrap();
+        assert!(up[1] < 240.0 && right[0] > 320.0);
+        assert!(cam.project([-100.0, 0.0, 0.0]).is_none());
+    }
 
     #[test]
     fn frustum_planes_agree_with_the_view_test() {

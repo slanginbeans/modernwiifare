@@ -37,6 +37,7 @@ mod preview;
 mod static_models;
 mod texture;
 mod visibility;
+mod weapons;
 mod zone_textures;
 
 /// The zone holding the shared multiplayer string tables.
@@ -75,6 +76,7 @@ fn run(args: &[String]) -> ExitCode {
         Some("map") => run_map(&args[1..]),
         Some("textures") => run_textures(&args[1..]),
         Some("pack") => run_pack(&args[1..]),
+        Some("common") => run_common(&args[1..]),
         Some("preview") => run_preview(&args[1..]),
         Some("texture") => run_texture(&args[1..]),
         Some("-h" | "--help") | None => {
@@ -410,6 +412,10 @@ fn run_pack(args: &[String]) -> ExitCode {
                 failed.push(m);
             }
         }
+        println!("== common");
+        if run_common(&[a.game.display().to_string()]) != ExitCode::SUCCESS {
+            failed.push("common");
+        }
         println!(
             "Packed {} of {} maps into out/packs/",
             BASE_MAPS.len() - failed.len(),
@@ -422,6 +428,65 @@ fn run_pack(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     run_pack_one(a)
+}
+
+/// The data every map shares, from `common_mp`: weapons (combat numbers) for now. → `out/packs/common.wpk`.
+fn run_common(args: &[String]) -> ExitCode {
+    let mut a = match parse_map_args(args) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    a.map = "common_mp".to_owned();
+    let (image, label, _) = match open_map_zone(&a) {
+        Ok(x) => x,
+        Err(code) => return code,
+    };
+    let tables = shared_tables(&a);
+    let (collector, ()) = match zone_textures::walk_with(&image, &tables, |_, _| ()) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("reading {label}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let links = &collector.links;
+    let mut weapons: Vec<wpk::weapon::WeaponRecord> = links
+        .weapons
+        .iter()
+        .zip(&links.weapon_combat)
+        .filter(|(n, _)| !n.is_empty())
+        .map(|(n, c)| wpk::weapon::WeaponRecord::new(n, *c))
+        .collect();
+    weapons.sort_by_key(|w| w.name);
+    weapons.dedup_by(|x, y| x.name == y.name);
+    let mut b = wpk::PackBuilder::new("common");
+    b.section(
+        wpk::tag::WEAPONS,
+        weapons.len() as u32,
+        wpk::records::encode(&weapons),
+    );
+    let bytes = b.finish();
+    let out = a
+        .out
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("out/packs/common.wpk"));
+    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty())
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        eprintln!("could not create {}: {e}", dir.display());
+        return ExitCode::FAILURE;
+    }
+    if let Err(e) = std::fs::write(&out, &bytes) {
+        eprintln!("could not write {}: {e}", out.display());
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "Modern Wiifare common pack: {} weapons, {:.2} MiB -> {}",
+        weapons.len(),
+        bytes.len() as f64 / (1024.0 * 1024.0),
+        out.display()
+    );
+    ExitCode::SUCCESS
 }
 
 fn run_pack_one(a: MapArgs) -> ExitCode {

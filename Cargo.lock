@@ -445,6 +445,7 @@ dependencies = [
  "movement_iw4",
  "playerstate_iw4",
  "trace_iw4",
+ "weapon_iw4",
  "wpk",
 ]
 
@@ -735,6 +736,7 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "weapon_iw4",
  "wpk",
 ]
 
@@ -1251,6 +1253,7 @@ version = "0.1.0"
 dependencies = [
  "clipmap_iw4",
  "libm",
+ "weapon_iw4",
 ]
 
 [[package]]
