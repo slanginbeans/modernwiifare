@@ -38,6 +38,13 @@ Every menu is a list: D-pad or main stick up / down, **A** chooses, **B** goes b
   (statsTable, attachmentTable, perkTable, killstreakTable, classTable) and their localized names.
 - In a match, **START** pauses: Resume, Change Class (applies at your next spawn, as in MW2) or End Game.
 
+Look and aim are IW4L's gamepad model (`game_core::look`): a 12% radial dead zone, its look curve, turn rates of
+260 / 90 °/s at the hip and 90 / 55 °/s in ADS (slower when zoomed), turn acceleration, and aim assist with each
+weapon's ranges (slowdown over a target, lock-on that follows it, a short snap when you start aiming down sights).
+The GameCube sticks stop short of their full range, so each stick's full deflection is learned from how far you push
+it (once fully pushed, full forward reaches IW4's sprint threshold). ADS zooms to each weapon's own field of view
+(IW4L `calc_fov`); the first-person gun doesn't move to its sights yet.
+
 Controls in a match (IW4L movement and the map's collision): main stick move, C-stick look, **A** jump, **B** crouch
 (held), **Z** sprint, **L** ADS, **R** fire, **X** reload, **Y** switch weapon. **D-pad up** toggles free fly (main
 stick, C-stick, L/R triggers down/up, B fast); leaving free fly drops the player where the camera is. **D-pad left**

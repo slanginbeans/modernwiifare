@@ -13,6 +13,15 @@ use crate::{AppPath, ffi, load_pack};
 /// The weapon spawned with when there is no class data (MW2's first default class carries it).
 const FALLBACK_WEAPON: &str = "m4";
 
+/// The weapon sections of `common.wpk` (records parallel to `WEAP`).
+#[derive(Clone, Copy)]
+pub struct WeaponTables<'a> {
+    pub weapons: &'a [u8],
+    pub kicks: &'a [u8],
+    pub moves: &'a [u8],
+    pub aims: &'a [u8],
+}
+
 pub struct Arsenal {
     pub guns: [Option<Gun>; 2],
     pub views: [Option<View>; 2],
@@ -66,9 +75,7 @@ impl Arsenal {
     pub fn equip(
         &mut self,
         gfx: &mut impl game_core::gfx::Gfx,
-        weapons: &[u8],
-        kicks: &[u8],
-        moves: &[u8],
+        t: &WeaponTables<'_>,
         cat: Option<&Catalog>,
         class: Option<&Loadout>,
     ) {
@@ -104,13 +111,14 @@ impl Arsenal {
         }
         for (i, (_, names)) in slots.iter().enumerate() {
             self.guns[i] = names.iter().find_map(|n| {
-                let (index, rec) = wpk::weapon::find_indexed(weapons, n)?;
+                let (index, rec) = wpk::weapon::find_indexed(t.weapons, n)?;
                 let mut g = Gun::with_index(&rec, index)?;
                 g.set_kick(wpk::records::get::<wpk::weapon::KickRecord>(
-                    kicks,
+                    t.kicks,
                     index as usize,
                 ));
-                g.set_moves(wpk::records::get(moves, index as usize));
+                g.set_moves(wpk::records::get(t.moves, index as usize));
+                g.set_aim(wpk::records::get(t.aims, index as usize));
                 Some(g)
             });
         }

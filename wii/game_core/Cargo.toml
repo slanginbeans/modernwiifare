@@ -16,3 +16,4 @@ trace_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8e
 dpvs_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
 weapon_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
 gamemode_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
+hud_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }

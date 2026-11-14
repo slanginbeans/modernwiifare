@@ -37,8 +37,8 @@ pub struct Camera {
     pub aspect: f32,
 }
 
-/// MW2's default horizontal FOV, 65°, at 4:3 is about 50.5° vertical.
-pub const DEFAULT_FOVY: f32 = 50.5;
+/// MW2's default horizontal FOV, 65°, at 4:3 is 51.08° vertical (IW4L `horizontal_to_vertical_fov_deg`).
+pub const DEFAULT_FOVY: f32 = 51.08;
 pub const ZNEAR: f32 = 4.0;
 pub const ZFAR: f32 = 30000.0;
 

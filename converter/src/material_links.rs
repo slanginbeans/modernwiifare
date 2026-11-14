@@ -232,6 +232,8 @@ pub struct Links {
     pub weapon_kick: Vec<wpk::weapon::KickRecord>,
     /// Movement scales of each weapon (parallel to `weapons`).
     pub weapon_moves: Vec<wpk::weapon::MoveRecord>,
+    /// ADS zoom and aim-assist ranges of each weapon (parallel to `weapons`).
+    pub weapon_aims: Vec<wpk::weapon::AimRecord>,
     /// First-person models and animations of each weapon (parallel to `weapons`).
     pub weapon_views: Vec<WeaponView>,
     /// Every string table of the zone, by name (lower case).
@@ -412,6 +414,7 @@ impl Links {
         self.weapon_combat.push(crate::weapons::captured(&w));
         self.weapon_kick.push(crate::weapons::kick(&w));
         self.weapon_moves.push(crate::weapons::moves(&w));
+        self.weapon_aims.push(crate::weapons::aims(&w));
         let anims = w.sz_xanims.map_or_else(Vec::new, |arr| {
             (0..asset_iw4::size::WEAPON_ANIM_COUNT)
                 .map(|i| match s.ptr_at(arr, i * s.pointer_bytes()) {

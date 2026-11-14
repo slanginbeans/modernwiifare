@@ -29,6 +29,7 @@ use game_core::gfx::{DrawState, Gfx, Mtx34, TexDesc};
 use game_core::gun::{Gun, GunInput, SpreadInput};
 use game_core::hud::{self, Rect, heapless_str::Str};
 use game_core::life::{self, Life, MatchClock};
+use game_core::look;
 use game_core::player::{MovePad, Player};
 use game_core::telemetry::{self, section};
 use game_core::world::World;
@@ -626,12 +627,26 @@ fn run_map(
         .as_ref()
         .and_then(|p| p.section(wpk::tag::WEAPON_MOVE))
         .map_or(&[][..], |s| s.data);
+    let aims = common_pack
+        .as_ref()
+        .and_then(|p| p.section(wpk::tag::WEAPON_AIM))
+        .map_or(&[][..], |s| s.data);
     let mut arsenal = arsenal::Arsenal::new();
     // A class change applies at the next spawn, as in MW2.
     let mut class = loadouts.class;
     let equip = |arsenal: &mut arsenal::Arsenal, gfx: &mut Shim, class: Option<usize>| {
         let l = class.and_then(|c| loadouts.classes.get(c));
-        arsenal.equip(gfx, weapons, kicks, moves, loadouts.catalog, l);
+        arsenal.equip(
+            gfx,
+            &arsenal::WeaponTables {
+                weapons,
+                kicks,
+                moves,
+                aims,
+            },
+            loadouts.catalog,
+            l,
+        );
     };
     equip(&mut arsenal, gfx, class);
     // Free-for-all against bots (MW2's FFA spawns when the map has them).
@@ -668,6 +683,7 @@ fn run_map(
             let (index, rec) = wpk::weapon::find_indexed(weapons, n)?;
             let mut g = Gun::with_index(&rec, index)?;
             g.set_moves(wpk::records::get(moves, index as usize));
+            g.set_aim(wpk::records::get(aims, index as usize));
             Some(g)
         })
     };
@@ -704,6 +720,13 @@ fn run_map(
     let mut rects: Vec<Rect> = Vec::with_capacity(4096);
     let mut frame_start = ffi::us();
     let mut last_mem_s = u32::MAX;
+    // Gamepad look (IW4L): the sticks' learned range, the look's state between steps, settings.
+    let mut sticks = look::StickRange::default();
+    let mut look_state = look::LookState::default();
+    let look_settings = look::LookSettings::default();
+    let mut aim_targets: Vec<look::AimTarget> = Vec::with_capacity(BOTS);
+    // The current field of view over the hip one (look speed and aim assist scale with the zoom).
+    let mut hip_fov_scale = 1.0f32;
     // Fixed-step clock for the player: milliseconds × 3 not yet simulated, and steps taken.
     let mut tick_acc3 = 0u32;
     // Largest stick and trigger values seen (calibration: IW4 needs 105 of 127 forward to sprint).
@@ -808,6 +831,37 @@ fn run_map(
         let player_ticks = (tick_acc3 / 50).min(6);
         tick_acc3 -= player_ticks * 50;
         tick_acc3 = tick_acc3.min(50);
+        // Sticks: learned range, IW4L's radial dead zone; the main stick as IW4 move amounts.
+        let main_stick = sticks.normalize(0, pad.sx, pad.sy);
+        let c_stick = sticks.normalize(1, pad.cx, pad.cy);
+        let (forward, right) = look::to_move(main_stick);
+        let ads_held = pad.held & ffi::BTN_L != 0 || pad.l > 128;
+        // Aim-assist targets: living bots in clear view of your eye (their hull box and chest).
+        aim_targets.clear();
+        if let (Some(a), Some(p), Some(c)) = (arena.as_ref(), player.as_ref(), clip.as_ref())
+            && !flying
+            && life.alive()
+        {
+            let eye = p.eye();
+            for (i, f) in a.fighters.iter().enumerate().skip(1) {
+                if !f.life.alive() {
+                    continue;
+                }
+                let (feet, chest) = arena::feet_and_aim(&f.player);
+                let height = if f.player.crouched() { 50.0 } else { 70.0 };
+                let t = c.trace(eye, chest, [0.0; 3], [0.0; 3], game_core::gun::MASK_SHOT);
+                if t.fraction < 1.0 {
+                    continue;
+                }
+                aim_targets.push(look::AimTarget {
+                    key: i as u64,
+                    mins: [feet[0] - 15.0, feet[1] - 15.0, feet[2]],
+                    maxs: [feet[0] + 15.0, feet[1] + 15.0, feet[2] + height],
+                    aim: chest,
+                    velocity: f.player.ps.velocity,
+                });
+            }
+        }
         sections[section::INPUT] = lap(&mut mark);
         match (&mut player, &clip) {
             (Some(p), Some(c)) if !flying && life.alive() => {
@@ -820,17 +874,36 @@ fn run_map(
                     let tick_ms = ((sim_ticks + 1) * 50 / 3 - sim_ticks * 50 / 3) as i32;
                     sim_ticks += 1;
                     let weapon_move = arsenal.gun().map(Gun::move_context).unwrap_or_default();
+                    let (pitch, yaw) = p.view();
+                    let view = look::AimView {
+                        eye: p.eye(),
+                        angles: [pitch, yaw],
+                        velocity: p.ps.velocity,
+                        ads_lerp: p.ps.f_weapon_pos_frac,
+                        fov_scale: hip_fov_scale,
+                        ranges: arsenal
+                            .gun()
+                            .map_or(look::AimAssistRanges::NONE, Gun::aim_ranges),
+                        dt: tick_ms as f32 / 1000.0,
+                    };
+                    let look_delta = look::look_frame(
+                        &mut look_state,
+                        &look_settings,
+                        c_stick,
+                        &view,
+                        &aim_targets,
+                        ads_held,
+                    );
                     let fall = p.update(
                         c,
                         &MovePad {
-                            sx: pad.sx,
-                            sy: pad.sy,
-                            cx: pad.cx,
-                            cy: pad.cy,
+                            forward,
+                            right,
+                            look: look_delta,
                             jump: pad.held & ffi::BTN_A != 0,
                             crouch: pad.held & ffi::BTN_B != 0,
                             sprint: pad.held & ffi::BTN_Z != 0,
-                            ads: pad.held & ffi::BTN_L != 0 || pad.l > 128,
+                            ads: ads_held,
                             fire: pad.held & ffi::BTN_R != 0 || pad.r > 100,
                             reload: pad.held & ffi::BTN_X != 0,
                         },
@@ -838,6 +911,12 @@ fn run_map(
                         tick_ms,
                     );
                     cam = p.camera(aspect);
+                    // ADS zoom (IW4L `calc_fov_from_ads` with the weapon's zoom FOV and window).
+                    let fov = arsenal.gun().map_or(look::HIP_FOV, |g| {
+                        look::view_fov(p.ps.f_weapon_pos_frac, ads_held, g.aim(), true)
+                    });
+                    hip_fov_scale = fov / look::HIP_FOV;
+                    cam.fovy = look::vertical_fov(fov);
                     // Recoil kicks the view (IW4: kick angles on top of the view; shots follow the kicked view).
                     if let Some(g) = arsenal.gun() {
                         cam.pitch += g.kick_angles[0];

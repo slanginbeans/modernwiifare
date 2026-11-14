@@ -84,6 +84,8 @@ pub mod tag {
     pub const KICK: Tag = *b"KICK";
     /// Each weapon's effect on movement (`weapon::MoveRecord`, parallel to `WEAP`).
     pub const WEAPON_MOVE: Tag = *b"WMOV";
+    /// Each weapon's ADS zoom and aim-assist ranges (`weapon::AimRecord`, parallel to `WEAP`).
+    pub const WEAPON_AIM: Tag = *b"WAIM";
     /// Sound alias lists ([`crate::sound::AliasRecord`]).
     pub const SOUND_ALIASES: Tag = *b"SNDA";
     /// Sound variants ([`crate::sound::VariantRecord`]).

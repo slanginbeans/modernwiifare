@@ -442,6 +442,7 @@ dependencies = [
  "clipmap_iw4",
  "dpvs_iw4",
  "gamemode_iw4",
+ "hud_iw4",
  "libm",
  "movement_iw4",
  "playerstate_iw4",

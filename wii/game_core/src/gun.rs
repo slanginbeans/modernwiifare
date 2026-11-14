@@ -19,7 +19,7 @@ use weapon_iw4::{
     calculate_weapon_position_gun_recoil, fire_recoil_gun_range, fire_recoil_view_range,
     recoil_ads_weight, weapon_fire_recoil,
 };
-use wpk::weapon::{KickRecord, MoveRecord, WeaponRecord};
+use wpk::weapon::{AimRecord, KickRecord, MoveRecord, WeaponRecord};
 
 use crate::player::WeaponMove;
 
@@ -76,6 +76,8 @@ pub struct Gun {
     ads_frac: f32,
     /// Recoil numbers, when the pack has them.
     kick: Option<KickRecord>,
+    /// ADS zoom and aim-assist ranges (`WAIM`; none when the pack has none).
+    aim: AimRecord,
     /// Pellets after the first of the last shot (shotguns).
     extra_pellets: alloc::vec::Vec<Shot>,
     /// Movement scales (`WMOV`; MW2's usual numbers when the pack has none).
@@ -117,6 +119,7 @@ impl Gun {
             ads_frac: 0.0,
             kick: None,
             moves: MoveRecord::default(),
+            aim: AimRecord::default(),
             extra_pellets: alloc::vec::Vec::with_capacity(MAX_PELLETS),
             pm_flags_out: None,
             camera: Default::default(),
@@ -184,6 +187,24 @@ impl Gun {
     /// The pellets after the first of this frame's shot (shotguns; empty otherwise).
     pub fn extra_pellets(&self) -> &[Shot] {
         &self.extra_pellets
+    }
+
+    /// ADS zoom and aim-assist ranges for this weapon (`WAIM` record).
+    pub fn set_aim(&mut self, a: Option<AimRecord>) {
+        self.aim = a.unwrap_or_default();
+    }
+
+    pub fn aim(&self) -> &AimRecord {
+        &self.aim
+    }
+
+    /// Aim-assist ranges (IW4L `AimAssistRanges`: auto-aim, hip, ADS).
+    pub fn aim_ranges(&self) -> weapon_iw4::AimAssistRanges {
+        weapon_iw4::AimAssistRanges {
+            auto_aim: self.aim.auto_aim_range,
+            hip: self.aim.aim_assist_range,
+            ads: self.aim.aim_assist_range_ads,
+        }
     }
 
     /// Movement scales for this weapon (`WMOV` record).
@@ -538,6 +559,23 @@ mod tests {
         let weap = pack.section(wpk::tag::WEAPONS).unwrap().data;
         let rec = wpk::weapon::find(weap, "m4_mp").expect("m4_mp in common.wpk");
         let c = rec.combat;
+        // Its aim and movement records (when the pack has them).
+        if let (Some(aims), Some((i, _))) = (
+            pack.section(wpk::tag::WEAPON_AIM),
+            wpk::weapon::find_indexed(weap, "m4_mp"),
+        ) {
+            let a = wpk::records::get::<wpk::weapon::AimRecord>(aims.data, i as usize).unwrap();
+            std::println!(
+                "m4_mp aim: zoom fov {}, zoom in/out {} / {}, assist {} / {} (auto {})",
+                a.ads_zoom_fov,
+                a.ads_zoom_in_frac,
+                a.ads_zoom_out_frac,
+                a.aim_assist_range,
+                a.aim_assist_range_ads,
+                a.auto_aim_range
+            );
+            assert!(a.ads_zoom_fov > 10.0 && a.ads_zoom_fov < 65.0);
+        }
         std::println!(
             "m4_mp: fire {} ms, clip {}, start ammo {}, reload {} / {} ms, damage {}-{}, raise {} ms",
             c.fire_time_ms,

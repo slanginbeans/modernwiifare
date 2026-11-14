@@ -29,6 +29,7 @@ pub mod gun;
 pub mod hud;
 pub mod life;
 pub mod loadout;
+pub mod look;
 pub mod menu;
 pub mod nav;
 pub mod player;

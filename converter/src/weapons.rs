@@ -60,6 +60,18 @@ pub fn moves(g: &WeaponGeometry) -> wpk::weapon::MoveRecord {
     }
 }
 
+/// ADS zoom and aim-assist ranges.
+pub fn aims(g: &WeaponGeometry) -> wpk::weapon::AimRecord {
+    wpk::weapon::AimRecord {
+        ads_zoom_fov: g.ads_zoom_fov,
+        ads_zoom_in_frac: g.ads_zoom_in_frac,
+        ads_zoom_out_frac: g.ads_zoom_out_frac,
+        auto_aim_range: g.auto_aim_range,
+        aim_assist_range: g.aim_assist_range,
+        aim_assist_range_ads: g.aim_assist_range_ads,
+    }
+}
+
 /// Recoil numbers (IW4L `WeaponKickFacts` from the same capture).
 pub fn kick(g: &WeaponGeometry) -> wpk::weapon::KickRecord {
     let k = &g.kick;

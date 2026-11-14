@@ -9,8 +9,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// The converter's output revision. 1: walk graphs, hit-location damage, per-weapon view files. 2: weapon movement
-/// scales (`WMOV`).
-pub const REVISION: u32 = 2;
+/// scales (`WMOV`). 3: ADS zoom and aim-assist ranges (`WAIM`).
+pub const REVISION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

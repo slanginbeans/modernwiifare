@@ -21,20 +21,21 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
 - **Allocator**: `malloc` / `realloc` instead of `memalign` for every allocation.
 - **Static models**: world bounds computed once at load, not every frame.
 
+- **Controller look and aim** (2026-11-14): IW4L's `pad_look_frame` (radial dead zone, look curve, ADS look speed,
+  turn acceleration) and aim assist (slowdown, lock-on, ADS snap) with each weapon's ranges (`WAIM`); stick range
+  learned from use (full forward reaches the sprint threshold); ADS zoom with `hud_iw4::calc_fov_from_ads`.
+
 ## Next, gameplay (ranked)
-1. **Controller look and stick range.** Measure the GameCube stick's real maximum (if it tops out near ±100 you can
-   never reach the 105 forward needed to sprint), then port IW4L's `pad_look_frame` (radial dead zone, look curve,
-   ADS look speed, turn acceleration) and aim assist (slowdown, lock-on; per-weapon ranges in the facts).
-2. **ADS zoom**: `hud_iw4::calc_fov` with each weapon's `adsZoomFov`, look speed scaled by zoom, viewmodel ADS pose.
-3. **Weapon switching through IW4L** (`weapon_check_for_change`: drop, then raise; refused in blocking states).
-4. **Melee** (`weapon_iw4::melee`, the lunge in `movement_iw4::melee_charge_move`).
-5. **Players block each other** (`clipmap_iw4::transformed_temp_capsule_trace` per fighter in pmove traces).
-6. **Health regeneration** with the delay and rate read from the user's game scripts (not guessed).
-7. **Bullet penetration** (`weapon_iw4::penetration`; needs surface types and the depth table from the converter).
-8. **Hit volumes**: turn the boxes with the body's yaw now; the character models' hit boxes later.
-9. **FFA rules**: IW4L `gamemode_iw4::ffa` scores (50 a kill, limit from the user's playlist / scripts), ties to
+1. **Viewmodel ADS pose** (the gun moving to its sights) and confirm the stick range from the logs.
+2. **Weapon switching through IW4L** (`weapon_check_for_change`: drop, then raise; refused in blocking states).
+3. **Melee** (`weapon_iw4::melee`, the lunge in `movement_iw4::melee_charge_move`).
+4. **Players block each other** (`clipmap_iw4::transformed_temp_capsule_trace` per fighter in pmove traces).
+5. **Health regeneration** with the delay and rate read from the user's game scripts (not guessed).
+6. **Bullet penetration** (`weapon_iw4::penetration`; needs surface types and the depth table from the converter).
+7. **Hit volumes**: turn the boxes with the body's yaw now; the character models' hit boxes later.
+8. **FFA rules**: IW4L `gamemode_iw4::ffa` scores (50 a kill, limit from the user's playlist / scripts), ties to
    fewer deaths; spawns scored by distance (`SPAWN_IDEAL_DIST` 1600, `SPAWN_BAD_DIST` 1200) and line of sight.
-10. Crouch as MW2's console toggle; prone.
+9. Crouch as MW2's console toggle; prone.
 
 ## Next, performance (ranked by expected milliseconds; measure with the logs first)
 1. **World vertex load** (~12-25 ms on big maps): `LOD_SCALE`, fog / far plane per map, vertex welding, more compact

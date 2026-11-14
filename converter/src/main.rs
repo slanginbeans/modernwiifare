@@ -586,24 +586,36 @@ fn run_common(args: &[String]) -> ExitCode {
     // Weapons with their recoil, sorted by name, first of each name kept.
     type Row = (
         wpk::weapon::WeaponRecord,
-        (wpk::weapon::KickRecord, wpk::weapon::MoveRecord),
+        (
+            wpk::weapon::KickRecord,
+            wpk::weapon::MoveRecord,
+            wpk::weapon::AimRecord,
+        ),
     );
     let mut both: Vec<Row> = links
         .weapons
         .iter()
         .zip(&links.weapon_combat)
-        .zip(links.weapon_kick.iter().zip(&links.weapon_moves))
+        .zip(
+            links
+                .weapon_kick
+                .iter()
+                .zip(&links.weapon_moves)
+                .zip(&links.weapon_aims),
+        )
         .filter(|((n, _), _)| !n.is_empty())
-        .map(|((n, c), (k, m))| {
+        .map(|((n, c), ((k, m), a))| {
             // MW2's per-location damage table, baked into each weapon as IW4L does.
             let c = weapons::with_global_location(*c, links.lochit);
-            (wpk::weapon::WeaponRecord::new(n, c), (*k, *m))
+            (wpk::weapon::WeaponRecord::new(n, c), (*k, *m, *a))
         })
         .collect();
     both.sort_by_key(|(w, _)| w.name);
     both.dedup_by(|x, y| x.0.name == y.0.name);
     let (weapons, extra): (Vec<_>, Vec<_>) = both.into_iter().unzip();
-    let (kicks, moves): (Vec<_>, Vec<_>) = extra.into_iter().unzip();
+    let kicks: Vec<_> = extra.iter().map(|e| e.0).collect();
+    let moves: Vec<_> = extra.iter().map(|e| e.1).collect();
+    let aims: Vec<_> = extra.iter().map(|e| e.2).collect();
     let files: HashSet<String> = weapons.iter().map(|w| w.name().to_owned()).collect();
     println!(
         "hit-location damage table: {}",
@@ -643,6 +655,11 @@ fn run_common(args: &[String]) -> ExitCode {
         wpk::tag::WEAPON_MOVE,
         moves.len() as u32,
         wpk::records::encode(&moves),
+    );
+    b.section(
+        wpk::tag::WEAPON_AIM,
+        aims.len() as u32,
+        wpk::records::encode(&aims),
     );
     b.section(wpk::tag::CLASSES, 0, catalog.encode());
     let bytes = b.finish();

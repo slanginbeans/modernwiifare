@@ -13,7 +13,6 @@ use playerstate_iw4::{ENTITYNUM_NONE, PlayerState, UserCmd, buttons};
 
 use crate::camera::Camera;
 use crate::collision::{MASK_PLAYER_SOLID, MapClip, PLAYER_MAXS, PLAYER_MINS};
-use crate::fly::axis;
 
 /// One frame of movement with absolute view angles (degrees) and IW4 move amounts (-127..127).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -31,14 +30,14 @@ pub struct Steer {
     pub reload: bool,
 }
 
-/// Pad state for one frame, already mapped from the GameCube controller.
+/// One step of the player's input, already shaped (`look`): IW4 move amounts and the view change.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MovePad {
-    /// Main stick (move) and C-stick (look), −128..127, up / right positive.
-    pub sx: i8,
-    pub sy: i8,
-    pub cx: i8,
-    pub cy: i8,
+    /// IW4 move amounts, -127..127 (forward, right).
+    pub forward: i8,
+    pub right: i8,
+    /// View change this step, degrees (pitch down positive, yaw left positive), from [`crate::look::look_frame`].
+    pub look: [f32; 2],
     pub jump: bool,
     pub crouch: bool,
     pub sprint: bool,
@@ -47,9 +46,6 @@ pub struct MovePad {
     pub reload: bool,
 }
 
-/// Degrees per second at full C-stick deflection (placeholder, see the module note).
-pub const LOOK_YAW_RATE: f32 = 200.0;
-pub const LOOK_PITCH_RATE: f32 = 140.0;
 /// Units per degree in IW4's 16-bit angles.
 const ANGLE2SHORT: f32 = 65536.0 / 360.0;
 
@@ -232,17 +228,13 @@ impl Player {
 
     /// Run one frame of `msec` milliseconds. Returns the fall damage of a landing this frame (IW4L's crash land).
     pub fn update(&mut self, clip: &MapClip<'_>, pad: &MovePad, w: &WeaponMove, msec: i32) -> i32 {
-        let dt = msec as f32 / 1000.0;
-        let yaw = self.yaw - axis(pad.cx) * LOOK_YAW_RATE * dt;
-        let pitch = self.pitch - axis(pad.cy) * LOOK_PITCH_RATE * dt;
-        let to_move = |v: i8| (axis(v) * 127.0) as i8;
         self.steer(
             clip,
             &Steer {
-                yaw,
-                pitch,
-                forward: to_move(pad.sy),
-                right: to_move(pad.sx),
+                yaw: self.yaw + pad.look[1],
+                pitch: self.pitch + pad.look[0],
+                forward: pad.forward,
+                right: pad.right,
                 jump: pad.jump,
                 crouch: pad.crouch,
                 sprint: pad.sprint,
@@ -382,7 +374,7 @@ mod tests {
             &mut p,
             &clip,
             MovePad {
-                sy: 127,
+                forward: 127,
                 ..MovePad::default()
             },
             2000,
@@ -441,7 +433,7 @@ mod tests {
                 &mut p,
                 &clip,
                 MovePad {
-                    sy: 127,
+                    forward: 127,
                     ..MovePad::default()
                 },
                 2000,

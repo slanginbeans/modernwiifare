@@ -282,6 +282,46 @@ impl crate::records::Record for MoveRecord {
     }
 }
 
+/// A weapon's aim numbers (`WAIM` section, parallel to `WEAP`): IW4 `adsZoomFov`, `adsZoomInFrac`,
+/// `adsZoomOutFrac` (when in the ADS transition the zoom happens), and the aim-assist ranges `autoAimRange`,
+/// `aimAssistRange`, `aimAssistRangeAds`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AimRecord {
+    pub ads_zoom_fov: f32,
+    pub ads_zoom_in_frac: f32,
+    pub ads_zoom_out_frac: f32,
+    pub auto_aim_range: f32,
+    pub aim_assist_range: f32,
+    pub aim_assist_range_ads: f32,
+}
+
+impl crate::records::Record for AimRecord {
+    const LEN: usize = 24;
+    fn write(&self, o: &mut Vec<u8>) {
+        for v in [
+            self.ads_zoom_fov,
+            self.ads_zoom_in_frac,
+            self.ads_zoom_out_frac,
+            self.auto_aim_range,
+            self.aim_assist_range,
+            self.aim_assist_range_ads,
+        ] {
+            o.f32(v);
+        }
+    }
+    fn read(b: &[u8]) -> Self {
+        let f = |i: usize| be::f32(b, i * 4);
+        AimRecord {
+            ads_zoom_fov: f(0),
+            ads_zoom_in_frac: f(1),
+            ads_zoom_out_frac: f(2),
+            auto_aim_range: f(3),
+            aim_assist_range: f(4),
+            aim_assist_range_ads: f(5),
+        }
+    }
+}
+
 /// The record named `name` in a `WEAP` section, with its index.
 pub fn find_indexed(section: &[u8], name: &str) -> Option<(u32, WeaponRecord)> {
     section.chunks_exact(LEN).enumerate().find_map(|(i, r)| {

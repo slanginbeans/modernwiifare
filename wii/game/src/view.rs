@@ -13,8 +13,8 @@ use wpk::view::{Clip, ViewModel};
 
 use crate::ffi;
 
-/// MW2's first-person FOV is the player's (65° horizontal at 4:3 ≈ 50.5° vertical); near 1 unit.
-const FOVY: f32 = 50.5;
+/// MW2's first-person FOV is the player's (65° horizontal at 4:3 = 51.08° vertical); near 1 unit.
+const FOVY: f32 = 51.08;
 const ZNEAR: f32 = 1.0;
 const ZFAR: f32 = 512.0;
 /// GX vertex format of the model's display lists (POS, CLR0, TEX0 indexed).
