@@ -23,8 +23,17 @@ pub struct ModelSurface {
     pub indices: Vec<u16>,
 }
 
+/// One level of detail: its surfaces and IW4's switch distance (`lodDist`).
+#[derive(Clone, Debug)]
+pub struct ModelLod {
+    pub dist: f32,
+    pub surfaces: Vec<ModelSurface>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Instance {
+    /// GfxWorld static model index (what visibility data refers to).
+    pub index: usize,
     /// Index into `Links::models`.
     pub model: usize,
     pub origin: [f32; 3],
@@ -38,8 +47,8 @@ pub struct Instance {
 #[derive(Clone, Debug, Default)]
 pub struct StaticModels {
     pub instances: Vec<Instance>,
-    /// LOD 0 surfaces of each model the instances use.
-    pub meshes: BTreeMap<usize, Vec<ModelSurface>>,
+    /// The LODs of each model the instances use (from IW4's `lodStart`).
+    pub meshes: BTreeMap<usize, Vec<ModelLod>>,
     /// Instances whose model slot did not resolve, models without readable LOD 0, unlit instances.
     pub unresolved: usize,
     pub unreadable: usize,
@@ -87,27 +96,52 @@ fn surface_sets(s: &ZoneStream<'_>, links: &Links) -> HashMap<String, Ptr> {
     sets
 }
 
-fn lod0(
+/// Every LOD of model `m` from IW4's `lodStart`. The first must read; a later one that doesn't ends the list.
+fn lods(
     s: &ZoneStream<'_>,
     links: &Links,
     sets: &HashMap<String, Ptr>,
     m: usize,
+) -> Result<Vec<ModelLod>, &'static str> {
+    let g = links.model_geometry.get(m).ok_or("no geometry")?;
+    let start = usize::from(g.lod_start).min(3);
+    let end = usize::from(g.num_lods).clamp(start + 1, 4);
+    let mut out = Vec::new();
+    for l in start..end {
+        match lod(s, links, sets, m, l) {
+            Ok(surfaces) => out.push(ModelLod {
+                dist: g.lod_dist[l],
+                surfaces,
+            }),
+            Err(e) if out.is_empty() => return Err(e),
+            Err(_) => break,
+        }
+    }
+    Ok(out)
+}
+
+fn lod(
+    s: &ZoneStream<'_>,
+    links: &Links,
+    sets: &HashMap<String, Ptr>,
+    m: usize,
+    lod: usize,
 ) -> Result<Vec<ModelSurface>, &'static str> {
     let g = links.model_geometry.get(m).ok_or("no geometry")?;
-    let surfaces = match g.lod_xsurfaces[0] {
+    let surfaces = match g.lod_xsurfaces[lod] {
         Some(p) => p,
         None => {
-            let name = g.lod_surface_names[0].ok_or("no lod 0 surfaces")?;
+            let name = g.lod_surface_names[lod].ok_or("no lod surfaces")?;
             let name = s
                 .cstr(s.resolve_alias(name))
-                .map_err(|_| "lod 0 surface name")?;
+                .map_err(|_| "lod surface name")?;
             *sets
                 .get(name.trim_start_matches(','))
-                .ok_or("shared lod 0 surfaces not found")?
+                .ok_or("shared lod surfaces not found")?
         }
     };
-    let count = usize::from(g.lod_numsurfs[0]);
-    let handle_base = usize::from(g.lod_surf_index[0]);
+    let count = usize::from(g.lod_numsurfs[lod]);
+    let handle_base = usize::from(g.lod_surf_index[lod]);
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let surf = surfaces.at(i * sz::XSURFACE);
@@ -169,7 +203,7 @@ pub fn read(s: &ZoneStream<'_>, links: &Links) -> Result<StaticModels, String> {
             continue;
         };
         if let std::collections::btree_map::Entry::Vacant(e) = out.meshes.entry(model) {
-            match lod0(s, links, &sets, model) {
+            match lods(s, links, &sets, model) {
                 Ok(m) => {
                     e.insert(m);
                 }
@@ -212,6 +246,7 @@ pub fn read(s: &ZoneStream<'_>, links: &Links) -> Result<StaticModels, String> {
             }
         };
         out.instances.push(Instance {
+            index: i,
             model,
             origin,
             axis,
@@ -255,6 +290,7 @@ mod tests {
     #[test]
     fn instance_matrix_places_and_scales() {
         let i = Instance {
+            index: 0,
             model: 0,
             origin: [100.0, 200.0, 300.0],
             // Rotated 90° about Z: model +X points along world +Y.

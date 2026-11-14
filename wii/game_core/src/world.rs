@@ -16,6 +16,12 @@ use wpk::records::{
 };
 use wpk::{Pack, ParseError, tag};
 
+use dpvs_iw4::{
+    CPlane, CellPortalGraph, DpvsPlanes, PortalView, VisBits, WalkScratch, dpvs_view_plane,
+    visit_cells,
+};
+use wpk::vis::{ALWAYS, Vis};
+
 use crate::camera::{Camera, ZFAR, ZNEAR, dot, sub};
 use crate::gfx::{DrawState, Gfx, Mtx34, TexDesc};
 use crate::sky;
@@ -36,9 +42,115 @@ pub struct FrameStats {
     pub batches: u32,
     pub culled: u32,
     pub triangles: u32,
+    /// Of `triangles`, those of static models.
+    pub model_triangles: u32,
     pub state_changes: u32,
     pub instances: u32,
     pub instances_culled: u32,
+    /// Visibility cells drawn this frame, and whether the camera was inside the cell BSP.
+    pub cells_visible: u32,
+    pub in_cell: bool,
+}
+
+/// Multiplies the distance used to pick a static model's LOD. 1.0 is the PC game; larger switches to lower detail
+/// sooner and drops distant models sooner (a 60 fps lever, see `docs/perf.md`).
+pub const LOD_SCALE: f32 = 1.0;
+
+/// The most cells a map may have for the portal walk (`dpvs_iw4::WalkScratch` tracks 512 path cells).
+pub const MAX_CELLS: usize = 512;
+
+/// IW4 visibility in the shape `dpvs_iw4` walks: cell BSP planes and nodes, and each cell's portals.
+struct VisRuntime<'a> {
+    planes: Vec<CPlane>,
+    nodes: Vec<u16>,
+    views: Vec<PortalView<'a>>,
+    /// Each cell's run in `views`.
+    cell_ranges: Vec<(u32, u32)>,
+    /// One bit per cell, rebuilt every frame.
+    words: Vec<u32>,
+}
+
+impl<'a> VisRuntime<'a> {
+    fn new(v: &'a Vis) -> Option<VisRuntime<'a>> {
+        if v.cells.len() < 2 || v.cells.len() > MAX_CELLS {
+            return None;
+        }
+        let views = v
+            .portals
+            .iter()
+            .map(|p| PortalView {
+                plane: p.plane,
+                neighbor: p.neighbor,
+                vertices: &v.verts[p.first_vert as usize..(p.first_vert + p.vert_count) as usize],
+                hull_axis: p.hull_axis,
+            })
+            .collect();
+        Some(VisRuntime {
+            planes: v
+                .planes
+                .iter()
+                .map(|p| CPlane {
+                    normal: p.normal,
+                    dist: p.dist,
+                    r#type: p.kind,
+                })
+                .collect(),
+            nodes: v.nodes.clone(),
+            views,
+            cell_ranges: v
+                .cells
+                .iter()
+                .map(|c| (c.first_portal, c.portal_count))
+                .collect(),
+            words: alloc::vec![0; v.cells.len().div_ceil(32)],
+        })
+    }
+
+    /// Mark the cells visible from `cam` (all of them when the eye is outside the cell BSP). Returns whether the eye
+    /// was in a cell.
+    fn update(&mut self, cam: &Camera, frustum: &[[f32; 4]; 6], scratch: &mut WalkScratch) -> bool {
+        let cell_count = self.cell_ranges.len();
+        let eye_cell = DpvsPlanes {
+            planes: &self.planes,
+            nodes: &self.nodes,
+            cell_count: cell_count as u32,
+        }
+        .cell_for_point(cam.eye);
+        let Some(cell) = eye_cell else {
+            self.words.iter_mut().for_each(|w| *w = u32::MAX);
+            return false;
+        };
+        let mut slices: [&[PortalView<'_>]; MAX_CELLS] = [&[]; MAX_CELLS];
+        for (i, &(first, count)) in self.cell_ranges.iter().enumerate() {
+            slices[i] = &self.views[first as usize..(first + count) as usize];
+        }
+        let graph = CellPortalGraph {
+            portals: &slices[..cell_count],
+        };
+        let mut bits = VisBits::new(&mut self.words);
+        visit_cells(
+            &graph,
+            cell,
+            cam.eye,
+            dpvs_view_plane(cam.forward(), cam.eye),
+            frustum,
+            0,
+            &mut bits,
+            scratch,
+            None,
+            None,
+            None,
+        );
+        true
+    }
+
+    fn visible(&self, cell: u16) -> bool {
+        cell == ALWAYS
+            || self
+                .words
+                .get(usize::from(cell) / 32)
+                .is_some_and(|w| w & (1 << (cell % 32)) != 0)
+    }
 }
 
 pub struct World<'a> {
@@ -54,6 +166,10 @@ pub struct World<'a> {
     model_surfaces: Vec<BatchRecord>,
     models: Vec<ModelRecord>,
     instances: Vec<InstanceRecord>,
+    vis: Option<VisRuntime<'a>>,
+    /// Cell of each batch / instance (`ALWAYS` when none); empty when the pack has no visibility.
+    batch_cells: Vec<u16>,
+    instance_cells: Vec<u16>,
     /// Scratch for the frame's draw order: (class, sort key, draw). A draw below `MODEL_DRAW` is a world batch;
     /// otherwise it indexes `model_draws`.
     order: Vec<(u8, i32, u32)>,
@@ -89,7 +205,17 @@ pub const CLEAR: u32 = 0x4a5a6aff;
 
 impl<'a> World<'a> {
     /// Parse a pack held in memory for the program's lifetime and create its textures.
-    pub fn load(bytes: &'a [u8], gfx: &mut impl Gfx) -> Result<World<'a>, LoadError> {
+    /// The pack's visibility, decoded (the caller keeps it alive as long as the world: `World::load` borrows it).
+    pub fn decode_vis(bytes: &[u8]) -> Option<Vis> {
+        let pack = Pack::parse(bytes, false).ok()?;
+        Vis::decode(pack.section(tag::VIS)?.data).ok()
+    }
+
+    pub fn load(
+        bytes: &'a [u8],
+        vis: Option<&'a Vis>,
+        gfx: &mut impl Gfx,
+    ) -> Result<World<'a>, LoadError> {
         let pack = Pack::parse(bytes, true).map_err(LoadError::Pack)?;
         let need = |t: [u8; 4]| pack.section(t).ok_or(LoadError::MissingSection(t));
         let tex_sec = need(tag::TEXTURES)?;
@@ -155,7 +281,11 @@ impl<'a> World<'a> {
             }
         }
         for (i, m) in models.iter().enumerate() {
-            if m.first_surface as usize + m.surface_count as usize > model_surfaces.len() {
+            let bad = m.lod_count == 0
+                || m.lods[..usize::from(m.lod_count.min(4))].iter().any(|l| {
+                    l.first_surface as usize + usize::from(l.surface_count) > model_surfaces.len()
+                });
+            if bad {
                 return Err(LoadError::BadRecord(tag::MODELS, i));
             }
         }
@@ -165,6 +295,25 @@ impl<'a> World<'a> {
         {
             return Err(LoadError::BadRecord(tag::MODEL_INSTANCES, i));
         }
+        let u16s = |t: [u8; 4], n: usize| -> Vec<u16> {
+            let d = opt(t);
+            if d.len() < n * 2 {
+                return Vec::new();
+            }
+            d.chunks_exact(2)
+                .take(n)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect()
+        };
+        let vis = vis.and_then(VisRuntime::new);
+        let (batch_cells, instance_cells) = if vis.is_some() {
+            (
+                u16s(tag::BATCH_CELLS, batches.len()),
+                u16s(tag::INSTANCE_CELLS, instances.len()),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let handle = |t: u16| -> i32 { textures.get(usize::from(t)).copied().unwrap_or(-1) };
         let sky = pack
             .section(tag::SKYBOX)
@@ -193,7 +342,15 @@ impl<'a> World<'a> {
             model_surfaces,
             models,
             instances,
+            vis,
+            batch_cells,
+            instance_cells,
         })
+    }
+
+    /// Whether this map draws through visibility cells.
+    pub fn has_cells(&self) -> bool {
+        self.vis.is_some()
     }
 
     pub fn instance_count(&self) -> usize {
@@ -220,8 +377,24 @@ impl<'a> World<'a> {
     }
 
     /// Draw the world for one frame from `cam` (frame begin included; the caller draws its HUD and ends the frame).
-    pub fn draw(&mut self, gfx: &mut impl Gfx, cam: &Camera) -> FrameStats {
+    pub fn draw(
+        &mut self,
+        gfx: &mut impl Gfx,
+        cam: &Camera,
+        scratch: &mut WalkScratch,
+    ) -> FrameStats {
         let mut stats = FrameStats::default();
+        let frustum = cam.frustum(ZNEAR, ZFAR);
+        if let Some(v) = self.vis.as_mut() {
+            stats.in_cell = v.update(cam, &frustum.planes, scratch);
+            stats.cells_visible = v
+                .words
+                .iter()
+                .map(|w| w.count_ones())
+                .sum::<u32>()
+                .min(v.cell_ranges.len() as u32);
+        }
+        let cell_of = |cells: &[u16], i: usize| cells.get(i).copied().unwrap_or(ALWAYS);
         gfx.frame_begin(&cam.view(), cam.fovy, ZNEAR, ZFAR, CLEAR);
         if let Some(faces) = self.sky {
             let rot = cam.view_rotation();
@@ -234,7 +407,11 @@ impl<'a> World<'a> {
         // 2 blended (world and models, far to near).
         self.order.clear();
         for (i, b) in self.batches.iter().enumerate() {
-            if !cam.sees_box(b.bounds_min, b.bounds_max) {
+            let in_view = self
+                .vis
+                .as_ref()
+                .is_none_or(|v| v.visible(cell_of(&self.batch_cells, i)));
+            if !in_view || !frustum.sees_box(b.bounds_min, b.bounds_max) {
                 stats.culled += 1;
                 continue;
             }
@@ -256,6 +433,14 @@ impl<'a> World<'a> {
         self.model_draws.clear();
         let fwd = cam.forward();
         for (ii, inst) in self.instances.iter().enumerate() {
+            if self
+                .vis
+                .as_ref()
+                .is_some_and(|v| !v.visible(cell_of(&self.instance_cells, ii)))
+            {
+                stats.instances_culled += 1;
+                continue;
+            }
             let model = &self.models[usize::from(inst.model)];
             let centre = place(&inst.mtx, model.centre);
             let d = sub(centre, cam.eye);
@@ -266,16 +451,23 @@ impl<'a> World<'a> {
                     continue;
                 }
             }
-            let r = model.radius * max_scale(&inst.mtx);
-            let lo = [centre[0] - r, centre[1] - r, centre[2] - r];
-            let hi = [centre[0] + r, centre[1] + r, centre[2] + r];
-            if !cam.sees_box(lo, hi) {
+            let scale = max_scale(&inst.mtx);
+            let r = model.radius * scale;
+            // IW4 LOD choice: camera distance over placement scale against each LOD's switch distance; past the
+            // last LOD the model is not drawn.
+            let Some(lod) = model.lod_for(libm::sqrtf(dot(d, d)) * LOD_SCALE / scale.max(1e-6))
+            else {
+                stats.instances_culled += 1;
+                continue;
+            };
+            if !frustum.sees_sphere(centre, r) {
                 stats.instances_culled += 1;
                 continue;
             }
             stats.instances += 1;
             let depth = dot(d, fwd);
-            for si in model.first_surface..model.first_surface + model.surface_count {
+            let first = lod.first_surface;
+            for si in first..first + u32::from(lod.surface_count) {
                 let b = &self.model_surfaces[si as usize];
                 let m = &self.materials[usize::from(b.material)];
                 let draw = MODEL_DRAW | self.model_draws.len() as u32;
@@ -338,6 +530,9 @@ impl<'a> World<'a> {
             gfx.call_dl(&self.dls[b.dl_off as usize..(b.dl_off + b.dl_len) as usize]);
             stats.batches += 1;
             stats.triangles += b.tri_count;
+            if inst.is_some() {
+                stats.model_triangles += b.tri_count;
+            }
         }
         stats
     }
@@ -487,13 +682,13 @@ mod tests {
                 .as_ptr() as usize,
             ..Rec::default()
         };
-        let mut world = World::load(&bytes, &mut gfx).unwrap();
+        let mut world = World::load(&bytes, None, &mut gfx).unwrap();
         assert_eq!(world.name, "mp_test");
         assert_eq!(gfx.calls, [Call::Tex(8, 8, true)]);
         gfx.calls.clear();
 
         let cam = Camera::new([0.0; 3], 0.0, 0.0);
-        let stats = world.draw(&mut gfx, &cam);
+        let stats = world.draw(&mut gfx, &cam, &mut scratch());
         assert_eq!((stats.batches, stats.culled, stats.triangles), (3, 1, 3));
         let mut expect = vec![Call::Begin];
         expect.extend((0..6).map(|_| Call::Sky(0)));
@@ -520,6 +715,129 @@ mod tests {
             Call::Dl(0),
         ]);
         assert_eq!(gfx.calls, expect);
+    }
+
+    fn scratch() -> alloc::boxed::Box<WalkScratch> {
+        alloc::boxed::Box::new(WalkScratch::new())
+    }
+
+    /// Two cells split by the plane x = 150 (cell 0 below, cell 1 above), one square portal between them at
+    /// y, z in [y0, y0 + 10].
+    fn two_cells(y0: f32) -> Vis {
+        use wpk::vis::{Cell, Plane, Portal};
+        let quad = [
+            [150.0, y0, -5.0],
+            [150.0, y0 + 10.0, -5.0],
+            [150.0, y0 + 10.0, 5.0],
+            [150.0, y0, 5.0],
+        ];
+        let portal = |neighbor: u16, first_vert: u32, sign: f32| Portal {
+            plane: [sign, 0.0, 0.0, -150.0 * sign],
+            neighbor,
+            first_vert,
+            vert_count: 4,
+            hull_axis: None,
+        };
+        Vis {
+            planes: vec![Plane {
+                normal: [1.0, 0.0, 0.0],
+                dist: 150.0,
+                kind: 0,
+            }],
+            // Plane 0 (node value cell_count + 1); front (x > 150) -> cell 1, back -> cell 0.
+            nodes: vec![3, 3, 2, 1],
+            cells: vec![
+                Cell {
+                    mins: [-1000.0; 3],
+                    maxs: [150.0, 1000.0, 1000.0],
+                    first_portal: 0,
+                    portal_count: 1,
+                },
+                Cell {
+                    mins: [150.0, -1000.0, -1000.0],
+                    maxs: [1000.0; 3],
+                    first_portal: 1,
+                    portal_count: 1,
+                },
+            ],
+            portals: vec![portal(1, 0, 1.0), portal(0, 4, -1.0)],
+            verts: quad.iter().chain(quad.iter()).copied().collect(),
+        }
+    }
+
+    fn cells_pack() -> Vec<u8> {
+        let be = |v: &[u16]| v.iter().flat_map(|c| c.to_be_bytes()).collect::<Vec<u8>>();
+        // Batches (sample pack): x = 100 cell 0, x = 200 cell 1, x = 300 cell 1, x = -100 cell 0 (behind).
+        sample_pack_with(|b| {
+            b.section(tag::BATCH_CELLS, 4, be(&[0, 1, 1, 0]));
+        })
+    }
+
+    #[test]
+    fn portals_hide_cells_out_of_view() {
+        let bytes = cells_pack();
+        let cam = Camera::new([0.0; 3], 0.0, 0.0);
+        for (y0, drawn, cells) in [(-5.0, 3, 2), (400.0, 1, 1)] {
+            let vis = two_cells(y0);
+            let mut gfx = Rec::default();
+            let mut world = World::load(&bytes, Some(&vis), &mut gfx).unwrap();
+            assert!(world.has_cells());
+            let stats = world.draw(&mut gfx, &cam, &mut scratch());
+            assert!(stats.in_cell);
+            assert_eq!(
+                (stats.batches, stats.cells_visible),
+                (drawn, cells),
+                "portal at y {y0}"
+            );
+        }
+    }
+
+    /// Walks the cells of a locally converted `out/packs/mp_terminal.wpk` (never in git; skipped when absent).
+    #[test]
+    fn cells_on_a_real_map() {
+        extern crate std;
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../out/packs/mp_terminal.wpk"
+        );
+        let Ok(bytes) = std::fs::read(path) else {
+            std::println!("no local pack, skipped");
+            return;
+        };
+        if let Err(wpk::ParseError::UnsupportedVersion(v)) = wpk::Pack::parse(&bytes, false) {
+            std::println!("local pack is version {v}, re-run `mwf-convert pack`; skipped");
+            return;
+        }
+        let vis = World::decode_vis(&bytes).expect("pack has visibility");
+        let mut gfx = Rec::default();
+        let mut world = World::load(&bytes, Some(&vis), &mut gfx).unwrap();
+        let mut sc = scratch();
+        let (mut inside, mut partial, mut tris_all, mut tris_vis, mut model_vis) =
+            (0, 0, 0u64, 0u64, 0u64);
+        let spawns = world.spawns.clone();
+        for s in &spawns {
+            let cam = Camera::new([s.origin[0], s.origin[1], s.origin[2] + 60.0], s.yaw, 0.0);
+            let st = world.draw(&mut gfx, &cam, &mut sc);
+            inside += usize::from(st.in_cell);
+            partial += usize::from(st.cells_visible < vis.cells.len() as u32);
+            tris_vis += u64::from(st.triangles);
+            model_vis += u64::from(st.model_triangles);
+            let saved = world.vis.take();
+            tris_all += u64::from(world.draw(&mut gfx, &cam, &mut sc).triangles);
+            world.vis = saved;
+        }
+        std::println!(
+            "{} spawns: {inside} in a cell, {partial} see part of the map; triangles per view {} with cells ({} static              models) vs {} frustum only",
+            spawns.len(),
+            tris_vis / spawns.len() as u64,
+            model_vis / spawns.len() as u64,
+            tris_all / spawns.len() as u64
+        );
+        assert!(
+            inside * 10 >= spawns.len() * 9,
+            "most spawns are inside the cell BSP"
+        );
+        assert!(tris_vis <= tris_all);
     }
 
     fn at(x: f32, cull_dist: u16, light: u32) -> InstanceRecord {
@@ -555,10 +873,19 @@ mod tests {
                 tag::MODELS,
                 1,
                 records::encode(&[ModelRecord {
-                    first_surface: 0,
-                    surface_count: 1,
                     centre: [0.0; 3],
                     radius: 2.0,
+                    lod_count: 1,
+                    lods: [
+                        wpk::records::ModelLod {
+                            first_surface: 0,
+                            surface_count: 1,
+                            dist: 1000.0,
+                        },
+                        Default::default(),
+                        Default::default(),
+                        Default::default(),
+                    ],
                 }]),
             );
             b.section(
@@ -581,10 +908,10 @@ mod tests {
                 .as_ptr() as usize,
             ..Rec::default()
         };
-        let mut world = World::load(&bytes, &mut gfx).unwrap();
+        let mut world = World::load(&bytes, None, &mut gfx).unwrap();
         assert_eq!(world.instance_count(), 3);
         gfx.calls.clear();
-        let stats = world.draw(&mut gfx, &Camera::new([0.0; 3], 0.0, 0.0));
+        let stats = world.draw(&mut gfx, &Camera::new([0.0; 3], 0.0, 0.0), &mut scratch());
         assert_eq!((stats.instances, stats.instances_culled), (1, 2));
         let calls = &gfx.calls;
         let mtx: Vec<&Call> = calls.iter().filter(|c| matches!(c, Call::Mtx(_))).collect();
@@ -609,7 +936,7 @@ mod tests {
         let hash = wpk::fnv1a64(&bytes[wpk::HEADER_LEN..]);
         wpk::be::put_u64(&mut bytes, 16, hash);
         assert_eq!(
-            World::load(&bytes, &mut Rec::default()).err(),
+            World::load(&bytes, None, &mut Rec::default()).err(),
             Some(LoadError::BadRecord(tag::WORLD_BATCHES, 0))
         );
     }

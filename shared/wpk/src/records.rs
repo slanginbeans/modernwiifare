@@ -417,32 +417,63 @@ impl Record for SpawnRecord {
     }
 }
 
-/// A static model: a run of `MSRF` surfaces (BatchRecords over `MVTX`, display lists in `WDLS`, bounds in model
-/// space) and a bounding sphere in model space.
+/// One level of detail of a static model: a run of `MSRF` surfaces, used while the camera distance (divided by the
+/// placement scale) is below `dist` (IW4 `lodDist`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ModelLod {
+    pub first_surface: u32,
+    pub surface_count: u16,
+    pub dist: f32,
+}
+
+/// A static model: up to four LODs (BatchRecords over `MVTX`, display lists in `WDLS`, bounds in model space) and a
+/// bounding sphere in model space. Past the last LOD's distance the model is not drawn (as in IW4).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelRecord {
-    pub first_surface: u32,
-    pub surface_count: u32,
     pub centre: [f32; 3],
     pub radius: f32,
+    pub lod_count: u8,
+    pub lods: [ModelLod; 4],
+}
+
+impl ModelRecord {
+    /// The LOD to draw at `dist` (camera distance / placement scale), or None beyond the last.
+    pub fn lod_for(&self, dist: f32) -> Option<&ModelLod> {
+        self.lods[..usize::from(self.lod_count.min(4))]
+            .iter()
+            .find(|l| dist < l.dist || l.dist <= 0.0)
+    }
 }
 
 impl Record for ModelRecord {
-    const LEN: usize = 24;
+    const LEN: usize = 68;
     fn write(&self, o: &mut Vec<u8>) {
-        o.u32(self.first_surface);
-        o.u32(self.surface_count);
         for v in self.centre {
             o.f32(v);
         }
         o.f32(self.radius);
+        o.u8(self.lod_count);
+        o.zeros(3);
+        for l in &self.lods {
+            o.u32(l.first_surface);
+            o.u16(l.surface_count);
+            o.u16(0);
+            o.f32(l.dist);
+        }
     }
     fn read(b: &[u8]) -> Self {
         ModelRecord {
-            first_surface: be::u32(b, 0),
-            surface_count: be::u32(b, 4),
-            centre: [be::f32(b, 8), be::f32(b, 12), be::f32(b, 16)],
-            radius: be::f32(b, 20),
+            centre: [be::f32(b, 0), be::f32(b, 4), be::f32(b, 8)],
+            radius: be::f32(b, 12),
+            lod_count: b[16],
+            lods: core::array::from_fn(|i| {
+                let at = 20 + i * 12;
+                ModelLod {
+                    first_surface: be::u32(b, at),
+                    surface_count: be::u16(b, at + 4),
+                    dist: be::f32(b, at + 8),
+                }
+            }),
         }
     }
 }
@@ -497,10 +528,23 @@ mod tests {
     #[test]
     fn records_roundtrip_at_their_length() {
         roundtrip(ModelRecord {
-            first_surface: 3,
-            surface_count: 2,
             centre: [1.0, -2.0, 3.5],
             radius: 40.0,
+            lod_count: 2,
+            lods: [
+                ModelLod {
+                    first_surface: 3,
+                    surface_count: 2,
+                    dist: 500.0,
+                },
+                ModelLod {
+                    first_surface: 5,
+                    surface_count: 1,
+                    dist: 1500.0,
+                },
+                ModelLod::default(),
+                ModelLod::default(),
+            ],
         });
         roundtrip(InstanceRecord {
             model: 7,

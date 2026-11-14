@@ -10,7 +10,9 @@ header, file length, map name), a table of 16-byte section entries `{ tag, offse
 sections, **each 32-byte aligned**, so GX can use texture data and display lists where they lie once the file is in
 MEM2 (after `DCFlushRange`).
 
-## Sections (version 1)
+## Sections (version 2)
+Version 2 (2026-11-13): LOD tables in `ModelRecord`. Older packs are rejected (magenta screen on the Wii); convert
+again.
 | Tag | Records | Content |
 |---|---|---|
 | `TEXT` | `TextureRecord` (32 B) | GX format, levels, alpha-plane flag, wrap, size, offsets into `TXDA` |
@@ -23,8 +25,10 @@ MEM2 (after `DCFlushRange`).
 | `SPWN` | `SpawnRecord` (24 B) | origin, yaw, kind (TDM / DM), team, initial flag |
 | `MVTX` | `WorldVertex` (28 B) | static model vertices in model space (same format as `WVTX`; lightmap UV unused) |
 | `MSRF` | `BatchRecord` (48 B) | static model surfaces: vertex range in `MVTX`, material, display list in `WDLS`, model-space bounds |
-| `MODL` | `ModelRecord` (24 B) | a model's run of `MSRF` surfaces and its model-space bounding sphere |
+| `MODL` | `ModelRecord` (68 B) | model-space bounding sphere and up to 4 LODs: each a run of `MSRF` surfaces and IW4's switch distance (`lodDist`); past the last, the model is not drawn |
 | `SMDL` | `InstanceRecord` (56 B) | a placed static model: model, draw distance, light-grid colour (RGBA8 at half intensity), model-to-world 3x4 matrix |
+| `VISD` | one blob (`wpk::vis::Vis`) | IW4 visibility: dpvs planes and node stream (point → cell), cells (bounds, portal run), portals (plane, neighbour, vertices, hull axis) |
+| `WBCL` / `SMCL` | u16 per batch / instance | the visibility cell of each `WBAT` batch and `SMDL` instance (`0xFFFF`: none, drawn when in the frustum) |
 | `CLIP` | one blob (`wpk::clip::Clip`) | collision, unsimplified: a table of 16 arrays (count, offset), then pooled brush planes + surface flags, brushes (contents, glass), BSP nodes, leaves, leaf brushes, mesh vertices / triangles / walkable-edge bits / triangle flags / AABB trees / partitions / borders / roots, brush models. Decoded and validated at load into the `clipmap_iw4` types IW4L traces with |
 
 ## How the world is built (`converter/src/pack.rs`)

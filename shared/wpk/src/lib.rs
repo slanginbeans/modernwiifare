@@ -21,11 +21,12 @@ pub mod be;
 pub mod clip;
 pub mod records;
 pub mod strips;
+pub mod vis;
 
 use alloc::vec::Vec;
 
 pub const MAGIC: [u8; 4] = *b"MWFP";
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 pub const HEADER_LEN: usize = 64;
 pub const SECTION_ENTRY_LEN: usize = 16;
 /// GX needs 32-byte aligned texture data and display lists.
@@ -62,6 +63,12 @@ pub mod tag {
     pub const MODELS: Tag = *b"MODL";
     /// Placed static models (`InstanceRecord`).
     pub const MODEL_INSTANCES: Tag = *b"SMDL";
+    /// World visibility (`vis::Vis`): cell BSP, cells, portals.
+    pub const VIS: Tag = *b"VISD";
+    /// Cell of each `WBAT` batch (u16, `vis::ALWAYS` = none).
+    pub const BATCH_CELLS: Tag = *b"WBCL";
+    /// Cell of each `SMDL` instance (u16, `vis::ALWAYS` = none).
+    pub const INSTANCE_CELLS: Tag = *b"SMCL";
     /// Collision (`clip::Clip`), one blob.
     pub const CLIP: Tag = *b"CLIP";
 }

@@ -107,6 +107,44 @@ impl Camera {
         !all.iter().any(|&a| a)
     }
 
+    /// World-space frustum planes `[nx, ny, nz, d]` with inward normals (inside: n·p + d >= 0), in IW4L's order:
+    /// near, far, left, right, bottom, top (what `dpvs_iw4::visit_cells` takes).
+    pub fn frustum(&self, znear: f32, zfar: f32) -> Frustum {
+        let (r, u, f) = (self.right(), self.up(), self.forward());
+        let ty = tanf(self.fovy.to_radians() / 2.0);
+        let tx = ty * self.aspect;
+        let plane = |n: Vec3, p: Vec3| {
+            let l = libm::sqrtf(dot(n, n)).max(1e-12);
+            let n = [n[0] / l, n[1] / l, n[2] / l];
+            [n[0], n[1], n[2], -dot(n, p)]
+        };
+        let along = |k: f32| {
+            [
+                self.eye[0] + f[0] * k,
+                self.eye[1] + f[1] * k,
+                self.eye[2] + f[2] * k,
+            ]
+        };
+        let comb = |a: Vec3, ka: f32, b: Vec3, kb: f32| {
+            [
+                a[0] * ka + b[0] * kb,
+                a[1] * ka + b[1] * kb,
+                a[2] * ka + b[2] * kb,
+            ]
+        };
+        // Side normals point into the frustum: e.g. left plane normal = f*tx + r (cross-section x >= -z*tx).
+        Frustum {
+            planes: [
+                plane(f, along(znear)),
+                plane([-f[0], -f[1], -f[2]], along(zfar)),
+                plane(comb(f, tx, r, 1.0), self.eye),
+                plane(comb(f, tx, r, -1.0), self.eye),
+                plane(comb(f, ty, u, 1.0), self.eye),
+                plane(comb(f, ty, u, -1.0), self.eye),
+            ],
+        }
+    }
+
     /// Distance along the view direction (for back-to-front sorting).
     pub fn depth_of(&self, p: Vec3) -> f32 {
         dot(sub(p, self.eye), self.forward())
@@ -116,6 +154,42 @@ impl Camera {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frustum_planes_agree_with_the_view_test() {
+        let cam = Camera::new([100.0, -50.0, 60.0], 30.0, 10.0);
+        let fr = cam.frustum(ZNEAR, ZFAR);
+        // A box straight ahead, one behind, one far to the side, one beyond the far plane.
+        let f = cam.forward();
+        let at = |k: f32| {
+            [
+                cam.eye[0] + f[0] * k,
+                cam.eye[1] + f[1] * k,
+                cam.eye[2] + f[2] * k,
+            ]
+        };
+        let bx = |c: Vec3, h: f32| {
+            (
+                [c[0] - h, c[1] - h, c[2] - h],
+                [c[0] + h, c[1] + h, c[2] + h],
+            )
+        };
+        let (a, b) = bx(at(500.0), 10.0);
+        assert!(fr.sees_box(a, b) && cam.sees_box(a, b));
+        let (a, b) = bx(at(-500.0), 10.0);
+        assert!(!fr.sees_box(a, b) && !cam.sees_box(a, b));
+        let r = cam.right();
+        let side = [
+            at(100.0)[0] + r[0] * 2000.0,
+            at(100.0)[1] + r[1] * 2000.0,
+            at(100.0)[2],
+        ];
+        let (a, b) = bx(side, 10.0);
+        assert!(!fr.sees_box(a, b) && !cam.sees_box(a, b));
+        let (a, b) = bx(at(ZFAR + 100.0), 10.0);
+        assert!(!fr.sees_box(a, b));
+        assert!(fr.sees_sphere(at(300.0), 1.0) && !fr.sees_sphere(at(-300.0), 1.0));
+    }
 
     fn apply(m: &Mtx34, p: Vec3) -> Vec3 {
         let r = |i: usize| m[i][0] * p[0] + m[i][1] * p[1] + m[i][2] * p[2] + m[i][3];
@@ -166,5 +240,31 @@ mod tests {
         // A huge box around the eye is always seen.
         assert!(cam.sees_box([-1e4; 3], [1e4; 3]));
         assert!(cam.depth_of([10.0, 3.0, 0.0]) > cam.depth_of([5.0, -3.0, 0.0]));
+    }
+}
+
+/// A view frustum as six inward planes (see [`Camera::frustum`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frustum {
+    pub planes: [[f32; 4]; 6],
+}
+
+impl Frustum {
+    /// False only when the box is entirely outside one plane (the usual conservative test, one corner per plane).
+    pub fn sees_box(&self, min: Vec3, max: Vec3) -> bool {
+        self.planes.iter().all(|p| {
+            let c = [
+                if p[0] >= 0.0 { max[0] } else { min[0] },
+                if p[1] >= 0.0 { max[1] } else { min[1] },
+                if p[2] >= 0.0 { max[2] } else { min[2] },
+            ];
+            p[0] * c[0] + p[1] * c[1] + p[2] * c[2] + p[3] >= 0.0
+        })
+    }
+
+    pub fn sees_sphere(&self, c: Vec3, r: f32) -> bool {
+        self.planes
+            .iter()
+            .all(|p| p[0] * c[0] + p[1] * c[1] + p[2] * c[2] + p[3] >= -r)
     }
 }

@@ -60,6 +60,7 @@ pub struct WorldData {
     /// Collision, or why it could not be read.
     clip: Result<wpk::clip::Clip, String>,
     models: crate::static_models::StaticModels,
+    vis: crate::visibility::WorldVis,
 }
 
 /// Read the world after a zone walk (the stream still holds its blocks).
@@ -107,6 +108,7 @@ pub fn read_world(s: &ZoneStream<'_>, links: &Links) -> Result<WorldData, String
         .unwrap_or_default();
     let clip = crate::collision::read_clip(s);
     let models = crate::static_models::read(s, links)?;
+    let vis = crate::visibility::read(s)?;
     Ok(WorldData {
         vertices,
         indices,
@@ -115,6 +117,7 @@ pub fn read_world(s: &ZoneStream<'_>, links: &Links) -> Result<WorldData, String
         entity_string,
         clip,
         models,
+        vis,
     })
 }
 
@@ -251,7 +254,17 @@ pub struct PackReport {
     pub spawns: usize,
     pub collision: crate::collision::ClipReport,
     pub static_models: StaticModelReport,
+    pub visibility: VisReport,
     pub content_hash: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct VisReport {
+    pub cells: usize,
+    pub portals: usize,
+    /// World batches / static model instances that no cell lists (always drawn when in the frustum).
+    pub batches_always: usize,
+    pub instances_always: usize,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -260,7 +273,9 @@ pub struct StaticModelReport {
     pub models: usize,
     pub surfaces: usize,
     pub vertices: usize,
+    /// LOD 0 triangles of the models (stored once); `lods` counts every LOD packed.
     pub triangles: u64,
+    pub lods: usize,
     pub dl_vertices: u64,
     /// Triangles if every instance were drawn (what world-space baking would cost).
     pub placed_triangles: u64,
@@ -447,10 +462,10 @@ pub fn build(
         min: [f32; 3],
         max: [f32; 3],
     }
-    let mut draws: BTreeMap<(u32, i32, i32, u16, u16), Draw> = BTreeMap::new();
+    let mut draws: BTreeMap<(u32, u16, i32, i32, u16, u16), Draw> = BTreeMap::new();
     let mut group_base = 0u32;
     let mut groups = 0usize;
-    for surf in &world.surfaces {
+    for (si, surf) in world.surfaces.iter().enumerate() {
         let Some(m) = surf.material else {
             report.surfaces_without_material += 1;
             continue;
@@ -477,12 +492,22 @@ pub fn build(
             .vertices
             .get(lo as usize)
             .ok_or("surface vertex out of range")?;
+        // Batches split by IW4 visibility cell (`ALWAYS` when no cell lists the surface).
+        let vis_cell = world
+            .vis
+            .surface_cell
+            .get(si)
+            .copied()
+            .unwrap_or(wpk::vis::ALWAYS);
+        // Within a cell, a 1024-unit grid keeps batches small enough to frustum-cull (IW4 cells are coarse: an open
+        // map can be one cell).
         let cell = (
+            vis_cell,
             (v0.pos[0] / CELL).floor() as i32,
             (v0.pos[1] / CELL).floor() as i32,
         );
         let d = draws
-            .entry((group_base, cell.0, cell.1, mat, lightmap))
+            .entry((group_base, cell.0, cell.1, cell.2, mat, lightmap))
             .or_insert(Draw {
                 group_base,
                 blended: matches!(links.material_info[m].blend, BlendMode::Blend),
@@ -512,7 +537,8 @@ pub fn build(
 
     let mut batches = Vec::with_capacity(draws.len());
     let mut dls = Vec::new();
-    for (&(_, _, _, material, lightmap), d) in &draws {
+    let mut batch_cells: Vec<u16> = Vec::with_capacity(draws.len());
+    for (&(_, vis_cell, _, _, material, lightmap), d) in &draws {
         if d.indices.is_empty() {
             continue;
         }
@@ -524,6 +550,7 @@ pub fn build(
             return Err("display list self-check: triangles changed".into());
         }
         let max_rel = *d.indices.iter().max().unwrap_or(&0) as u32;
+        batch_cells.push(vis_cell);
         batches.push(BatchRecord {
             vertex_base: d.group_base,
             vertex_count: max_rel + 1,
@@ -559,60 +586,76 @@ pub fn build(
         unlit: sm.unlit,
         ..StaticModelReport::default()
     };
-    for (&m, surfaces) in &sm.meshes {
-        let first_surface = model_surfaces.len() as u32;
+    for (&m, lods) in &sm.meshes {
         let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
         let mut tris = 0u64;
-        for surf in surfaces {
-            let Some(mat) = surf.material else {
-                r.surfaces_without_material += 1;
-                continue;
-            };
-            if surf.indices.is_empty() {
-                continue;
-            }
-            let material = material_for(mat, &mut tex, &mut report)?;
-            let (mut smin, mut smax) = ([f32::MAX; 3], [f32::MIN; 3]);
-            for v in &surf.vertices {
-                for k in 0..3 {
-                    smin[k] = smin[k].min(v.pos[k]);
-                    smax[k] = smax[k].max(v.pos[k]);
+        let mut rec_lods = [records::ModelLod::default(); 4];
+        let mut lod_count = 0u8;
+        for (li, lod) in lods.iter().take(4).enumerate() {
+            let first_surface = model_surfaces.len() as u32;
+            for surf in &lod.surfaces {
+                let Some(mat) = surf.material else {
+                    r.surfaces_without_material += 1;
+                    continue;
+                };
+                if surf.indices.is_empty() {
+                    continue;
+                }
+                let material = material_for(mat, &mut tex, &mut report)?;
+                let (mut smin, mut smax) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for v in &surf.vertices {
+                    for k in 0..3 {
+                        smin[k] = smin[k].min(v.pos[k]);
+                        smax[k] = smax[k].max(v.pos[k]);
+                    }
+                }
+                let dl = display_list(
+                    matches!(links.material_info[mat].blend, BlendMode::Blend),
+                    &surf.indices,
+                );
+                if !wpk::strips::same_triangles(
+                    wpk::strips::dl_triangles(&dl).into_iter(),
+                    surf.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]),
+                ) {
+                    return Err("display list self-check: triangles changed".into());
+                }
+                r.dl_vertices += wpk::strips::dl_vertex_count(&dl) as u64;
+                model_surfaces.push(BatchRecord {
+                    vertex_base: model_vertices.len() as u32,
+                    vertex_count: surf.vertices.len() as u32,
+                    material,
+                    lightmap: NONE,
+                    dl_off: dls.len() as u32,
+                    dl_len: dl.len() as u32,
+                    tri_count: (surf.indices.len() / 3) as u32,
+                    bounds_min: smin,
+                    bounds_max: smax,
+                });
+                dls.extend_from_slice(&dl);
+                model_vertices.extend_from_slice(&surf.vertices);
+                if li == 0 {
+                    tris += (surf.indices.len() / 3) as u64;
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(smin[k]);
+                        hi[k] = hi[k].max(smax[k]);
+                    }
                 }
             }
-            let dl = display_list(
-                matches!(links.material_info[mat].blend, BlendMode::Blend),
-                &surf.indices,
-            );
-            if !wpk::strips::same_triangles(
-                wpk::strips::dl_triangles(&dl).into_iter(),
-                surf.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]),
-            ) {
-                return Err("display list self-check: triangles changed".into());
+            let count = model_surfaces.len() as u32 - first_surface;
+            if count == 0 && li == 0 {
+                break;
             }
-            r.dl_vertices += wpk::strips::dl_vertex_count(&dl) as u64;
-            model_surfaces.push(BatchRecord {
-                vertex_base: model_vertices.len() as u32,
-                vertex_count: surf.vertices.len() as u32,
-                material,
-                lightmap: NONE,
-                dl_off: dls.len() as u32,
-                dl_len: dl.len() as u32,
-                tri_count: (surf.indices.len() / 3) as u32,
-                bounds_min: smin,
-                bounds_max: smax,
-            });
-            dls.extend_from_slice(&dl);
-            model_vertices.extend_from_slice(&surf.vertices);
-            tris += (surf.indices.len() / 3) as u64;
-            for k in 0..3 {
-                lo[k] = lo[k].min(smin[k]);
-                hi[k] = hi[k].max(smax[k]);
-            }
+            rec_lods[li] = records::ModelLod {
+                first_surface,
+                surface_count: count as u16,
+                dist: lod.dist,
+            };
+            lod_count = li as u8 + 1;
         }
-        let surface_count = model_surfaces.len() as u32 - first_surface;
-        if surface_count == 0 {
+        if lod_count == 0 {
             continue;
         }
+        r.lods += usize::from(lod_count);
         let centre = std::array::from_fn(|k| (lo[k] + hi[k]) * 0.5);
         let radius = (0..3)
             .map(|k| (hi[k] - lo[k]) * 0.5)
@@ -621,20 +664,29 @@ pub fn build(
             .sqrt();
         let idx = model_records.len() as u16;
         model_records.push(ModelRecord {
-            first_surface,
-            surface_count,
             centre,
             radius,
+            lod_count,
+            lods: rec_lods,
         });
         model_index.insert(m, idx);
         model_tris.insert(idx, tris);
         r.triangles += tris;
     }
     let mut instances: Vec<InstanceRecord> = Vec::new();
+    let mut instance_cells: Vec<u16> = Vec::new();
     for inst in &sm.instances {
         let Some(&model) = model_index.get(&inst.model) else {
             continue;
         };
+        instance_cells.push(
+            world
+                .vis
+                .smodel_cell
+                .get(inst.index)
+                .copied()
+                .unwrap_or(wpk::vis::ALWAYS),
+        );
         instances.push(InstanceRecord {
             model,
             cull_dist: inst.cull_dist,
@@ -729,6 +781,39 @@ pub fn build(
         spawns.len() as u32,
         records::encode(&spawns),
     );
+    let v = &world.vis;
+    report.visibility = VisReport {
+        cells: v.vis.cells.len(),
+        portals: v.vis.portals.len(),
+        batches_always: batch_cells
+            .iter()
+            .filter(|&&c| c == wpk::vis::ALWAYS)
+            .count(),
+        instances_always: instance_cells
+            .iter()
+            .filter(|&&c| c == wpk::vis::ALWAYS)
+            .count(),
+    };
+    if !v.vis.cells.is_empty() {
+        let u16s = |cells: &[u16]| {
+            let mut o = Vec::with_capacity(cells.len() * 2);
+            cells
+                .iter()
+                .for_each(|&c| o.extend_from_slice(&c.to_be_bytes()));
+            o
+        };
+        b.section(wpk::tag::VIS, 1, v.vis.encode());
+        b.section(
+            wpk::tag::BATCH_CELLS,
+            batch_cells.len() as u32,
+            u16s(&batch_cells),
+        );
+        b.section(
+            wpk::tag::INSTANCE_CELLS,
+            instance_cells.len() as u32,
+            u16s(&instance_cells),
+        );
+    }
     let clip = world.clip.as_ref().map_err(|e| format!("collision: {e}"))?;
     report.collision = crate::collision::ClipReport::of(clip);
     b.section(wpk::tag::CLIP, 1, clip.encode());
@@ -748,6 +833,9 @@ pub fn build(
         wpk::tag::MODEL_SURFACES,
         wpk::tag::MODELS,
         wpk::tag::MODEL_INSTANCES,
+        wpk::tag::VIS,
+        wpk::tag::BATCH_CELLS,
+        wpk::tag::INSTANCE_CELLS,
     ] {
         if let Some(s) = pack.section(t) {
             report.sections.insert(
@@ -805,6 +893,11 @@ pub fn render_text(r: &PackReport) -> String {
 ",
         m.instances, m.models, m.surfaces, m.vertices, m.triangles, m.placed_triangles, m.unresolved,
         m.unreadable, m.unlit, m.surfaces_without_material
+    ));
+    let v = &r.visibility;
+    s.push_str(&format!(
+        "visibility: {} cells, {} portals; always drawn: {} batches, {} instances\n",
+        v.cells, v.portals, v.batches_always, v.instances_always
     ));
     let c = &r.collision;
     s.push_str(&format!(

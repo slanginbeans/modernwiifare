@@ -359,8 +359,22 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
         }
         let l = inst.light.to_be_bytes();
         let tint = [0, 1, 2].map(|k| f32::from(l[k]) / 255.0 * 2.0);
-        let first = model.first_surface as usize;
-        for b in msrf.iter().skip(first).take(model.surface_count as usize) {
+        let scale = (0..3)
+            .map(|c| {
+                (0..3)
+                    .map(|r| inst.mtx[r][c] * inst.mtx[r][c])
+                    .sum::<f32>()
+                    .sqrt()
+            })
+            .fold(0.0, f32::max);
+        let centre = place(&inst.mtx, model.centre);
+        let cd = sub(centre, cam.eye);
+        let Some(lod) = model.lod_for(dot(cd, cd).sqrt() / scale.max(1e-6)) else {
+            stats.models_culled += 1;
+            continue;
+        };
+        let first = lod.first_surface as usize;
+        for b in msrf.iter().skip(first).take(usize::from(lod.surface_count)) {
             let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
             for c in 0..8 {
                 let p = [0, 1, 2].map(|k| {

@@ -16,6 +16,7 @@ use alloc::boxed::Box;
 
 use alloc::vec::Vec;
 
+use dpvs_iw4::WalkScratch;
 use game_core::camera::Camera;
 use game_core::collision::MapClip;
 use game_core::fly::{self, PadInput};
@@ -26,6 +27,9 @@ use game_core::world::FrameStats;
 use game_core::world::World;
 
 const MAP_PATH: &core::ffi::CStr = c"sd:/modernwiifare/maps/mp_rust.wpk";
+
+/// Portal-walk scratch for `World::draw` (single-threaded; only `mwf_game_main` touches it).
+static mut WALK_SCRATCH: WalkScratch = WalkScratch::new();
 
 /// `Gfx` over the C shim.
 #[derive(Default)]
@@ -136,10 +140,15 @@ fn overlay(gfx: &mut Shim, rects: &mut Vec<Rect>, t: &Timing, s: &FrameStats, ey
     ms(&mut line, t.gpu_us);
     line.push_str(" MS\nTRIS ");
     line.num(s.triangles);
-    line.push_str("  DRAWS ");
+    line.push_str(" (MODELS ");
+    line.num(s.model_triangles);
+    line.push_str(")  DRAWS ");
     line.num(s.batches);
     line.push_str("  STATE ");
     line.num(s.state_changes);
+    line.push_str("  CELLS ");
+    line.num(s.cells_visible);
+    line.push_str(if s.in_cell { "" } else { " (OUT)" });
     line.push_str("\nMODELS ");
     line.num(s.instances);
     line.push_str("  CULLED ");
@@ -199,7 +208,10 @@ pub extern "C" fn mwf_game_main() -> i32 {
     // The pack stays in MEM2 for the program's lifetime.
     let bytes: &'static [u8] = unsafe { core::slice::from_raw_parts(ptr, size as usize) };
     let mut gfx = Shim::default();
-    let mut world = match World::load(bytes, &mut gfx) {
+    // Visibility lives as long as the world; the portal walk's scratch (~0.2 MiB) is static, never on the stack.
+    let vis = World::decode_vis(bytes);
+    let scratch: &'static mut WalkScratch = unsafe { &mut *core::ptr::addr_of_mut!(WALK_SCRATCH) };
+    let mut world = match World::load(bytes, vis.as_ref(), &mut gfx) {
         Ok(w) => w,
         Err(game_core::world::LoadError::TooManyTextures) => return fail(0xe08020ff),
         Err(_) => return fail(0xc020c0ff),
@@ -290,7 +302,7 @@ pub extern "C" fn mwf_game_main() -> i32 {
                 dt,
             ),
         }
-        let stats = world.draw(&mut gfx, &cam);
+        let stats = world.draw(&mut gfx, &cam, scratch);
         if show_overlay {
             overlay(&mut gfx, &mut rects, &timing, &stats, cam.eye);
         }

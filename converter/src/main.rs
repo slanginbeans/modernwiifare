@@ -36,6 +36,7 @@ mod pixel_decode;
 mod preview;
 mod static_models;
 mod texture;
+mod visibility;
 mod zone_textures;
 
 /// The zone holding the shared multiplayer string tables.

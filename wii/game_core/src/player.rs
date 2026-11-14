@@ -280,6 +280,10 @@ mod tests {
             std::println!("no local pack, skipped");
             return;
         };
+        if let Err(wpk::ParseError::UnsupportedVersion(v)) = wpk::Pack::parse(&bytes, false) {
+            std::println!("local pack is version {v}, re-run `mwf-convert pack`; skipped");
+            return;
+        }
         let pack = wpk::Pack::parse(&bytes, true).unwrap();
         let c = Clip::decode(pack.section(wpk::tag::CLIP).unwrap().data).unwrap();
         let clip = MapClip::new(&c);
