@@ -481,6 +481,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glam"
+version = "0.33.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37bfe73dc8ec21f54d181e5a60554327ec3f1c600c455a75ccbfc65d2106a6c4"
+
+[[package]]
 name = "gx_texture"
 version = "0.1.0"
 dependencies = [
@@ -724,6 +730,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 name = "mwf_convert"
 version = "0.1.0"
 dependencies = [
+ "anim_iw4",
  "asset_iw4",
  "asset_transport",
  "bcdec_rs",
@@ -732,6 +739,7 @@ dependencies = [
  "fastfile_iw5",
  "fastfile_t5",
  "fastfile_t6",
+ "game_core",
  "gx_texture",
  "lighting_iw4",
  "png",
@@ -739,6 +747,7 @@ dependencies = [
  "serde_json",
  "weapon_iw4",
  "wpk",
+ "xmodel_runtime",
 ]
 
 [[package]]
@@ -1255,6 +1264,15 @@ dependencies = [
  "clipmap_iw4",
  "libm",
  "weapon_iw4",
+]
+
+[[package]]
+name = "xmodel_runtime"
+version = "0.1.0"
+source = "git+https://github.com/vladtrc/iw4L?rev=acc57a5c9dd027db8eb5ef17c792fa69f059daa1#acc57a5c9dd027db8eb5ef17c792fa69f059daa1"
+dependencies = [
+ "anim_iw4",
+ "glam",
 ]
 
 [[package]]

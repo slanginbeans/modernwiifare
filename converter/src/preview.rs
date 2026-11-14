@@ -29,6 +29,96 @@ pub struct View {
     pub width: u32,
     pub height: u32,
     pub hfov_deg: f32,
+    /// First-person model to draw on top: the common pack, its animation slot and time in seconds.
+    pub viewmodel: Option<(Vec<u8>, u8, f32)>,
+}
+
+/// Draw the first-person model from `common` (its first `VIEW` section) over the frame, with its own depth.
+#[allow(clippy::too_many_arguments)]
+fn draw_viewmodel(
+    common: &[u8],
+    slot: u8,
+    time: f32,
+    cam: &Camera,
+    w: usize,
+    h: usize,
+    colour: &mut [[f32; 3]],
+    stats: &mut Stats,
+) -> Result<(), String> {
+    use game_core::viewmodel as vmod;
+    let pack = Pack::parse(common, true).map_err(|e| format!("common pack: {e:?}"))?;
+    let vm = wpk::view::ViewModel::decode(
+        pack.section(tag::VIEWMODEL)
+            .ok_or("no viewmodel in the common pack")?
+            .data,
+    )
+    .map_err(|e| format!("viewmodel: {e:?}"))?;
+    let txda = pack.section(tag::TEXTURE_DATA).map_or(&[][..], |s| s.data);
+    let textures: Vec<Option<Image>> = pack
+        .section(tag::TEXTURES)
+        .map(|s| {
+            records::iter::<TextureRecord>(s.data)
+                .map(|r| decode_texture(&r, txda))
+                .collect()
+        })
+        .unwrap_or_default();
+    let (mut world, mut skin, mut pos) = (Vec::new(), Vec::new(), Vec::new());
+    vmod::pose(&vm, vm.clip(slot).map(|c| (c, time)), &mut world);
+    vmod::skin_matrices(&vm, &world, &mut skin);
+    vmod::skin(&vm, &skin, &mut pos);
+    let eye = vmod::eye_from_model(&world[usize::from(vm.view_bone)]);
+    // Eye space (x right, y up, -z forward) to the preview camera's (right, up, forward); scaled ×4 so the near
+    // plane sits at 1 unit for the model (projection is unchanged by a uniform scale).
+    let to_c = |p: [f32; 3]| {
+        let e = vmod::apply(&eye, p);
+        [e[0] * 4.0, e[1] * 4.0, -e[2] * 4.0]
+    };
+    let mut depth = vec![f32::INFINITY; w * h];
+    for s in &vm.surfaces {
+        let tex = textures
+            .get(usize::from(s.texture))
+            .and_then(Option::as_ref);
+        let blend = Blend::from_u8(s.blend);
+        let range = s.first_index as usize..(s.first_index + s.index_count) as usize;
+        for t in vm.indices[range].chunks_exact(3) {
+            let v: [CV; 3] = [t[0], t[1], t[2]].map(|i| {
+                let sv = &vm.verts[usize::from(i)];
+                let c = sv.rgba.to_be_bytes();
+                CV {
+                    c: to_c(pos[usize::from(i)]),
+                    uv: sv.uv,
+                    lm: [0.0; 2],
+                    rgba: c.map(|x| f32::from(x) / 255.0),
+                }
+            });
+            stats.triangles += 1;
+            let poly = clip_near(v);
+            for k in 1..poly.len().saturating_sub(1) {
+                raster(
+                    [poly[0], poly[k], poly[k + 1]],
+                    cam,
+                    w,
+                    h,
+                    colour,
+                    &mut depth,
+                    stats,
+                    |cv| {
+                        let b = tex.map_or([1.0; 4], |img| sample(img, cv.uv[0], cv.uv[1], false));
+                        [
+                            b[0] * cv.rgba[0],
+                            b[1] * cv.rgba[1],
+                            b[2] * cv.rgba[2],
+                            b[3] * cv.rgba[3],
+                        ]
+                    },
+                    blend,
+                    s.alpha_ref,
+                    0,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Default, Debug)]
@@ -547,6 +637,10 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
                 );
             }
         }
+    }
+
+    if let Some((common, slot, time)) = &view.viewmodel {
+        draw_viewmodel(common, *slot, *time, &cam, w, h, &mut colour, &mut stats)?;
     }
 
     let pixels = colour

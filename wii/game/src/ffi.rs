@@ -72,6 +72,10 @@ unsafe extern "C" {
     pub fn mwf_file_read(path: *const c_char, offset: u32, len: u32, dst: *mut u8) -> i32;
     pub fn mwf_file_error() -> i32;
     pub fn mwf_app_dir() -> *const c_char;
+    pub fn mwf_mem2_alloc(size: u32, align: u32) -> *mut u8;
+    pub fn mwf_flush(p: *const u8, len: u32);
+    pub fn mwf_view_begin(fovy_deg: f32, znear: f32, zfar: f32);
+    pub fn mwf_view_arrays(positions: *const u8, attributes: *const u8);
     pub fn mwf_mem2_mark() -> u32;
     pub fn mwf_mem2_release(mark: u32);
     pub fn mwf_list_dir(dir: *const c_char, suffix: *const c_char, out: *mut u8, cap: u32) -> i32;

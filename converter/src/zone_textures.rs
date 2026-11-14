@@ -176,6 +176,15 @@ impl AssetLinkSink for Collector {
         self.links.xmodel_name_ptr(slot)
     }
 
+    fn capture_xanim(
+        &mut self,
+        s: &ZoneStream<'_>,
+        geometry: fastfile_iw4::XAnimPartsGeometry,
+    ) -> fastfile_iw4::Result<()> {
+        self.links.xanim_loaded(s, geometry);
+        Ok(())
+    }
+
     fn remember_xmodel_surfaces(&mut self, slot: Ptr, surfaces: Ptr) {
         self.links.remember_xmodel_surfaces(slot, surfaces);
     }

@@ -119,6 +119,16 @@ pub struct ModelInfo {
     pub materials: Vec<usize>,
 }
 
+/// A weapon's first-person models (names) and its animation per IW4 slot (`weapAnimFiles`).
+#[derive(Clone, Debug, Default)]
+pub struct WeaponView {
+    pub gun: Option<String>,
+    pub hands: Option<String>,
+    pub anims: Vec<Option<String>>,
+    /// Bone names whose surfaces are hidden (attachment parts the base weapon doesn't show).
+    pub hide: Vec<String>,
+}
+
 /// Everything a zone says about one image's use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageUsage {
@@ -216,6 +226,10 @@ pub struct Links {
     pub weapons: Vec<String>,
     /// Combat numbers of each weapon (parallel to `weapons`).
     pub weapon_combat: Vec<weapon_iw4::CapturedCombatInput>,
+    /// First-person models and animations of each weapon (parallel to `weapons`).
+    pub weapon_views: Vec<WeaponView>,
+    /// Every XAnim loaded, by name, read again after the walk (`viewmodel.rs`).
+    pub xanims: Vec<(String, fastfile_iw4::XAnimPartsGeometry)>,
     /// Every string-table cell in the zone (material names found here are looked up by name).
     table_strings: std::collections::HashSet<String>,
     /// Materials the zone's scripts pass to `setupMiniMap(...)` (lower case).
@@ -228,6 +242,18 @@ pub struct Links {
 }
 
 impl Links {
+    /// A script string (bone and track names) by id.
+    pub fn script_string<'s>(&self, s: &'s ZoneStream<'_>, id: u16) -> Option<&'s str> {
+        self.strings.as_ref().and_then(|t| t.get(s, id))
+    }
+
+    /// Hook for `AssetLinkSink::capture_xanim`.
+    pub fn xanim_loaded(&mut self, s: &ZoneStream<'_>, g: fastfile_iw4::XAnimPartsGeometry) {
+        if let Some(name) = g.name.and_then(|p| s.cstr(s.resolve_alias(p)).ok()) {
+            self.xanims.push((name.to_owned(), g));
+        }
+    }
+
     pub fn set_strings(&mut self, strings: ScriptStrings) {
         self.strings = Some(strings);
     }
@@ -370,6 +396,34 @@ impl Links {
         let index = self.weapons.len();
         self.weapons.push(w.name.and_then(text).unwrap_or_default());
         self.weapon_combat.push(crate::weapons::captured(&w));
+        let anims = w.sz_xanims.map_or_else(Vec::new, |arr| {
+            (0..asset_iw4::size::WEAPON_ANIM_COUNT)
+                .map(|i| match s.ptr_at(arr, i * s.pointer_bytes()) {
+                    Ok(fastfile_iw4::ZonePtr::Offset(q)) => s
+                        .cstr(s.resolve_alias(q))
+                        .ok()
+                        .filter(|n| !n.is_empty())
+                        .map(str::to_owned),
+                    _ => None,
+                })
+                .collect()
+        });
+        // Bones whose surfaces this weapon hides (IW4 hideTags: 32 script strings).
+        let hide = w.hide_tags.map_or_else(Vec::new, |arr| {
+            (0..32)
+                .filter_map(|i| s.u16_at(arr, i * 2).ok())
+                .filter(|&id| id != 0)
+                .filter_map(|id| self.script_string(s, id))
+                .filter(|n| !n.is_empty())
+                .map(str::to_owned)
+                .collect()
+        });
+        self.weapon_views.push(WeaponView {
+            gun: w.gun_xmodel_name.and_then(text),
+            hands: w.hand_xmodel_name.and_then(text),
+            anims,
+            hide,
+        });
         for name in w
             .gun_xmodel_names
             .into_iter()

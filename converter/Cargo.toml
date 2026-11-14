@@ -14,8 +14,11 @@ path = "src/main.rs"
 asset_transport = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
 fastfile_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
 wpk = { path = "../shared/wpk" }
+game_core = { path = "../wii/game_core" }
 clipmap_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
 weapon_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
+xmodel_runtime = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
+anim_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
 lighting_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
 fastfile_iw5 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
 fastfile_t5 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }

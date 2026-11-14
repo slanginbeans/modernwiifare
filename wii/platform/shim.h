@@ -134,6 +134,16 @@ void mwf_pos_matrix(const float m[3][4]);
 void mwf_call_dl(const void *dl, uint32_t len);
 /* Draw one skybox face: 4 corners (x,y,z relative to the eye) with texcoords (s,t), textured with `tex`. */
 void mwf_sky_face(const float view_rot[3][4], const float corners[4][5], int32_t tex);
+/* ---- first-person model (game/src/view.rs) ---- */
+/* Write back CPU-written data GX will read (skinned positions). */
+void mwf_flush(const void *p, uint32_t len);
+/* Start drawing the first-person model: its own projection (fovy degrees, near / far) and the front slice of the
+ * depth range, so it never sinks into walls. World draws use the rest of the range. */
+void mwf_view_begin(float fovy_deg, float znear, float zfar);
+/* Arrays for the model: positions f32x3 (stride 12), and per vertex RGBA8 + UV f32x2 (stride 12). GX_VTXFMT6,
+ * display lists index POS, CLR0, TEX0 (u16 each). */
+void mwf_view_arrays(const void *positions, const void *attributes);
+
 /* Solid screen-space rectangles (x, y, w, h in 640x480 pixels, origin top left), drawn over the frame. */
 void mwf_hud_rects(const int16_t (*rects)[4], uint32_t count, uint32_t rgba);
 /* Copy to the XFB and flip. Returns the microseconds the CPU waited for the GPU to finish the frame. */

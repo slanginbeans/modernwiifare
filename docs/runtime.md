@@ -50,6 +50,15 @@ like IW4 (every 5th frame at 60 fps), 30-round magazine, 2.03 s / 2.36 s (empty)
 the map (IW4 `MASK_SHOT`); impacts show as yellow markers for 400 ms. HUD: crosshair, magazine / reserve, weapon.
 Not yet: spread, recoil, the viewmodel, sounds, damage to players, other weapons and attachments.
 
+## First-person model
+The M4A1's view hands and gun (`common.wpk`, 8.4k triangles, 101 bones, 17 animations), posed and skinned on the CPU
+each frame (`game_core::viewmodel`) and drawn after the world in the front slice of the depth range, so it never
+clips into walls. Which animation plays comes from IW4L's weapon state machine (raise, fire, reload, empty reload,
+sprint, drop...), so the timing is the game's. Parts the base weapon hides (sights, heartbeat sensor) are left out at
+conversion. Lighting is flat for now (MW2 lights it from the light grid). Check it on the PC:
+`mwf-convert preview <map.wpk> --viewmodel out/packs/common.wpk [--anim <slot> --time <s>]` (slot 9 = reload).
+Not measured yet: the CPU cost of skinning 7.6k vertices per frame on Broadway.
+
 ## Life and match
 Health 100; fall damage from IW4L's crash land (falls under 128 units are free, 300 and over kill); dropping 2048
 units below the lowest spawn point kills (MW2 uses trigger volumes). A death shows "YOU DIED", then you respawn at

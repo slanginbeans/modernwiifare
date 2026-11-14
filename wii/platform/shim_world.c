@@ -229,7 +229,11 @@ int32_t mwf_tex_create(const mwf_tex_desc *d) {
 
 /* ---- frame --------------------------------------------------------------------------------------------------- */
 
-enum { MODE_NONE, MODE_SKY, MODE_WORLD, MODE_HUD };
+enum { MODE_NONE, MODE_SKY, MODE_WORLD, MODE_HUD, MODE_VIEW };
+
+extern GXRModeObj *mwf_rmode;
+/* Depth range split: the first-person model gets [0, VIEW_DEPTH], the world [VIEW_DEPTH, 1]. */
+#define VIEW_DEPTH 0.02f
 static int mode = MODE_NONE;
 static const void *world_base = NULL;
 
@@ -242,6 +246,7 @@ void mwf_frame_begin(const float view[3][4], float fovy_deg, float znear, float 
     GX_LoadProjectionMtx(proj, GX_PERSPECTIVE);
     GX_LoadPosMtxImm((f32(*)[4])view, GX_PNMTX0);
     GX_SetCurrentMtx(GX_PNMTX0);
+    GX_SetViewport(0, 0, mwf_rmode->fbWidth, mwf_rmode->efbHeight, VIEW_DEPTH, 1.0f);
     GX_InvalidateTexAll();
     GX_SetColorUpdate(GX_TRUE);
     GX_SetAlphaUpdate(GX_FALSE);
@@ -442,6 +447,43 @@ void mwf_sky_face(const float view_rot[3][4], const float c[4][5], int32_t tex) 
 
 void mwf_pos_matrix(const float m[3][4]) {
     GX_LoadPosMtxImm((f32(*)[4])m, GX_PNMTX0);
+}
+
+/* ---- first-person model ---------------------------------------------------------------------------------------- */
+
+void mwf_flush(const void *p, uint32_t len) {
+    DCFlushRange((void *)p, len);
+}
+
+void mwf_view_begin(float fovy_deg, float znear, float zfar) {
+    f32 aspect = (CONF_GetAspectRatio() == CONF_ASPECT_16_9) ? (16.0f / 9.0f) : (4.0f / 3.0f);
+    Mtx44 proj;
+    guPerspective(proj, fovy_deg, aspect, znear, zfar);
+    GX_LoadProjectionMtx(proj, GX_PERSPECTIVE);
+    GX_SetViewport(0, 0, mwf_rmode->fbWidth, mwf_rmode->efbHeight, 0.0f, VIEW_DEPTH);
+    GX_SetCurrentMtx(GX_PNMTX0);
+}
+
+void mwf_view_arrays(const void *pos, const void *attr) {
+    if (mode != MODE_VIEW) {
+        mode = MODE_VIEW;
+        GX_ClearVtxDesc();
+        GX_SetVtxDesc(GX_VA_POS, GX_INDEX16);
+        GX_SetVtxDesc(GX_VA_CLR0, GX_INDEX16);
+        GX_SetVtxDesc(GX_VA_TEX0, GX_INDEX16);
+        GX_SetVtxAttrFmt(GX_VTXFMT6, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT6, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT6, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+        GX_SetNumChans(1);
+        GX_SetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
+        GX_SetNumTexGens(1);
+        GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
+    }
+    world_base = NULL;
+    GX_SetArray(GX_VA_POS, (void *)pos, 12);
+    GX_SetArray(GX_VA_CLR0, (void *)attr, 12);
+    GX_SetArray(GX_VA_TEX0, (void *)((const uint8_t *)attr + 4), 12);
+    GX_InvVtxCache();
 }
 
 /* ---- HUD ------------------------------------------------------------------------------------------------------ */

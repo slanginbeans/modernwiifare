@@ -196,6 +196,18 @@ impl crate::records::Record for WeaponRecord {
     }
 }
 
+/// The record named `name` in a `WEAP` section, with its index.
+pub fn find_indexed(section: &[u8], name: &str) -> Option<(u32, WeaponRecord)> {
+    section.chunks_exact(LEN).enumerate().find_map(|(i, r)| {
+        let end = r[..NAME_LEN]
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(NAME_LEN);
+        (&r[..end] == name.as_bytes())
+            .then(|| (i as u32, <WeaponRecord as crate::records::Record>::read(r)))
+    })
+}
+
 /// The record named `name` in a `WEAP` section.
 pub fn find(section: &[u8], name: &str) -> Option<WeaponRecord> {
     section

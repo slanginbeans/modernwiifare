@@ -294,9 +294,9 @@ pub struct StaticModelReport {
 
 /// Texture data accumulated into `TXDA`.
 #[derive(Default)]
-struct Textures {
-    records: Vec<TextureRecord>,
-    data: Vec<u8>,
+pub(crate) struct Textures {
+    pub(crate) records: Vec<TextureRecord>,
+    pub(crate) data: Vec<u8>,
     /// `.gxt` file name -> texture index.
     by_file: HashMap<String, u16>,
 }
@@ -336,7 +336,7 @@ impl Textures {
     }
 
     /// Add a converted `.gxt` from the texture folder (once per file).
-    fn add_file(&mut self, dir: &Path, file: &str, wrap: Wrap) -> Result<u16, String> {
+    pub(crate) fn add_file(&mut self, dir: &Path, file: &str, wrap: Wrap) -> Result<u16, String> {
         if let Some(&i) = self.by_file.get(file) {
             return Ok(i);
         }

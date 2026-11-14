@@ -49,13 +49,18 @@ pub struct Gun {
 impl Gun {
     /// A gun from its record, raised as at spawn (first raise). None when IW4L can't build its facts.
     pub fn new(rec: &WeaponRecord) -> Option<Gun> {
+        Gun::with_index(rec, 1)
+    }
+
+    /// As [`Gun::new`], remembering the record's index in the weapon list (used to find its first-person model).
+    pub fn with_index(rec: &WeaponRecord, index: u32) -> Option<Gun> {
         let facts = WeaponCombatFacts::try_from_captured(rec.combat).ok()?;
         if !facts.is_usable() {
             return None;
         }
         Some(Gun {
             name: rec.name,
-            hand: spawn_weapon_hand(1, &facts, true),
+            hand: spawn_weapon_hand(index, &facts, true),
             facts,
             server_time: 1000,
             old_buttons: 0,
@@ -75,6 +80,25 @@ impl Gun {
     /// Rounds in the magazine and in reserve.
     pub fn ammo(&self) -> (i32, i32) {
         (self.hand.clip, self.hand.stock)
+    }
+
+    /// The first-person animation the weapon state machine wants: (IW4 anim slot, restart toggle). The toggle flips
+    /// each time an animation is (re)started, so a repeated fire restarts the clip. Idle is the empty idle when the
+    /// magazine is empty.
+    pub fn anim(&self) -> (u8, bool) {
+        let raw = self.hand.weap_anim as u32;
+        let restart = raw & weapon_iw4::WEAP_ANIM_RESTART_BIT != 0;
+        let slot = match weapon_iw4::slot_for_weap_anim_event(raw) {
+            Some(s) => s as u8,
+            None if self.hand.clip == 0 => wpk::view::slot::EMPTY_IDLE,
+            None => wpk::view::slot::IDLE,
+        };
+        (slot, restart)
+    }
+
+    /// Index of this weapon in `common.wpk`'s weapon list (set by whoever built the gun).
+    pub fn weapon_index(&self) -> u32 {
+        self.hand.weapon
     }
 
     /// IW4 weapon state (0 ready, 1 raising, 5 firing, 8.. reloading; see `weapon_iw4::WeaponState`).

@@ -22,4 +22,5 @@ pub mod hud;
 pub mod life;
 pub mod player;
 pub mod sky;
+pub mod viewmodel;
 pub mod world;

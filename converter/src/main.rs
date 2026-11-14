@@ -36,6 +36,7 @@ mod pixel_decode;
 mod preview;
 mod static_models;
 mod texture;
+mod viewmodel;
 mod visibility;
 mod weapons;
 mod zone_textures;
@@ -430,6 +431,9 @@ fn run_pack(args: &[String]) -> ExitCode {
     run_pack_one(a)
 }
 
+/// Weapons whose first-person model goes into `common.wpk` (the default weapon for now; class weapons later).
+const VIEWMODEL_WEAPONS: [&str; 1] = ["m4_mp"];
+
 /// The data every map shares, from `common_mp`: weapons (combat numbers) for now. → `out/packs/common.wpk`.
 fn run_common(args: &[String]) -> ExitCode {
     let mut a = match parse_map_args(args) {
@@ -441,8 +445,29 @@ fn run_common(args: &[String]) -> ExitCode {
         Ok(x) => x,
         Err(code) => return code,
     };
-    let tables = shared_tables(&a);
-    let (collector, ()) = match zone_textures::walk_with(&image, &tables, |_, _| ()) {
+    // Textures of the zone (the viewmodels' come from here).
+    let tex_dir = PathBuf::from("out/textures/common_mp");
+    let (index, tables) = match convert_textures(&a, &image, &label, &tex_dir, false) {
+        Ok(x) => x,
+        Err(code) => return code,
+    };
+    let mut tex = pack::Textures::default();
+    // The first-person models of the weapons a player can spawn with (for now the default weapon).
+    let walked = zone_textures::walk_with(&image, &tables, |s, links| {
+        let mut views = Vec::new();
+        for name in VIEWMODEL_WEAPONS {
+            let Some(w) = links.weapons.iter().position(|n| n == name) else {
+                eprintln!("warning: {name} is not in {label}");
+                continue;
+            };
+            match viewmodel::build(s, links, w, &index, &tex_dir, &mut tex) {
+                Ok((vm, report)) => views.push((name, vm, report)),
+                Err(e) => eprintln!("warning: viewmodel of {name}: {e}"),
+            }
+        }
+        views
+    });
+    let (collector, views) = match walked {
         Ok(x) => x,
         Err(e) => {
             eprintln!("reading {label}: {e}");
@@ -465,6 +490,28 @@ fn run_common(args: &[String]) -> ExitCode {
         weapons.len() as u32,
         wpk::records::encode(&weapons),
     );
+    b.section(
+        wpk::tag::TEXTURES,
+        tex.records.len() as u32,
+        wpk::records::encode(&tex.records),
+    );
+    b.section(wpk::tag::TEXTURE_DATA, 0, std::mem::take(&mut tex.data));
+    for (name, vm, r) in &views {
+        // `count` = the weapon's record index in WEAP.
+        let w = weapons.iter().position(|x| x.name() == *name).unwrap_or(0);
+        b.section(wpk::tag::VIEWMODEL, w as u32, vm.encode());
+        println!(
+            "viewmodel {name}: {} bones, {} vertices, {} triangles, {} surfaces ({} textured, {} hidden), {} clips ({} missing)",
+            r.bones,
+            r.vertices,
+            r.triangles,
+            r.surfaces,
+            r.textures,
+            r.hidden_surfaces,
+            r.clips,
+            r.missing_clips
+        );
+    }
     let bytes = b.finish();
     let out = a
         .out
@@ -593,6 +640,8 @@ fn run_texture(args: &[String]) -> ExitCode {
 fn run_preview(args: &[String]) -> ExitCode {
     let mut file: Option<PathBuf> = None;
     let (mut spawn, mut pos, mut yaw, mut pitch, mut out) = (0usize, None, None, 0.0f32, None);
+    let (mut view_pack, mut anim, mut anim_time): (Option<PathBuf>, u8, f32) =
+        (None, wpk::view::slot::IDLE, 0.0);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().cloned().unwrap_or_default();
@@ -608,6 +657,9 @@ fn run_preview(args: &[String]) -> ExitCode {
             "--yaw" => yaw = value().parse().ok(),
             "--pitch" => pitch = value().parse().unwrap_or(0.0),
             "--out" => out = Some(PathBuf::from(value())),
+            "--viewmodel" => view_pack = Some(PathBuf::from(value())),
+            "--anim" => anim = value().parse().unwrap_or(wpk::view::slot::IDLE),
+            "--time" => anim_time = value().parse().unwrap_or(0.0),
             _ if file.is_none() => file = Some(PathBuf::from(a)),
             _ => {
                 eprintln!("unexpected argument `{a}`\n{USAGE}");
@@ -650,6 +702,16 @@ fn run_preview(args: &[String]) -> ExitCode {
         width: 640,
         height: 480,
         hfov_deg: 65.0,
+        viewmodel: match view_pack {
+            Some(p) => match std::fs::read(&p) {
+                Ok(b) => Some((b, anim, anim_time)),
+                Err(e) => {
+                    eprintln!("{}: {e}", p.display());
+                    return ExitCode::FAILURE;
+                }
+            },
+            None => None,
+        },
     };
     let t = std::time::Instant::now();
     let (img, stats) = match preview::render(&bytes, &view) {

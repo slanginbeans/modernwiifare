@@ -22,6 +22,7 @@ pub mod clip;
 pub mod quant;
 pub mod records;
 pub mod strips;
+pub mod view;
 pub mod vis;
 pub mod weapon;
 
@@ -73,6 +74,9 @@ pub mod tag {
     pub const MODEL_VERTICES_Q: Tag = *b"MVTQ";
     /// How each `MSRF` surface's vertices are stored.
     pub const SURFACE_QUANT: Tag = *b"MSQZ";
+    /// First-person model and animations of a weapon (`view::ViewModel`, in `common.wpk`); `count` = weapon index
+    /// in `WEAP` it belongs to.
+    pub const VIEWMODEL: Tag = *b"VIEW";
     /// Weapons (`weapon::WeaponRecord`): combat numbers of every weapon (in `common.wpk`).
     pub const WEAPONS: Tag = *b"WEAP";
     /// World visibility (`vis::Vis`): cell BSP, cells, portals.

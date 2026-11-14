@@ -60,7 +60,7 @@ pub struct StaticModels {
 const DRAW_INST: usize = sz::GFX_STATIC_MODEL_DRAW_INST;
 const INST: usize = lighting_iw4::GFX_STATIC_MODEL_INST_SIZE;
 
-fn half(h: u16) -> f32 {
+pub(crate) fn half(h: u16) -> f32 {
     let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
     let exp = i32::from((h >> 10) & 0x1f);
     let man = f32::from(h & 0x3ff);
@@ -71,7 +71,7 @@ fn half(h: u16) -> f32 {
     }
 }
 
-fn target(s: &ZoneStream<'_>, p: Ptr, off: usize) -> Option<Ptr> {
+pub(crate) fn target(s: &ZoneStream<'_>, p: Ptr, off: usize) -> Option<Ptr> {
     match s.ptr_at(p, off).ok()? {
         ZonePtr::Offset(t) => Some(s.resolve_alias(t)),
         _ => None,
@@ -81,7 +81,7 @@ fn target(s: &ZoneStream<'_>, p: Ptr, off: usize) -> Option<Ptr> {
 /// LOD 0 surfaces of model `m`, or None when they cannot be read.
 /// XModelSurfs sets by name. A model whose LOD surfaces were loaded earlier by another model only carries the set's
 /// name (IW4 shares them); IW4L resolves them the same way (`model_skel.rs`).
-fn surface_sets(s: &ZoneStream<'_>, links: &Links) -> HashMap<String, Ptr> {
+pub(crate) fn surface_sets(s: &ZoneStream<'_>, links: &Links) -> HashMap<String, Ptr> {
     let mut sets = HashMap::new();
     for g in &links.model_geometry {
         for lod in 0..4 {

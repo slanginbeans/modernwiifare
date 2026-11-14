@@ -12,6 +12,7 @@ extern crate alloc;
 
 mod ffi;
 mod rt;
+mod view;
 
 use alloc::vec::Vec;
 
@@ -317,25 +318,28 @@ impl AppPath {
     }
 }
 
-/// `<app folder>/common.wpk` (from `mwf-convert common`), or empty when it isn't there.
-fn load_common() -> Vec<u8> {
+/// `<app folder>/common.wpk` (from `mwf-convert common`) in MEM2 for the whole run (GX reads its textures in
+/// place), or empty when it isn't there.
+fn load_common() -> &'static [u8] {
     let Some(path) = AppPath::new("common.wpk") else {
-        return Vec::new();
+        return &[];
     };
     let mut head = [0u8; wpk::HEADER_LEN];
     let got = unsafe { ffi::mwf_file_read(path.as_ptr(), 0, head.len() as u32, head.as_mut_ptr()) };
     if got != head.len() as i32 {
-        return Vec::new();
+        return &[];
     }
     let len = u32::from_be_bytes([head[24], head[25], head[26], head[27]]) as usize;
-    let mut bytes = Vec::new();
-    if len > 8 << 20 || bytes.try_reserve_exact(len).is_err() {
-        return Vec::new();
+    if len > 16 << 20 {
+        return &[];
     }
-    bytes.resize(len, 0);
-    let got = unsafe { ffi::mwf_file_read(path.as_ptr(), 0, len as u32, bytes.as_mut_ptr()) };
-    if got != len as i32 || wpk::Pack::parse(&bytes, false).is_err() {
-        return Vec::new();
+    let p = unsafe { ffi::mwf_file_load_range(path.as_ptr(), 0, len as u32) };
+    if p.is_null() {
+        return &[];
+    }
+    let bytes: &'static [u8] = unsafe { core::slice::from_raw_parts(p, len) };
+    if wpk::Pack::parse(bytes, false).is_err() {
+        return &[];
     }
     bytes
 }
@@ -460,7 +464,8 @@ fn menu(gfx: &mut Shim, maps: &[&str], selected: &mut usize) -> Option<usize> {
 
 /// Load `<app folder>/maps/<name>.wpk` and play it until START (menu) or RESET (quit). Everything the map
 /// allocates in MEM2 is released by the caller (`mwf_mem2_release`); the MEM1 parts drop here.
-fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, weapons: &[u8]) -> Exit {
+fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8]) -> Exit {
+    let weapons = weapon_section(common);
     let mut file = [0u8; 96];
     let n = name.len() + 4;
     if n > file.len() {
@@ -534,8 +539,14 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, weapons: &[u8]
     cam.aspect = aspect;
     let mut player = clip.as_ref().map(|c| spawn_player(&world, c, spawn));
     // The gun (when common.wpk is on the SD card): the M4A1, as in MW2's first default class.
-    let new_gun = || wpk::weapon::find(weapons, DEFAULT_WEAPON).and_then(|r| Gun::new(&r));
+    let new_gun = || {
+        wpk::weapon::find_indexed(weapons, DEFAULT_WEAPON).and_then(|(i, r)| Gun::with_index(&r, i))
+    };
     let mut gun = new_gun();
+    // Its first-person model (textures created after this map's texture reset).
+    let mut view = gun
+        .as_ref()
+        .and_then(|g| view::View::load(common, g.weapon_index(), gfx));
     let mut impacts: [(Option<[f32; 3]>, u32); 8] = [(None, 0); 8];
     let mut next_impact = 0usize;
     let mut hud_rects: Vec<Rect> = Vec::with_capacity(512);
@@ -655,6 +666,13 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, weapons: &[u8]
             ),
         }
         let stats = world.draw(gfx, &cam, scratch);
+        if !flying
+            && life.alive()
+            && let (Some(v), Some(g)) = (view.as_mut(), gun.as_ref())
+        {
+            let (slot, restart) = g.anim();
+            v.draw(gfx, slot, restart, now);
+        }
         if !flying {
             if let Some(g) = gun.as_ref().filter(|_| life.alive()) {
                 draw_gun_hud(gfx, &mut hud_rects, g, &cam, &impacts, now);
@@ -688,7 +706,7 @@ pub extern "C" fn mwf_game_main() -> i32 {
             return 0;
         };
         let mark = unsafe { ffi::mwf_mem2_mark() };
-        let exit = run_map(&mut gfx, maps[i], scratch, weapon_section(&common));
+        let exit = run_map(&mut gfx, maps[i], scratch, common);
         unsafe { ffi::mwf_mem2_release(mark) };
         if let Exit::Quit = exit {
             return 0;
