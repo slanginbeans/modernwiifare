@@ -11,14 +11,59 @@ pub const TWEAKABLES: &str = "maps/mp/gametypes/_tweakables.gsc";
 pub const HEALTH_OVERLAY: &str = "maps/mp/gametypes/_healthoverlay.gsc";
 pub const FFA: &str = "maps/mp/gametypes/dm.gsc";
 /// The scripts the rules come from (captured from the zones' rawfiles).
-pub const SCRIPTS: [&str; 3] = [TWEAKABLES, HEALTH_OVERLAY, FFA];
+pub const WEAPONS: &str = "maps/mp/gametypes/_weapons.gsc";
+pub const PERK_FUNCTIONS: &str = "maps/mp/perks/_perkfunctions.gsc";
+pub const SCRIPTS: [&str; 5] = [TWEAKABLES, HEALTH_OVERLAY, FFA, WEAPONS, PERK_FUNCTIONS];
 
-/// The text without `//` comments.
+/// The text without `/* */` and `//` comments (scanned in order, so a `//*` line comment isn't a block).
 fn strip_comments(text: &str) -> String {
-    text.lines()
-        .map(|l| l.split("//").next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let line = rest.find("//");
+        let block = rest.find("/*");
+        match (line, block) {
+            (Some(l), b) if b.is_none_or(|b| l < b) => {
+                out.push_str(&rest[..l]);
+                rest = rest[l..].find('\n').map_or("", |e| &rest[l + e..]);
+            }
+            (_, Some(b)) => {
+                out.push_str(&rest[..b]);
+                rest = rest[b + 2..]
+                    .find("*/")
+                    .map_or("", |e| &rest[b + 2 + e + 2..]);
+            }
+            _ => {
+                out.push_str(rest);
+                return out;
+            }
+        }
+    }
+}
+/// The body of function `name`'s definition (a line starting with `name(`), up to its closing brace at the start
+/// of a line.
+fn function_body<'t>(text: &'t str, name: &str) -> Option<&'t str> {
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        if line.trim_start().starts_with(name)
+            && line.trim_start()[name.len()..]
+                .trim_start()
+                .starts_with('(')
+            && !line.contains(';')
+        {
+            let body = &text[at + line.len()..];
+            let end = body.find("\n}").map_or(body.len(), |e| e + 2);
+            return Some(&body[..end]);
+        }
+        at += line.len();
+    }
+    None
+}
+
+/// The scale in the first `setMoveSpeedScale( <scale> * ... )` after offset `from` of `text`.
+fn speed_scale_after(text: &str, from: usize) -> Option<f32> {
+    let (_, a) = calls(text, "setMoveSpeedScale", from).into_iter().next()?;
+    number(a.first()?.split('*').next()?)
 }
 
 /// Every call of `func` (any module prefix) with its arguments, unquoted and trimmed, from offset `from` on.
@@ -77,6 +122,8 @@ pub fn missing(r: &Rules) -> Vec<&'static str> {
         (found::KILL_SCORE, "kill points"),
         (found::HEADSHOT_SCORE, "headshot points"),
         (found::ASSIST_SCORE, "assist points"),
+        (found::CLASS_SPEED, "move speed by weapon class"),
+        (found::LIGHTWEIGHT_SPEED, "Lightweight speed"),
     ]
     .into_iter()
     .filter(|(bit, _)| r.found & bit == 0)
@@ -139,6 +186,34 @@ pub fn read(scripts: &HashMap<String, String>) -> Rules {
             }
         }
     }
+    if let Some(t) = get(WEAPONS)
+        && let Some(body) = function_body(&t, "updateMoveSpeedScale")
+    {
+        let mut speeds = r.class_speed;
+        let mut all = true;
+        for (k, class) in wpk::rules::SPEED_CLASSES.iter().enumerate() {
+            let key = if *class == "riotshield" {
+                "\"riotshield_mp\"".to_owned()
+            } else {
+                format!("case \"{class}\"")
+            };
+            match body.find(&key).and_then(|i| speed_scale_after(body, i)) {
+                Some(v) => speeds[k] = v,
+                None => all = false,
+            }
+        }
+        if all {
+            r.class_speed = speeds;
+            r.found |= found::CLASS_SPEED;
+        }
+    }
+    if let Some(t) = get(PERK_FUNCTIONS)
+        && let Some(v) =
+            function_body(&t, "setLightWeight").and_then(|b| assignment(b, "self.moveSpeedScaler"))
+    {
+        r.lightweight_speed = v;
+        r.found |= found::LIGHTWEIGHT_SPEED;
+    }
     if let Some(t) = get(FFA) {
         if let Some(v) = calls(&t, "registerTimeLimitDvar", 0)
             .first()
@@ -189,7 +264,7 @@ mod tests {
         s.insert(
             TWEAKABLES.to_owned(),
             "registerTweakable(\"team\",\"x\",\"y\",1);\n// registerTweakable( \"player\", \"maxhealth\", \"a\", 7 );\n\
-             registerTweakable( \"player\",  \"maxhealth\", \"a\", 120 );\nregisterTweakable(\"player\",\"healthregentime\",\"b\",2.5);"
+             registerTweakable( \"player\",  \"maxhealth\", \"a\", 120 ); //*\nregisterTweakable(\"player\",\"healthregentime\",\"b\",2.5);"
                 .to_owned(),
         );
         s.insert(
@@ -203,7 +278,27 @@ mod tests {
              a\\b::registerScoreInfo( \"kill\", 75 );\nregisterScoreInfo( \"assist\", 5 );\nregisterScoreInfo( \"kill\", 1 );"
                 .to_owned(),
         );
+        s.insert(
+            WEAPONS.to_owned(),
+            "x()\n{\n self updateMoveSpeedScale( \"primary\" );\n}\n\nupdateMoveSpeedScale( t )\n{\n /*\n self.moveSpeedScaler = 9;\n */\n\
+             if ( w == \"riotshield_mp\" )\n { self setMoveSpeedScale( .7 * self.moveSpeedScaler ); }\n switch ( c )\n {\n\
+             case \"rifle\": self setMoveSpeedScale( 0.9 * s ); break;\n case \"pistol\": self setMoveSpeedScale( 1.0 * s ); break;\n\
+             case \"mg\": self setMoveSpeedScale( 0.85 * s ); break;\n case \"smg\": self setMoveSpeedScale( 1.05 * s ); break;\n\
+             case \"spread\": self setMoveSpeedScale( .9 * s ); break;\n case \"rocketlauncher\": self setMoveSpeedScale( 0.75 * s ); break;\n\
+             case \"sniper\": self setMoveSpeedScale( 0.98 * s ); break;\n }\n}\n"
+                .to_owned(),
+        );
+        s.insert(
+            PERK_FUNCTIONS.to_owned(),
+            "setOther()\n{\n self.moveSpeedScaler = 2;\n}\n\nsetLightWeight()\n{\n self.moveSpeedScaler = 1.2;\n}\n".to_owned(),
+        );
         let r = read(&s);
+        assert_eq!(
+            r.class_speed,
+            [0.9, 1.0, 0.85, 1.05, 0.9, 0.75, 0.98, 0.7],
+            "the definition, not the call; the block comment ignored"
+        );
+        assert_eq!(r.lightweight_speed, 1.2);
         assert_eq!(r.max_health, 120, "the commented-out line is ignored");
         assert_eq!(r.regen_delay_ms, 2500);
         assert_eq!(r.hurt_cutoff, 0.4);

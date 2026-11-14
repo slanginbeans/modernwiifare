@@ -1,6 +1,7 @@
 //! Match rules read from the user's own MW2 game-type scripts at convert time (`RULE` in `common.wpk`): health and
-//! its regeneration (`_tweakables`, `_healthoverlay`), and free-for-all's limits and points (`dm`). The converter
-//! records which values it found; the rest keep MW2's stock values ([`Rules::default`]).
+//! its regeneration (`_tweakables`, `_healthoverlay`), free-for-all's limits and points (`dm`), and move speed by the
+//! primary weapon's class and with Lightweight (`_weapons`, `_perkfunctions`). The converter records which values it
+//! found; the rest keep MW2's stock values ([`Rules::default`]).
 
 use alloc::vec::Vec;
 
@@ -19,8 +20,22 @@ pub mod found {
     pub const KILL_SCORE: u16 = 1 << 8;
     pub const HEADSHOT_SCORE: u16 = 1 << 9;
     pub const ASSIST_SCORE: u16 = 1 << 10;
-    pub const ALL: u16 = (1 << 11) - 1;
+    pub const CLASS_SPEED: u16 = 1 << 11;
+    pub const LIGHTWEIGHT_SPEED: u16 = 1 << 12;
+    pub const ALL: u16 = (1 << 13) - 1;
 }
+
+/// The weapon classes of [`Rules::class_speed`], in order (`_weapons.gsc` `updateMoveSpeedScale`).
+pub const SPEED_CLASSES: [&str; 8] = [
+    "rifle",
+    "pistol",
+    "mg",
+    "smg",
+    "spread",
+    "rocketlauncher",
+    "sniper",
+    "riotshield",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rules {
@@ -41,6 +56,10 @@ pub struct Rules {
     pub kill_score: u32,
     pub headshot_score: u32,
     pub assist_score: u32,
+    /// Move speed scale by the primary weapon's class ([`SPEED_CLASSES`]).
+    pub class_speed: [f32; 8],
+    /// Lightweight's move speed scaler (multiplies the class's).
+    pub lightweight_speed: f32,
     pub found: u16,
 }
 
@@ -59,6 +78,8 @@ impl Default for Rules {
             kill_score: 50,
             headshot_score: 50,
             assist_score: 10,
+            class_speed: [0.95, 1.0, 0.875, 1.0, 0.95, 0.8, 1.0, 0.8],
+            lightweight_speed: 1.07,
             found: 0,
         }
     }
@@ -78,12 +99,16 @@ impl Rules {
         o.u32(self.kill_score);
         o.u32(self.headshot_score);
         o.u32(self.assist_score);
+        for v in self.class_speed {
+            o.f32(v);
+        }
+        o.f32(self.lightweight_speed);
         o.u16(self.found);
         o
     }
 
     pub fn decode(b: &[u8]) -> Option<Rules> {
-        if b.len() < 46 {
+        if b.len() < 82 {
             return None;
         }
         let u = |i: usize| be::u32(b, i * 4);
@@ -100,8 +125,22 @@ impl Rules {
             kill_score: u(8),
             headshot_score: u(9),
             assist_score: u(10),
-            found: be::u16(b, 44),
+            class_speed: core::array::from_fn(|k| f(11 + k)),
+            lightweight_speed: f(19),
+            found: be::u16(b, 80),
         })
+    }
+
+    /// The move speed scale for a primary weapon of speed class `class` (None: 1.0), with Lightweight or not.
+    pub fn move_speed(&self, class: Option<usize>, lightweight: bool) -> f32 {
+        let base = class
+            .and_then(|c| self.class_speed.get(c).copied())
+            .unwrap_or(1.0);
+        base * if lightweight {
+            self.lightweight_speed
+        } else {
+            1.0
+        }
     }
 
     /// Kills to win at `kill_score` points each (no limit: `u32::MAX`).
@@ -129,6 +168,8 @@ mod tests {
         assert_eq!(Rules::decode(&r.encode()), Some(r));
         assert!(Rules::decode(&r.encode()[..20]).is_none());
         assert_eq!(r.kill_limit(), 30);
+        assert_eq!(r.move_speed(Some(2), true), 0.875 * 1.07);
+        assert_eq!(r.move_speed(None, false), 1.0);
         assert_eq!(Rules::default().kill_limit(), 20);
         let none = Rules {
             score_limit: 0,

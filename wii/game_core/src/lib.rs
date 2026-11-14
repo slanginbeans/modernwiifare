@@ -32,6 +32,7 @@ pub mod loadout;
 pub mod look;
 pub mod menu;
 pub mod nav;
+pub mod perks;
 pub mod player;
 pub mod sky;
 pub mod telemetry;

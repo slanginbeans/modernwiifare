@@ -51,6 +51,7 @@ fn item(name: &str, display: String, kind: u8, attachments: u32) -> Item {
         display,
         kind,
         attachments,
+        upgrade: String::new(),
     }
 }
 
@@ -182,7 +183,13 @@ pub fn catalog(
         if name.is_empty() || name.starts_with('_') || name == "specialty_null" {
             continue;
         }
-        perk_items.push(item(name, text(perks.cell(r, 2)), kind, 0));
+        let mut it = item(name, text(perks.cell(r, 2)), kind, 0);
+        // The Pro perk (perkTable column 8, as `_class.gsc`'s `getPerkUpgrade` reads it).
+        let up = perks.cell(r, 8);
+        if !up.is_empty() && up != "specialty_null" {
+            it.upgrade = up.to_owned();
+        }
+        perk_items.push(it);
     }
 
     // Killstreaks (rows with a numeric index, "none" left out).

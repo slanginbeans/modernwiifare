@@ -251,6 +251,7 @@ mod tests {
             display: name.to_uppercase(),
             kind,
             attachments,
+            upgrade: String::new(),
         }
     }
 

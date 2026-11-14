@@ -50,6 +50,8 @@ pub struct GunInput {
     pub melee: bool,
     /// The player's `pm_flags` (sprinting blocks firing, as in IW4).
     pub pm_flags: u32,
+    /// The player's perk bits (`ps.perks`: Sleight of Hand reloads, fast sprint recovery ...).
+    pub perks: [u32; 2],
     /// The weapon the player wants out instead of this one (IW4 `usercmd.weapon`): this one drops, then that one
     /// raises ([`Gun::take_switch`]).
     pub switch_to: Option<SwitchTarget>,
@@ -509,6 +511,8 @@ impl Gun {
             switch_quick_raise_time_ms: target.quick_raise_ms,
             switch_first_raise_time_ms: target.first_raise_ms,
             pm_flags: input.pm_flags,
+            perks0: input.perks[0],
+            perks1: input.perks[1],
             ..WeaponCmd::default()
         };
         self.old_buttons = btn;
@@ -700,6 +704,53 @@ mod tests {
             "first raise 700 ms, fired at {first}"
         );
         assert_eq!(r.ammo().0, 30, "the rifle kept its magazine");
+    }
+
+    /// Sleight of Hand (IW4 `PERK_FASTRELOAD` in `ps.perks`) halves the reload, through IW4L's weapon step.
+    #[test]
+    fn sleight_of_hand_halves_the_reload() {
+        let clip = Clip::default();
+        let mc = MapClip::new(&clip);
+        let mut rec = rifle();
+        rec.combat.inherits_perks = true;
+        let reload_ms = |perks: [u32; 2]| {
+            let mut g = Gun::with_index(&rec, 2).unwrap();
+            let eye = [0.0, 0.0, 60.0];
+            let x = [1.0, 0.0, 0.0];
+            let fire = GunInput {
+                fire: true,
+                perks,
+                ..GunInput::default()
+            };
+            // Raise, then empty the magazine.
+            for _ in 0..400 {
+                g.update(&mc, 16, &fire, eye, x, Y, Z);
+                if g.ammo().0 == 0 {
+                    break;
+                }
+            }
+            let idle = GunInput {
+                perks,
+                ..GunInput::default()
+            };
+            let reload = GunInput {
+                reload: true,
+                perks,
+                ..GunInput::default()
+            };
+            g.update(&mc, 16, &idle, eye, x, Y, Z);
+            let mut t = 0;
+            g.update(&mc, 16, &reload, eye, x, Y, Z);
+            while g.ammo().0 == 0 && t < 10_000 {
+                g.update(&mc, 16, &idle, eye, x, Y, Z);
+                t += 16;
+            }
+            t
+        };
+        let plain = reload_ms([0, 0]);
+        let fast = reload_ms([weapon_iw4::PERK_FASTRELOAD, 0]);
+        assert!(plain > 1500, "{plain}");
+        assert!(fast * 10 < plain * 6, "{fast} vs {plain}");
     }
 
     /// The melee button swings (IW4L `weapon_try_melee`): `MeleeFired` after the weapon's melee delay.

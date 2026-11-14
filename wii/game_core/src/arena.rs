@@ -44,6 +44,8 @@ pub struct Fighter {
     pub last_attacker: Option<usize>,
     /// The spawn point used last (MW2 avoids it next time).
     pub last_spawn: Option<usize>,
+    /// This fighter's bullet damage scale (Stopping Power: 1.4).
+    pub bullet_scale: f32,
     /// Bot stepping: when the next step is due, steps taken, the decision being carried out, and the position
     /// before the last step (with its time) for drawing in between.
     next_step_ms: Option<u32>,
@@ -67,6 +69,7 @@ impl Fighter {
             last_fire_ms: None,
             last_attacker: None,
             last_spawn: None,
+            bullet_scale: 1.0,
             next_step_ms: None,
             steps: 0,
             act: Act::default(),
@@ -346,6 +349,7 @@ impl Arena {
         };
         let length = libm::sqrtf(dist2(shot.start, shot.end));
         let d = damage::bullet(facts, &facts.location_damage, t * length, loc);
+        let d = (d as f32 * self.fighters[from].bullet_scale) as i32;
         let dir = [
             shot.end[0] - shot.start[0],
             shot.end[1] - shot.start[1],
@@ -552,6 +556,16 @@ impl Arena {
             f.prev_origin = f.player.ps.origin;
             f.last_step_ms = now;
             let w = f.gun.as_ref().map(Gun::move_context).unwrap_or_default();
+            // MW2's move speed for the primary's class (`_weapons.gsc`; bots carry no perks).
+            f.player.ps.move_speed_scale_multiplier = self.rules.move_speed(
+                f.gun.as_ref().and_then(|g| {
+                    crate::perks::speed_class(
+                        g.facts().weap_class,
+                        g.name().starts_with("riotshield"),
+                    )
+                }),
+                false,
+            );
             let mut steer = act.steer;
             steer.fire = act.fire;
             steer.reload = act.reload;
@@ -585,6 +599,7 @@ impl Arena {
                     reload: act.reload,
                     melee: act.melee,
                     pm_flags: p.ps.pm_flags,
+                    perks: p.ps.perks,
                     ..GunInput::default()
                 },
                 cam.eye,

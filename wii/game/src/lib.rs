@@ -665,6 +665,7 @@ fn run_map(
     let mut arsenal = arsenal::Arsenal::new();
     // A class change applies at the next spawn, as in MW2.
     let mut class = loadouts.class;
+    // Arm for a spawn; returns the class's perks (with their Pro perks: everything is unlocked).
     let equip = |arsenal: &mut arsenal::Arsenal, gfx: &mut Shim, class: Option<usize>| {
         let l = class.and_then(|c| loadouts.classes.get(c));
         arsenal.equip(
@@ -678,8 +679,12 @@ fn run_map(
             loadouts.catalog,
             l,
         );
+        match (loadouts.catalog, l) {
+            (Some(c), Some(l)) => game_core::perks::of_loadout(c, l),
+            _ => game_core::perks::PerkSet::default(),
+        }
     };
-    equip(&mut arsenal, gfx, class);
+    let mut perk_set = equip(&mut arsenal, gfx, class);
     // Free-for-all against bots (MW2's FFA spawns when the map has them).
     let spawn_list: Vec<([f32; 3], f32)> = {
         let dm: Vec<_> = world
@@ -850,7 +855,7 @@ fn run_map(
             if let Some(c) = &clip {
                 player = Some(spawn_player(&world, c, spawn));
             }
-            equip(&mut arsenal, gfx, class);
+            perk_set = equip(&mut arsenal, gfx, class);
         }
         if pad.down & ffi::BTN_UP != 0 && clip.is_some() {
             flying = !flying;
@@ -937,6 +942,21 @@ fn run_map(
                         &aim_targets,
                         ads_held,
                     );
+                    // The class's perks and move speed (MW2: the primary's class, Lightweight), every step since a
+                    // spawn resets the player state.
+                    p.ps.perks = perk_set.bits;
+                    p.ps.move_speed_scale_multiplier = {
+                        let class = arsenal.guns[0].as_ref().and_then(|g| {
+                            game_core::perks::speed_class(
+                                g.facts().weap_class,
+                                g.name().starts_with("riotshield"),
+                            )
+                        });
+                        rules.move_speed(class, perk_set.lightweight)
+                    };
+                    if let Some(a) = arena.as_mut() {
+                        a.fighters[0].bullet_scale = perk_set.bullet_scale();
+                    }
                     // Other players block you (IW4 player clipping).
                     match arena.as_ref() {
                         Some(a) => c.set_bodies(a.bodies_except(0)),
@@ -1003,6 +1023,7 @@ fn run_map(
                                 // D-pad right: melee (MW2's console melee is a stick click; the pad has none).
                                 melee: pad.held & ffi::BTN_RIGHT != 0,
                                 pm_flags: p.ps.pm_flags,
+                                perks: p.ps.perks,
                                 switch_to,
                             },
                             cam.eye,
@@ -1083,7 +1104,7 @@ fn run_map(
                         }
                         _ => spawn_player(&world, c, spawn),
                     });
-                    equip(&mut arsenal, gfx, class);
+                    perk_set = equip(&mut arsenal, gfx, class);
                     life.respawn();
                 }
             }

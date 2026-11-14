@@ -58,13 +58,15 @@ pub mod slot {
 }
 
 /// Something a class can hold: its script name (`m4`, `specialty_marathon`, `acog`), its display name, a kind
-/// (weapon group or perk slot) and, for weapons, the attachments it takes (bit n = attachment n).
+/// (weapon group or perk slot), for weapons the attachments it takes (bit n = attachment n), and for perks the Pro
+/// perk it brings once upgraded (perkTable's upgrade column; empty when none).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Item {
     pub name: String,
     pub display: String,
     pub kind: u8,
     pub attachments: u32,
+    pub upgrade: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,6 +164,7 @@ fn put_items(o: &mut Vec<u8>, items: &[Item]) {
         put_str(o, &i.display);
         o.push(i.kind);
         o.u32(i.attachments);
+        put_str(o, &i.upgrade);
     }
 }
 
@@ -174,6 +177,7 @@ fn get_items(r: &mut Reader<'_>) -> Result<Vec<Item>, DecodeError> {
                 display: r.str()?,
                 kind: r.u8()?,
                 attachments: r.u32()?,
+                upgrade: r.str()?,
             })
         })
         .collect()
@@ -402,6 +406,11 @@ mod tests {
             display: name.to_uppercase(),
             kind,
             attachments,
+            upgrade: if name == "specialty_marathon" {
+                "specialty_fastmantle".to_string()
+            } else {
+                alloc::string::String::new()
+            },
         }
     }
 
