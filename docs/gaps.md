@@ -33,14 +33,16 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
    `weapon_try_melee`, swing and hit times); the hit is IW4L `fire_weapon_melee`'s nine traces (64 units) against
    the players' boxes, melee damage plus 0..4. Bots swing when you're within reach. Not yet: the lunge
    (`melee_charge` target and `movement_iw4::melee_charge_move`).
-4. **Players block each other** (`clipmap_iw4::transformed_temp_capsule_trace` per fighter in pmove traces).
+4. ~~Players block each other~~ done: pmove's traces sweep against every other living player's hull with
+   `clipmap_iw4::transformed_temp_capsule_trace` (bullets and sight still see the world only).
 5. ~~Health regeneration~~ done: MW2's `_healthoverlay.gsc` loop step by step (`life::Life::regen`), the numbers
    read from the user's scripts (`RULE`).
 6. **Bullet penetration** (`weapon_iw4::penetration`; needs surface types and the depth table from the converter).
 7. **Hit volumes**: turn the boxes with the body's yaw now; the character models' hit boxes later.
 8. **FFA rules**: points (a kill, the headshot bonus), score and time limits from the user's `dm.gsc`, ties to fewer
-   deaths: done. Still to do: spawns scored by distance (`SPAWN_IDEAL_DIST` 1600, `SPAWN_BAD_DIST` 1200) and line
-   of sight; the playlist's overrides (the stock script limit is 1000 points).
+   deaths: done. Spawns follow MW2's free-for-all weighting (`_spawnlogic.gsc`: distance to everyone, enemies in
+   sight, the nearest enemy, the last spawn used): done. Still to do: the playlist's overrides (the stock script
+   limit is 1000 points).
 9. Crouch as MW2's console toggle; prone.
 
 ## Next, performance (ranked by expected milliseconds; measure with the logs first)

@@ -937,6 +937,11 @@ fn run_map(
                         &aim_targets,
                         ads_held,
                     );
+                    // Other players block you (IW4 player clipping).
+                    match arena.as_ref() {
+                        Some(a) => c.set_bodies(a.bodies_except(0)),
+                        None => c.set_bodies(core::iter::empty()),
+                    }
                     let fall = p.update(
                         c,
                         &MovePad {
@@ -1070,15 +1075,13 @@ fn run_map(
                 // Dead: the view stays where the player fell until the respawn.
                 if life.ready_to_respawn(now) {
                     spawn += 1;
-                    let others: Vec<[f32; 3]> = arena
-                        .iter()
-                        .flat_map(|a| a.fighters[1..].iter())
-                        .filter(|f| f.life.alive())
-                        .map(|f| f.player.ps.origin)
-                        .collect();
-                    player = Some(match arena::pick_spawn(&spawn_list, &others, spawn) {
-                        Some((o, yaw)) => Player::spawn(c, o, yaw),
-                        None => spawn_player(&world, c, spawn),
+                    // MW2's spawn weighting, as for the bots.
+                    player = Some(match arena.as_mut() {
+                        Some(a) if !spawn_list.is_empty() => {
+                            let (o, yaw) = a.spawn_point(c, &spawn_list, 0);
+                            Player::spawn(c, o, yaw)
+                        }
+                        _ => spawn_player(&world, c, spawn),
                     });
                     equip(&mut arsenal, gfx, class);
                     life.respawn();

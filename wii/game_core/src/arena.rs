@@ -11,7 +11,7 @@ use crate::nav::Navigator;
 use weapon_iw4::WeaponTickEvent;
 
 use crate::bot::{self, Act, Brain, Contact, Senses, Skill};
-use crate::collision::MapClip;
+use crate::collision::{Body, MapClip};
 use crate::damage;
 use crate::gun::{Gun, GunInput, MASK_SHOT, Shot, SpreadInput};
 use crate::life::Life;
@@ -42,6 +42,8 @@ pub struct Fighter {
     pub last_fire_ms: Option<u32>,
     /// Who last hurt this fighter (credited with the kill).
     pub last_attacker: Option<usize>,
+    /// The spawn point used last (MW2 avoids it next time).
+    pub last_spawn: Option<usize>,
     /// Bot stepping: when the next step is due, steps taken, the decision being carried out, and the position
     /// before the last step (with its time) for drawing in between.
     next_step_ms: Option<u32>,
@@ -64,6 +66,7 @@ impl Fighter {
             score: 0,
             last_fire_ms: None,
             last_attacker: None,
+            last_spawn: None,
             next_step_ms: None,
             steps: 0,
             act: Act::default(),
@@ -122,23 +125,63 @@ fn dist2(a: [f32; 3], b: [f32; 3]) -> f32 {
     (0..3).map(|k| (a[k] - b[k]) * (a[k] - b[k])).sum()
 }
 
-/// The spawn point furthest from every other living fighter (MW2 FFA picks spawns away from enemies).
+/// MW2's free-for-all spawn weighting (`_spawnlogic.gsc` `getSpawnpoint_DM` and the penalties it applies): most
+/// players near [`SPAWN_IDEAL_DIST`] away, a penalty for anyone within [`SPAWN_BAD_DIST`], a large one for each
+/// enemy that can see the spawn and for the nearest enemy within [`NEARBY_ENEMY_RANGE`], and the spawn used last time
+/// avoided. `jitter(i)` is MW2's `randomfloat(.2)` for spawn `i` (0..0.2). Returns the index of the best spawn.
 pub fn pick_spawn(
     spawns: &[([f32; 3], f32)],
     others: &[[f32; 3]],
-    salt: usize,
-) -> Option<([f32; 3], f32)> {
+    last: Option<usize>,
+    sees: impl Fn(usize, [f32; 3]) -> bool,
+    jitter: impl Fn(usize) -> f32,
+) -> Option<usize> {
     if spawns.is_empty() {
         return None;
     }
-    if others.is_empty() {
-        return Some(spawns[salt % spawns.len()]);
-    }
-    spawns.iter().copied().max_by(|a, b| {
-        let near = |p: [f32; 3]| others.iter().map(|o| dist2(p, *o)).fold(f32::MAX, f32::min);
-        near(a.0).total_cmp(&near(b.0))
-    })
+    let weight = |i: usize| {
+        let p = spawns[i].0;
+        let mut w = jitter(i);
+        if !others.is_empty() {
+            let (mut from_ideal, mut bad) = (0.0, 0.0);
+            let mut nearest = f32::MAX;
+            let mut sights = 0;
+            for &o in others {
+                let d = libm::sqrtf(dist2(p, o));
+                if d < SPAWN_BAD_DIST {
+                    bad += (SPAWN_BAD_DIST - d) / SPAWN_BAD_DIST;
+                }
+                from_ideal += libm::fabsf(d - SPAWN_IDEAL_DIST);
+                nearest = nearest.min(d);
+                if sees(i, o) {
+                    sights += 1;
+                }
+            }
+            let well = (SPAWN_IDEAL_DIST - from_ideal / others.len() as f32) / SPAWN_IDEAL_DIST;
+            w += well - bad * 2.0;
+            w -= SPAWN_LOS_PENALTY * sights as f32;
+            if nearest < NEARBY_ENEMY_RANGE {
+                w -= NEARBY_ENEMY_PENALTY * (1.0 - nearest / NEARBY_ENEMY_RANGE);
+            }
+        }
+        if last == Some(i) {
+            w -= SAME_SPAWN_PENALTY;
+        }
+        w
+    };
+    (0..spawns.len()).max_by(|&a, &b| weight(a).total_cmp(&weight(b)))
 }
+
+/// MW2's spawn weighting numbers (`_spawnlogic.gsc`; the distances are IW4L's `sim::SPAWN_IDEAL_DIST` /
+/// `SPAWN_BAD_DIST` too).
+pub const SPAWN_IDEAL_DIST: f32 = 1600.0;
+pub const SPAWN_BAD_DIST: f32 = 1200.0;
+const SPAWN_LOS_PENALTY: f32 = 100_000.0;
+const NEARBY_ENEMY_RANGE: f32 = 1000.0;
+const NEARBY_ENEMY_PENALTY: f32 = 2000.0;
+const SAME_SPAWN_PENALTY: f32 = 1000.0;
+/// Where MW2's spawn sight traces look from (above the spawn point) and to (a player's chest).
+const SPAWN_SIGHT_HEIGHT: f32 = 50.0;
 
 impl Arena {
     /// The human (slot 0) and `bots` bots, all at spawns. `gun(i)` arms fighter `i` (called again on respawn).
@@ -159,7 +202,7 @@ impl Arena {
         };
         a.fighters.push(Fighter::new(human, gun(0), None, &rules));
         for i in 1..=bots {
-            let p = a.spawn_point(spawns, i);
+            let p = a.spawn_point(clip, spawns, i);
             a.fighters.push(Fighter::new(
                 Player::spawn(clip, p.0, p.1),
                 gun(i),
@@ -170,16 +213,45 @@ impl Arena {
         a
     }
 
-    fn spawn_point(&mut self, spawns: &[([f32; 3], f32)], who: usize) -> ([f32; 3], f32) {
+    /// Choose fighter `who`'s spawn (MW2's weighting, [`pick_spawn`]) and remember it.
+    pub fn spawn_point(
+        &mut self,
+        clip: &MapClip<'_>,
+        spawns: &[([f32; 3], f32)],
+        who: usize,
+    ) -> ([f32; 3], f32) {
         let others: Vec<[f32; 3]> = self
             .fighters
             .iter()
             .enumerate()
-            .filter(|(i, f)| *i != who && f.life.alive())
+            .filter(|(i, f)| *i != who && f.life.alive() && (*i != 0 || self.human_present))
             .map(|(_, f)| f.player.ps.origin)
             .collect();
         self.spawn_count += 1;
-        pick_spawn(spawns, &others, self.spawn_count).unwrap_or(([0.0, 0.0, 200.0], 0.0))
+        let last = self.fighters.get(who).and_then(|f| f.last_spawn);
+        let salt = self.spawn_count as u32 ^ self.rng;
+        let sees = |i: usize, o: [f32; 3]| {
+            let from = spawns[i].0;
+            let a = [from[0], from[1], from[2] + SPAWN_SIGHT_HEIGHT];
+            let b = [o[0], o[1], o[2] + SPAWN_SIGHT_HEIGHT];
+            clip.trace(a, b, [0.0; 3], [0.0; 3], MASK_SHOT).fraction >= 1.0
+        };
+        let jitter = |i: usize| {
+            let mut x = salt ^ (i as u32).wrapping_mul(0x9e37_79b9);
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            (x >> 8) as f32 / (1u32 << 24) as f32 * 0.2
+        };
+        match pick_spawn(spawns, &others, last, sees, jitter) {
+            Some(i) => {
+                if let Some(f) = self.fighters.get_mut(who) {
+                    f.last_spawn = Some(i);
+                }
+                spawns[i]
+            }
+            None => ([0.0, 0.0, 200.0], 0.0),
+        }
     }
 
     /// Respawn fighter `i` (the human too: the caller re-arms its own gun).
@@ -190,7 +262,7 @@ impl Arena {
         i: usize,
         gun: Option<Gun>,
     ) {
-        let (o, yaw) = self.spawn_point(spawns, i);
+        let (o, yaw) = self.spawn_point(clip, spawns, i);
         let f = &mut self.fighters[i];
         f.player = Player::spawn(clip, o, yaw);
         f.prev_origin = o;
@@ -225,6 +297,18 @@ impl Arena {
             (core::cmp::Reverse(f.score), f.life.deaths, i)
         });
         order
+    }
+
+    /// The bodies fighter `me` collides with: every other living fighter in the match.
+    pub fn bodies_except(&self, me: usize) -> impl Iterator<Item = Body> + '_ {
+        self.fighters
+            .iter()
+            .enumerate()
+            .filter(move |(i, f)| *i != me && f.life.alive() && (*i != 0 || self.human_present))
+            .map(|(_, f)| Body {
+                origin: f.player.ps.origin,
+                height: if f.player.crouched() { 50.0 } else { 70.0 },
+            })
     }
 
     /// Run every living fighter's health regeneration up to `now`.
@@ -459,6 +543,7 @@ impl Arena {
                     f.act = brain.think(nav.as_deref_mut(), &senses);
                 }
             }
+            clip.set_bodies(self.bodies_except(i));
             let f = &mut self.fighters[i];
             if f.brain.is_none() {
                 continue;
@@ -566,16 +651,27 @@ mod tests {
     }
 
     #[test]
-    fn spawns_keep_away_from_the_living() {
+    fn spawns_follow_mw2s_weights() {
         let s = [
             ([0.0, 0.0, 0.0], 0.0),
-            ([1000.0, 0.0, 0.0], 0.0),
+            ([1600.0, 0.0, 0.0], 0.0),
             ([500.0, 0.0, 0.0], 0.0),
+            ([4000.0, 0.0, 0.0], 0.0),
         ];
-        assert_eq!(
-            pick_spawn(&s, &[[0.0, 0.0, 0.0]], 0).map(|p| p.0[0]),
-            Some(1000.0)
-        );
+        let blind = |_: usize, _: [f32; 3]| false;
+        let none = |_: usize| 0.0;
+        let enemy = [[0.0, 0.0, 0.0]];
+        // The ideal distance (1600) beats both nearer and much farther points.
+        assert_eq!(pick_spawn(&s, &enemy, None, blind, none), Some(1));
+        // A spawn the enemy can see is out, whatever its distance.
+        let sees_1 = |i: usize, _: [f32; 3]| i == 1;
+        assert_eq!(pick_spawn(&s, &enemy, None, sees_1, none), Some(3));
+        // The last spawn used is avoided.
+        assert_eq!(pick_spawn(&s, &enemy, Some(1), blind, none), Some(3));
+        // Nobody else alive: the random part decides.
+        let favour_2 = |i: usize| if i == 2 { 0.1 } else { 0.0 };
+        assert_eq!(pick_spawn(&s, &[], None, blind, favour_2), Some(2));
+        assert_eq!(pick_spawn(&[], &enemy, None, blind, none), None);
     }
 
     #[test]
@@ -618,6 +714,37 @@ mod tests {
             attacker: 0,
             victim: 1
         }));
+    }
+
+    #[test]
+    fn players_block_each_other() {
+        let clip = boxes(&[([-2000.0, -2000.0, -64.0], [2000.0, 2000.0, 0.0])]);
+        let mc = MapClip::new(&clip);
+        let spawns = [([0.0, 0.0, 0.0], 0.0), ([150.0, 0.0, 0.0], 180.0)];
+        let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+        let a = Arena::new(&mc, &spawns, 1, human, Rules::default(), |_| Some(rifle()));
+        let bot_x = a.fighters[1].player.ps.origin[0];
+        let mut p = a.fighters[0].player.clone();
+        let walk = crate::player::MovePad {
+            forward: 127,
+            ..Default::default()
+        };
+        mc.set_bodies(a.bodies_except(0));
+        for _ in 0..90 {
+            p.update(&mc, &walk, &crate::player::WeaponMove::default(), 16);
+        }
+        let x = p.ps.origin[0];
+        assert!(
+            x < bot_x - 29.0,
+            "stopped at the bot's hull: {x} vs bot at {bot_x}"
+        );
+        assert!(x > bot_x - 40.0, "but walked up to it: {x}");
+        // Without bodies the same walk goes through.
+        mc.set_bodies(core::iter::empty());
+        for _ in 0..30 {
+            p.update(&mc, &walk, &crate::player::WeaponMove::default(), 16);
+        }
+        assert!(p.ps.origin[0] > bot_x, "{}", p.ps.origin[0]);
     }
 
     #[test]
