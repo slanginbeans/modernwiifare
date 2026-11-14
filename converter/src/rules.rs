@@ -21,8 +21,12 @@ pub const FLASH: &str = "maps/mp/_flashgrenades.gsc";
 pub const SHOCK_CONCUSSION: &str = "shock/concussion_grenade_mp.shock";
 pub const SHOCK_FLASH: &str = "shock/flashbang_mp.shock";
 pub const DOM: &str = "maps/mp/gametypes/dom.gsc";
-pub const SCRIPTS: [&str; 12] = [
+pub const EMP: &str = "maps/mp/killstreaks/_emp.gsc";
+pub const NUKE: &str = "maps/mp/killstreaks/_nuke.gsc";
+pub const SCRIPTS: [&str; 14] = [
     DOM,
+    EMP,
+    NUKE,
     TWEAKABLES,
     HEALTH_OVERLAY,
     FFA,
@@ -170,6 +174,8 @@ pub fn missing(r: &Rules) -> Vec<&'static str> {
             (found::CLAYMORE, "claymore trip"),
             (found::EXPLOSIVES, "explosives per player"),
             (found::DOM, "Domination"),
+            (found::EMP, "EMP duration"),
+            (found::NUKE, "nuke timing"),
         ]
         .into_iter()
         .filter(|(bit, _)| r.found_fx & bit == 0)
@@ -369,6 +375,32 @@ pub fn read(scripts: &HashMap<String, String>) -> Rules {
             r.dom_use_ms = (u * 1000.0) as u32;
             r.dom_tick_ms = (tick * 1000.0) as u32;
             r.found_fx |= found::DOM;
+        }
+    }
+    // EMP: `EMP_JamTeam( otherTeam, <seconds>, delay )`.
+    if let Some(v) = get(EMP).and_then(|t| {
+        calls(&t, "EMP_JamTeam", 0)
+            .into_iter()
+            .find_map(|(_, a)| a.get(1).and_then(|s| number(s)))
+    }) {
+        r.emp_ms = (v * 1000.0) as u32;
+        r.found_fx |= found::EMP;
+    }
+    // Nuke: `setDvarIfUninitialized( "scr_nukeTimer", <s> )` and `delaythread_nuke( (level.nukeTimer + <s>), ::nukeDeath )`.
+    if let Some(t) = get(NUKE) {
+        let timer = calls(&t, "setDvarIfUninitialized", 0)
+            .into_iter()
+            .find(|(_, a)| a.first().is_some_and(|n| n == "scr_nukeTimer"))
+            .and_then(|(_, a)| a.get(1).and_then(|s| number(s)));
+        let death = t.find("::nukeDeath").and_then(|i| {
+            let before = &t[..i];
+            let plus = before.rfind('+')?;
+            number(before[plus + 1..].split(')').next()?)
+        });
+        if let (Some(timer), Some(death)) = (timer, death) {
+            r.nuke_timer_ms = (timer * 1000.0) as u32;
+            r.nuke_death_ms = (death * 1000.0) as u32;
+            r.found_fx |= found::NUKE;
         }
     }
     for (name, bit, slot) in [

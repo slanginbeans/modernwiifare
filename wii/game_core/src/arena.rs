@@ -56,6 +56,8 @@ pub struct Fighter {
     pub uav_until: Option<u32>,
     /// This fighter's Counter-UAV: until when its enemies' radar is jammed (`_uav.gsc`).
     pub counter_uav_until: Option<u32>,
+    /// This fighter's EMP: until when its enemies are jammed (`_emp.gsc`).
+    pub emp_until: Option<u32>,
     /// Bot stepping: when the next step is due, steps taken, the decision being carried out, and the position
     /// before the last step (with its time) for drawing in between.
     next_step_ms: Option<u32>,
@@ -87,6 +89,7 @@ impl Fighter {
             shock: None,
             uav_until: None,
             counter_uav_until: None,
+            emp_until: None,
             next_step_ms: None,
             steps: 0,
             act: Act::default(),
@@ -185,6 +188,15 @@ impl Shock {
     }
 }
 
+/// A tactical nuke (`_nuke.gsc`): it detonates `rules.nuke_timer_ms` after the call and everyone dies
+/// `rules.nuke_death_ms` later; the caller (their team in team modes) wins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Nuke {
+    pub owner: usize,
+    pub detonate_ms: u32,
+    pub done: bool,
+}
+
 /// The match's game type.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
@@ -257,6 +269,8 @@ pub struct Arena {
     pub smoke: crate::smoke::Smoke,
     /// Domination's flags (in Domination, when the map has them).
     pub dom: Option<crate::dom::Domination>,
+    /// A tactical nuke: who called it, when it goes off, and whether it has (the match is over: its caller wins).
+    pub nuke: Option<Nuke>,
     rng: u32,
     /// Whether the human (slot 0) is in the match (not free-flying): bots ignore and can't hit it otherwise.
     pub human_present: bool,
@@ -386,6 +400,7 @@ impl Arena {
             blockers: &[],
             smoke: crate::smoke::Smoke::default(),
             dom: None,
+            nuke: None,
             rng: 0x2545_f491,
             human_present: true,
             spawn_count: 0,
@@ -506,6 +521,9 @@ impl Arena {
 
     /// The winning team in team modes (None in free-for-all or on a tie).
     pub fn leading_team(&self) -> Option<u8> {
+        if let Some(n) = self.nuke.filter(|n| n.done) {
+            return Some(self.fighters[n.owner].team).filter(|&t| t != TEAM_NONE);
+        }
         let (a, x) = (self.team_score[1], self.team_score[2]);
         match self.mode {
             Mode::Tdm | Mode::Dom if a > x => Some(TEAM_ALLIES),
@@ -525,6 +543,9 @@ impl Arena {
 
     /// Someone (a player in free-for-all, a team in team modes) reached the score limit (0: none).
     pub fn won(&self) -> bool {
+        if self.nuke.is_some_and(|n| n.done) {
+            return true;
+        }
         let limit = self.limits.score_limit;
         if limit == 0 {
             return false;
@@ -538,9 +559,16 @@ impl Arena {
     /// Fighters in scoreboard order (as [`Arena::leader`]).
     pub fn standings(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.fighters.len()).collect();
+        // A nuke's caller tops the board.
+        let nuker = self.nuke.filter(|n| n.done).map(|n| n.owner);
         order.sort_by_key(|&i| {
             let f = &self.fighters[i];
-            (core::cmp::Reverse(f.score), f.life.deaths, i)
+            (
+                Some(i) != nuker,
+                core::cmp::Reverse(f.score),
+                f.life.deaths,
+                i,
+            )
         });
         order
     }
@@ -1101,6 +1129,21 @@ impl Arena {
     /// Step the mode's objectives by `dt_ms` (Domination's flags): captures score the capturer, held flags their
     /// team.
     pub fn update_objectives(&mut self, dt_ms: f32, now: u32, out: &mut Vec<Event>) {
+        // The nuke: everyone dies (`nukeDeath`), and the match ends.
+        if let Some(n) = self.nuke
+            && !n.done
+            && (now.wrapping_sub(n.detonate_ms.wrapping_add(self.rules.nuke_death_ms)) as i32) >= 0
+        {
+            for (v, f) in self.fighters.iter_mut().enumerate() {
+                if f.life.alive() && f.life.damage(f.life.max_health * 1000, now) {
+                    out.push(Event::Kill {
+                        attacker: n.owner,
+                        victim: v,
+                    });
+                }
+            }
+            self.nuke = Some(Nuke { done: true, ..n });
+        }
         let Some(d) = self.dom.as_mut() else {
             return;
         };
@@ -1133,9 +1176,8 @@ impl Arena {
     /// blocked while the other team has one; in free-for-all, anyone else's).
     pub fn radar_blocked(&self, me: usize, now: u32) -> bool {
         self.fighters.iter().enumerate().any(|(i, f)| {
-            self.enemies(me, i)
-                && f.counter_uav_until
-                    .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
+            let up = |t: Option<u32>| t.is_some_and(|u| (u.wrapping_sub(now) as i32) > 0);
+            self.enemies(me, i) && (up(f.counter_uav_until) || up(f.emp_until))
         })
     }
 
@@ -1634,6 +1676,36 @@ mod tests {
         assert!(a.radar_blocked(0, 1000) && a.radar_blocked(2, 1000));
         assert!(!a.radar_blocked(1, 1000), "not your own");
         assert!(!a.radar_blocked(0, 31_000), "over");
+    }
+
+    #[test]
+    fn a_nuke_kills_everyone_and_wins_for_its_caller() {
+        let clip = boxes(&[([-4000.0, -4000.0, -64.0], [4000.0, 4000.0, 0.0])]);
+        let mc = MapClip::new(&clip);
+        let spawns = [
+            ([0.0, 0.0, 0.0], 0.0),
+            ([300.0, 0.0, 0.0], 180.0),
+            ([600.0, 0.0, 0.0], 0.0),
+        ];
+        let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+        let mut a = Arena::new(&mc, &spawns, 2, human, Rules::default(), |_| Some(rifle()));
+        a.fighters[1].score = 500;
+        let r = Rules::default();
+        a.nuke = Some(Nuke {
+            owner: 2,
+            detonate_ms: 1000 + r.nuke_timer_ms,
+            done: false,
+        });
+        let mut ev = Vec::new();
+        a.update_objectives(16.0, 1000 + r.nuke_timer_ms, &mut ev);
+        assert!(
+            !a.won() && a.fighters[0].life.alive(),
+            "not until nukeDeath"
+        );
+        a.update_objectives(16.0, 1000 + r.nuke_timer_ms + r.nuke_death_ms, &mut ev);
+        assert!(a.fighters.iter().all(|f| !f.life.alive()));
+        assert!(a.won());
+        assert_eq!(a.standings()[0], 2, "the caller tops the board");
     }
 
     #[test]

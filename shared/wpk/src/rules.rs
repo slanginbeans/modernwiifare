@@ -38,7 +38,9 @@ pub mod found {
     pub const CLAYMORE: u16 = 1 << 4;
     pub const EXPLOSIVES: u16 = 1 << 5;
     pub const DOM: u16 = 1 << 6;
-    pub const ALL_FX: u16 = (1 << 7) - 1;
+    pub const EMP: u16 = 1 << 7;
+    pub const NUKE: u16 = 1 << 8;
+    pub const ALL_FX: u16 = (1 << 9) - 1;
 }
 
 /// A shell shock's screen and movement (an IW4 `.shock` file: `bg_shock_screenType`, blur blend / fade, white and
@@ -139,6 +141,11 @@ pub struct Rules {
     pub dom_capture_score: u32,
     pub dom_use_ms: u32,
     pub dom_tick_ms: u32,
+    /// The EMP's jam (`_emp.gsc` `EMP_JamTeam` duration).
+    pub emp_ms: u32,
+    /// The tactical nuke's countdown (`scr_nukeTimer`'s default) and, after it, when everyone dies (`nukeDeath`).
+    pub nuke_timer_ms: u32,
+    pub nuke_death_ms: u32,
     pub found: u16,
     pub found_team: u16,
     pub found_fx: u16,
@@ -201,6 +208,9 @@ impl Default for Rules {
             dom_capture_score: 150,
             dom_use_ms: 10_000,
             dom_tick_ms: 5000,
+            emp_ms: 60_000,
+            nuke_timer_ms: 10_000,
+            nuke_death_ms: 1500,
             found: 0,
             found_team: 0,
             found_fx: 0,
@@ -275,6 +285,9 @@ impl Rules {
             self.dom_capture_score,
             self.dom_use_ms,
             self.dom_tick_ms,
+            self.emp_ms,
+            self.nuke_timer_ms,
+            self.nuke_death_ms,
         ] {
             o.u32(v);
         }
@@ -371,6 +384,22 @@ impl Rules {
                 be::u32(b, 258)
             } else {
                 d.dom_tick_ms
+            },
+            // EMP and the nuke follow Domination.
+            emp_ms: if b.len() >= 274 {
+                be::u32(b, 262)
+            } else {
+                d.emp_ms
+            },
+            nuke_timer_ms: if b.len() >= 274 {
+                be::u32(b, 266)
+            } else {
+                d.nuke_timer_ms
+            },
+            nuke_death_ms: if b.len() >= 274 {
+                be::u32(b, 270)
+            } else {
+                d.nuke_death_ms
             },
             found: be::u16(b, 176),
             found_team: be::u16(b, 178),

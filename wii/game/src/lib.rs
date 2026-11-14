@@ -436,6 +436,12 @@ fn draw_match_hud(
     now: u32,
 ) {
     let mut line = Str::default();
+    // A nuke's countdown (MW2 shows it as the game timer).
+    if let Some(n) = a.nuke.filter(|n| !n.done) {
+        line.push_str("NUKE ");
+        line.num(n.detonate_ms.saturating_sub(now).div_ceil(1000));
+        line.push_str("  ");
+    }
     if a.mode.teams() {
         // Your team first, as MW2's team score bar.
         let mine = usize::from(a.fighters[0].team);
@@ -1140,6 +1146,22 @@ fn run_map(
                 // `_uav.gsc`: up as long as a UAV, jamming the enemies' radar.
                 a.fighters[0].counter_uav_until = Some(now.wrapping_add(rules.uav_time_ms));
                 reward_note = Some(("COUNTER-UAV ONLINE", now));
+            } else if r == "emp"
+                && let Some(a) = arena.as_mut()
+            {
+                // `_emp.gsc`: the enemies' radar is jammed for the EMP's time.
+                a.fighters[0].emp_until = Some(now.wrapping_add(rules.emp_ms));
+                reward_note = Some(("EMP DEPLOYED", now));
+            } else if r == "nuke"
+                && let Some(a) = arena.as_mut()
+                && a.nuke.is_none()
+            {
+                a.nuke = Some(arena::Nuke {
+                    owner: 0,
+                    detonate_ms: now.wrapping_add(rules.nuke_timer_ms),
+                    done: false,
+                });
+                reward_note = Some(("TACTICAL NUKE INCOMING", now));
             } else {
                 reward_note = Some(("THAT KILLSTREAK IS NOT IN THIS BUILD YET", now));
             }
