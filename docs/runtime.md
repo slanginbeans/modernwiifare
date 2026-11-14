@@ -5,6 +5,9 @@
 double-click `build.bat`. It builds the game, converts every map and weapon that is missing or out of date (a pack
 made by the current converter from unchanged game files is skipped, so later runs take seconds), and puts it all in
 `distpps\mwf_game`. Copy `distpps` to the SD card. `build.bat nodata` skips the conversion.
+The converter is built for `x86_64-pc-windows-gnullvm` with llvm-mingw (`tools\mwf-convert.ps1`; the plain Windows
+GNU toolchain can't build IW4L's zone reader): it uses `rust\env.ps1` at the root of the repo's drive when there is
+one (or `MWF_RUST_ENV`), and otherwise offers to download a pinned llvm-mingw into `.toolchain\`.
 
 By hand:
 1. Convert the maps on your PC: `mwf-convert pack "<your MW2 / IW4x folder>" --map all` → `out/packs/<map>.wpk` for

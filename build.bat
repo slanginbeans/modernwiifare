@@ -176,12 +176,11 @@ if not defined GAME (
 set "GAME=%GAME:"=%"
 call :ensure_rust
 if errorlevel 1 exit /b 0
-set "CARGO=cargo"
-if exist "%USERPROFILE%\.cargo\bin\cargo.exe" set "CARGO=%USERPROFILE%\.cargo\bin\cargo.exe"
 echo.
 echo [data] Converting what changed from: %GAME%
 echo        ^(everything the first time: about 10 minutes; up-to-date packs are skipped^)
-"%CARGO%" run --release -q -p mwf_convert -- pack "%GAME%" --map all
+rem The converter builds for x86_64-pc-windows-gnullvm with llvm-mingw (tools\mwf-convert.ps1 sets that up).
+powershell -NoProfile -ExecutionPolicy Bypass -File "tools\mwf-convert.ps1" pack "%GAME%" --map all
 if errorlevel 1 echo [data] Some conversions failed ^(see above^). Copying what was made.
 if not exist "out\packs\" exit /b 0
 set "APP=dist\apps\mwf_game"

@@ -63,12 +63,10 @@ if exist "%USERPROFILE%\.cargo\bin\cargo.exe" (
 )
 
 rem ---- 4. build + run -------------------------------------------------------
-echo [inventory] Building the converter ^(the first time takes a few minutes^)...
-"%CARGO%" build --release -q -p mwf_convert
-if errorlevel 1 goto failed
 echo [inventory] Reading: %GAME%
 echo.
-"%CARGO%" run --release -q -p mwf_convert -- inventory "%GAME%" --out out\inventory.json
+rem The converter builds for x86_64-pc-windows-gnullvm with llvm-mingw (tools\mwf-convert.ps1 sets that up).
+powershell -NoProfile -ExecutionPolicy Bypass -File "tools\mwf-convert.ps1" inventory "%GAME%" --out out\inventory.json
 if errorlevel 1 goto failed
 
 echo.
