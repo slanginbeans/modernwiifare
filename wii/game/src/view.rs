@@ -36,6 +36,8 @@ pub struct View {
     skinned: Vec<[f32; 3]>,
     /// The clip playing: (slot, restart toggle, start time in ms).
     playing: (u8, bool, u32),
+    /// Model-to-eye matrix of the last draw (for the muzzle flash).
+    last_eye: Option<Mtx34>,
 }
 
 /// `count` bytes of 32-byte aligned MEM2, released with the map.
@@ -131,8 +133,25 @@ impl View {
             skin: Vec::with_capacity(vm.bones.len()),
             skinned: Vec::with_capacity(n),
             playing: (wpk::view::slot::IDLE, false, 0),
+            last_eye: None,
             vm,
         })
+    }
+
+    /// Where the gun's `tag_flash` is on the 640 × 480 HUD, from the last draw.
+    pub fn muzzle_screen(&self, aspect: f32) -> Option<[f32; 2]> {
+        let eye = self.last_eye.as_ref()?;
+        let m = self.world.get(usize::from(self.vm.flash_bone))?;
+        let p = vmod::apply(eye, [m[0][3], m[1][3], m[2][3]]);
+        if p[2] > -ZNEAR {
+            return None;
+        }
+        let ty = libm::tanf(FOVY.to_radians() * 0.5);
+        let tx = ty * aspect;
+        Some([
+            320.0 + p[0] / (-p[2] * tx) * 320.0,
+            240.0 - p[1] / (-p[2] * ty) * 240.0,
+        ])
     }
 
     /// Pose for the gun's animation (`slot`, restart toggle) at `now_ms`, skin, and draw. Call after the world.
@@ -174,7 +193,9 @@ impl View {
             [-cp * sy, sp, cp * cy, 0.0],
         ];
         let eye = vmod::eye_from_model(&self.world[usize::from(self.vm.view_bone)]);
-        gfx.pos_matrix(&vmod::mul(&kick, &eye));
+        let eye = vmod::mul(&kick, &eye);
+        gfx.pos_matrix(&eye);
+        self.last_eye = Some(eye);
         let mut last: Option<DrawState> = None;
         for d in &self.draws {
             if last != Some(d.state) {

@@ -559,6 +559,7 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
         .as_ref()
         .and_then(|g| view::View::load(common, g.weapon_index(), gfx));
     let mut impacts: [(Option<[f32; 3]>, u32); 8] = [(None, 0); 8];
+    let mut last_shot_ms: Option<u32> = None;
     let mut next_impact = 0usize;
     let mut hud_rects: Vec<Rect> = Vec::with_capacity(512);
     let mut life = Life::default();
@@ -664,6 +665,9 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
                         cam.right(),
                         cam.up(),
                     );
+                    if shot.is_some() {
+                        last_shot_ms = Some(now);
+                    }
                     if let Some(s) = shot.filter(|s| s.hit) {
                         impacts[next_impact] = (Some(s.end), now);
                         next_impact = (next_impact + 1) % impacts.len();
@@ -700,6 +704,18 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
         {
             let (slot, restart) = g.anim();
             v.draw(gfx, slot, restart, now, g.gun_kick());
+            // Muzzle flash for 50 ms after a shot: a placeholder additive-looking glow at the gun's tag_flash until
+            // MW2's view flash effect is converted.
+            if last_shot_ms.is_some_and(|t| now.wrapping_sub(t) < 50)
+                && let Some([x, y]) = v.muzzle_screen(aspect)
+            {
+                let (x, y) = (x as i16, y as i16);
+                gfx.hud_rects(
+                    &[[x - 22, y - 8, 44, 16], [x - 8, y - 22, 16, 44]],
+                    0xffb0_4070,
+                );
+                gfx.hud_rects(&[[x - 8, y - 8, 16, 16]], 0xffff_e0d0);
+            }
         }
         if !flying {
             if let Some(g) = gun.as_ref().filter(|_| life.alive()) {

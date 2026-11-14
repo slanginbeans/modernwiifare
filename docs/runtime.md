@@ -53,7 +53,9 @@ bullet leaves in a random direction inside it, and the crosshair ticks sit on th
 Recoil is IW4L's model with each weapon's own kick numbers (`KICK` in `common.wpk`): every shot kicks the view
 (capped at 8°, settling over ~80 ms springs; later shots follow the kicked view, so the gun climbs as in MW2) and
 the viewmodel (gun kick within the weapon's maximum pitch / yaw).
-Not yet: muzzle flash, sounds, damage to players, other weapons and attachments.
+A shot shows a muzzle flash for 50 ms at the gun's `tag_flash`: a placeholder glow in two HUD rectangles, until
+MW2's view flash effect (FxEffectDef) is converted.
+Not yet: sounds, damage to players, other weapons and attachments.
 
 ## First-person model
 The M4A1's view hands and gun (`common.wpk`, 8.4k triangles, 101 bones, 17 animations), posed and skinned on the CPU
