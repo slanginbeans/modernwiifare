@@ -1,8 +1,15 @@
 # The Wii game runtime (`mwf_game.dol`)
 
 ## Try it
+**Easiest:** keep this repo folder next to your `Call of Duty Modern Warfare 2` folder (or set `MWF_GAME` to it) and
+double-click `build.bat`. It builds the game, converts every map and weapon that is missing or out of date (a pack
+made by the current converter from unchanged game files is skipped, so later runs take seconds), and puts it all in
+`distpps\mwf_game`. Copy `distpps` to the SD card. `build.bat nodata` skips the conversion.
+
+By hand:
 1. Convert the maps on your PC: `mwf-convert pack "<your MW2 / IW4x folder>" --map all` → `out/packs/<map>.wpk` for
    all 16 multiplayer maps (or `--map mp_rust` for one).
+   Packs that are already up to date are skipped (`--force` rebuilds them).
    `--map all` also writes `out/packs/common.wpk` (weapons and classes) and `out/packs/views/*.wpk` (each weapon's
    first-person model, textures and sounds); or run `mwf-convert common "<folder>"` for those alone.
 2. The packs live in the game's own app folder: map `.wpk` files in **`sd:/apps/mwf_game/maps/`**, `common.wpk` in

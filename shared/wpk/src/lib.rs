@@ -102,6 +102,8 @@ pub mod tag {
     pub const INSTANCE_CELLS: Tag = *b"SMCL";
     /// Collision (`clip::Clip`), one blob.
     pub const CLIP: Tag = *b"CLIP";
+    /// Converter revision and input fingerprint of the file (12 bytes; converter-side only).
+    pub const STAMP: Tag = *b"STMP";
     /// Bot walk graph ([`crate::nav::NavGraph`]); decoded at load.
     pub const NAV: Tag = *b"NAVG";
 }

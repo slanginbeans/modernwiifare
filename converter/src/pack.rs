@@ -374,6 +374,7 @@ pub fn build(
     images: &[ZoneImage],
     index: &[IndexEntry],
     tex_dir: &Path,
+    stamp: &crate::stamp::Stamp,
 ) -> Result<(Vec<u8>, PackReport), String> {
     let mut report = PackReport {
         map: map.to_owned(),
@@ -799,6 +800,7 @@ pub fn build(
     }
 
     let mut b = wpk::PackBuilder::new(map);
+    b.section(wpk::tag::STAMP, 0, stamp.encode());
     b.section(
         wpk::tag::TEXTURES,
         tex.records.len() as u32,

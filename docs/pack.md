@@ -34,6 +34,13 @@ Version 3 (2026-11-13): fixed-point vertices. Version 2: LOD tables in `ModelRec
 | `NAVG` | one blob (`wpk::nav::NavGraph`), decoded at load | the bots' walk graph: floor points (feet positions) and moves (target, cost, walk or one-way drop), baked from the collision by `game_core::nav::bake` |
 | `CLIP` | one blob (`wpk::clip::Clip`) | collision, unsimplified: a table of 16 arrays (count, offset), then pooled brush planes + surface flags, brushes (contents, glass), BSP nodes, leaves, leaf brushes, mesh vertices / triangles / walkable-edge bits / triangle flags / AABB trees / partitions / borders / roots, brush models. Decoded and validated at load into the `clipmap_iw4` types IW4L traces with |
 
+## Rebuilding only what changed
+Every pack the converter writes starts with a `STMP` section (12 bytes): the converter's output revision
+(`converter/src/stamp.rs`, `REVISION`) and a fingerprint of the zone files it read (their names, sizes and
+modification times; no game content). `pack` and `common` skip an output whose stamp matches. **Bump `REVISION`
+whenever a change alters what the converter writes**, so everyone's packs are rebuilt on their next run. The Wii
+ignores the section.
+
 ## `common.wpk` and `views/*.wpk` (`mwf-convert common`)
 
 `common.wpk`:

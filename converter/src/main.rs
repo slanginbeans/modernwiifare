@@ -13,7 +13,7 @@
 //!       Converts every texture (GfxImage) of one map zone to Wii `.gxt` files, taking pixels from the zone or
 //!       from main/*.iwd, and writes a content-free report.json beside them. Default folder: out/textures/<zone>.
 //!       --verbose prints one line per texture (with its name) to the console only.
-//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>]
+//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force]
 //!       Builds the Wii pack of one map: its textures (as `textures` does), lightmaps, materials, world geometry as
 //!       display lists, skybox and spawns. Default output: out/packs/<zone>.wpk (+ a content-free .json report).
 //!   mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw <deg> --pitch <deg>] [--out <file.png>]
@@ -36,6 +36,7 @@ mod pack;
 mod pixel_decode;
 mod preview;
 mod sounds;
+mod stamp;
 mod static_models;
 mod texture;
 mod ui_tables;
@@ -50,7 +51,7 @@ const SHARED_TABLES_ZONE: &str = "code_post_gfx_mp";
 const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <report.json>]\n  \
      mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]\n  \
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
-     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>]\n  \
+     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force]\n  \
      mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n  \
      mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask|minimap] [--out <folder>]";
 
@@ -161,6 +162,8 @@ struct MapArgs {
     map: String,
     zone: Option<PathBuf>,
     out: Option<PathBuf>,
+    /// Rebuild even when the output is up to date.
+    force: bool,
 }
 
 fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
@@ -168,8 +171,13 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
     let mut map = String::from("mp_rust");
     let mut zone: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
+    let mut force = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
+        if a == "--force" {
+            force = true;
+            continue;
+        }
         let target = match a.as_str() {
             "--map" | "--zone" | "--out" => a.as_str(),
             _ if game.is_none() => {
@@ -200,6 +208,7 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
         map,
         zone,
         out,
+        force,
     })
 }
 
@@ -417,7 +426,11 @@ fn run_pack(args: &[String]) -> ExitCode {
             }
         }
         println!("== common");
-        if run_common(&[a.game.display().to_string()]) != ExitCode::SUCCESS {
+        let mut common_args = vec![a.game.display().to_string()];
+        if a.force {
+            common_args.push("--force".to_owned());
+        }
+        if run_common(&common_args) != ExitCode::SUCCESS {
             failed.push("common");
         }
         println!(
@@ -465,6 +478,25 @@ fn run_common(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     a.map = "common_mp".to_owned();
+    let out = a
+        .out
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("out/packs/common.wpk"));
+    let view_dir = out
+        .parent()
+        .map_or_else(|| PathBuf::from("views"), |d| d.join("views"));
+    let mut zones = vec!["common_mp", SOUND_ZONE];
+    zones.extend(CLASS_ZONES);
+    let st = stamp_of(&a, &zones);
+    let views_there = std::fs::read_dir(&view_dir).is_ok_and(|mut d| d.next().is_some());
+    if !a.force && views_there && st.up_to_date(&out) {
+        println!(
+            "common: up to date ({} and {})",
+            out.display(),
+            view_dir.display()
+        );
+        return ExitCode::SUCCESS;
+    }
     // Create-a-Class: MW2's class tables and the names they use (read first: they list the weapons to convert).
     let mut localize = HashMap::new();
     let mut tables = HashMap::new();
@@ -579,6 +611,7 @@ fn run_common(args: &[String]) -> ExitCode {
         eprintln!("warning: class table {t} not found");
     }
     let mut b = wpk::PackBuilder::new("common");
+    b.section(wpk::tag::STAMP, 0, st.encode());
     b.section(
         wpk::tag::WEAPONS,
         weapons.len() as u32,
@@ -590,10 +623,6 @@ fn run_common(args: &[String]) -> ExitCode {
         wpk::records::encode(&kicks),
     );
     b.section(wpk::tag::CLASSES, 0, catalog.encode());
-    let out = a
-        .out
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("out/packs/common.wpk"));
     let bytes = b.finish();
     if !write_file(&out, &bytes) {
         return ExitCode::FAILURE;
@@ -606,9 +635,6 @@ fn run_common(args: &[String]) -> ExitCode {
     );
     // One file per first-person weapon: its model, textures and sounds (`views/<weapon>.wpk`, loaded when a class
     // carries it).
-    let view_dir = out
-        .parent()
-        .map_or_else(|| PathBuf::from("views"), |d| d.join("views"));
     let (mut total, mut variants, mut missing_sounds, mut missing_clips) = (0usize, 0, 0, 0);
     let count = views.len();
     for mut v in views {
@@ -679,7 +705,29 @@ fn write_file(path: &std::path::Path, bytes: &[u8]) -> bool {
     true
 }
 
+/// The stamp of an output made from these zones of the install (zones that aren't there are left out).
+fn stamp_of(a: &MapArgs, zones: &[&str]) -> stamp::Stamp {
+    let paths: Vec<PathBuf> = zones
+        .iter()
+        .filter_map(|z| map_walk::locate_zone(&a.game, z).ok())
+        .collect();
+    stamp::Stamp::of(&paths)
+}
+
 fn run_pack_one(a: MapArgs) -> ExitCode {
+    let out = a
+        .out
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(format!("out/packs/{}.wpk", a.map)));
+    // The map's zone, and the zone with the shared tables its textures are looked up in.
+    let st = match &a.zone {
+        Some(z) => stamp::Stamp::of(std::slice::from_ref(z)),
+        None => stamp_of(&a, &[&a.map, "code_post_gfx_mp"]),
+    };
+    if !a.force && st.up_to_date(&out) {
+        println!("{}: up to date ({})", a.map, out.display());
+        return ExitCode::SUCCESS;
+    }
     let (image, label, _) = match open_map_zone(&a) {
         Ok(x) => x,
         Err(code) => return code,
@@ -704,6 +752,7 @@ fn run_pack_one(a: MapArgs) -> ExitCode {
         &collector.images,
         &index,
         &tex_dir,
+        &st,
     ) {
         Ok(x) => x,
         Err(e) => {
@@ -711,10 +760,6 @@ fn run_pack_one(a: MapArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let out = a
-        .out
-        .clone()
-        .unwrap_or_else(|| PathBuf::from(format!("out/packs/{}.wpk", a.map)));
     if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty())
         && let Err(e) = std::fs::create_dir_all(dir)
     {

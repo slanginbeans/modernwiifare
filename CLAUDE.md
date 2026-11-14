@@ -31,6 +31,8 @@ The repository holds code, tools and docs only. License: Apache-2.0.
   `out/textures/<zone>/` with a content-free `report.json`. Role and alpha come from the materials that use each image
   (`material_links.rs`); the name is only a fallback. Each texture also gets a load-by-need group (match / weapon /
   catalog / menu), listed with its file in `index.json` (git-ignored; it names assets). See `docs/textures.md`.
+  Packs carry a stamp (`converter/src/stamp.rs`): bump `REVISION` whenever the converter's output changes, or
+  `build.bat` / `pack --map all` keep the old packs.
 - `wii/`: Wii runtime (stable Rust, no_std + alloc, ADR 0006), builds `.dol`s with `make -C wii`.
   - `platform/`: the C shim over libogc (`shim.h` is the whole API Rust sees; keep `spikes/src/ffi.rs` in sync).
   - `syslink/`: system-link protocol (no_std, host-tested). `spikes/`: Phase 0 spike programs.

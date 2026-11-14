@@ -6,8 +6,10 @@ rem  Double-click this file (or run it from a command prompt). It:
 rem    1. updates this folder from the GitHub repo (git pull), if it can
 rem    2. builds the Wii programs (Rust + devkitPro)
 rem    3. packages them for the Homebrew Channel:
-rem         dist\apps\mwf_spike_a_gx\boot.dol + meta.xml
-rem         dist\apps\mwf_spike_b_net\boot.dol + meta.xml
+rem         dist\apps\mwf_game\boot.dol + meta.xml (and the test spikes)
+rem    4. if it finds your MW2 / IW4x folder, converts the maps and weapons that
+rem       are missing or out of date (only those: an up-to-date pack is skipped)
+rem       and copies them into dist\apps\mwf_game (maps\, views\, common.wpk)
 rem       Copy the "apps" folder inside "dist" to the root of the SD card.
 rem
 rem  Needs:
@@ -16,10 +18,15 @@ rem      tick "Wii Development"), plus Rust (this script offers to install it), 
 rem    - Docker Desktop (it downloads the devkitPro image and Rust the first time)
 rem  and Git for Windows for the automatic update (optional).
 rem
-rem  No game files are needed for these builds, and none are ever put in this repo.
+rem  Step 4 reads your own game files (never put in this repo). Which folder, in order:
+rem    - MWF_GAME=D:\path\to\game (set before running)
+rem    - "Call of Duty Modern Warfare 2" next to this repo folder
+rem      (e.g. D:\mwf\Call of Duty Modern Warfare 2 beside D:\mwf\modernwiifare)
+rem  Without one, the build still works: copy converted packs yourself.
 rem
-rem    build.bat           update, then build and package
-rem    build.bat noupdate  build and package without updating
+rem    build.bat           update, then build, package and convert what changed
+rem    build.bat noupdate  the same without updating
+rem    build.bat nodata    build and package only (no game data step)
 rem    build.bat clean     delete build output
 rem ---------------------------------------------------------------------------
 setlocal
@@ -30,6 +37,8 @@ set "UPDATE=1"
 if /i "%~1"=="clean" set "TARGET=clean"
 if /i "%~1"=="clean" set "UPDATE=0"
 if /i "%~1"=="noupdate" set "UPDATE=0"
+set "DATA=1"
+if /i "%~1"=="nodata" set "DATA=0"
 
 rem ---- 1. update from the repo ----------------------------------------------
 if "%UPDATE%"=="0" goto build
@@ -153,6 +162,39 @@ del "%RUSTUP_INIT%" >nul 2>nul
 echo [rust] Installed. The first build downloads the exact Rust version this project pins.
 exit /b 0
 
+rem ---- 4. game data: convert what changed, copy it into dist -----------------
+:data
+set "GAME=%MWF_GAME%"
+rem (paths from the repo folder: the script cd-ed there at the start)
+if not defined GAME if exist "%cd%\..\Call of Duty Modern Warfare 2\zone\" set "GAME=%cd%\..\Call of Duty Modern Warfare 2"
+if not defined GAME (
+    echo.
+    echo [data] No game folder found, so no maps converted. Put this folder next to your
+    echo        "Call of Duty Modern Warfare 2" folder, or set MWF_GAME to it, and build again.
+    exit /b 0
+)
+set "GAME=%GAME:"=%"
+call :ensure_rust
+if errorlevel 1 exit /b 0
+set "CARGO=cargo"
+if exist "%USERPROFILE%\.cargo\bin\cargo.exe" set "CARGO=%USERPROFILE%\.cargo\bin\cargo.exe"
+echo.
+echo [data] Converting what changed from: %GAME%
+echo        ^(everything the first time: about 10 minutes; up-to-date packs are skipped^)
+"%CARGO%" run --release -q -p mwf_convert -- pack "%GAME%" --map all
+if errorlevel 1 echo [data] Some conversions failed ^(see above^). Copying what was made.
+if not exist "out\packs\" exit /b 0
+set "APP=dist\apps\mwf_game"
+rem robocopy copies only new or changed files; exit codes under 8 mean success.
+robocopy "out\packs" "%APP%\maps" *.wpk /xf common.wpk /njh /njs /ndl /nfl /np >nul
+if errorlevel 8 echo [data] Copying the maps failed.
+if exist "out\packs\common.wpk" robocopy "out\packs" "%APP%" common.wpk /njh /njs /ndl /nfl /np >nul
+if errorlevel 8 echo [data] Copying common.wpk failed.
+if exist "out\packs\views\" robocopy "out\packs\views" "%APP%\views" *.wpk /njh /njs /ndl /nfl /np >nul
+if errorlevel 8 echo [data] Copying the weapon files failed.
+echo [data] Game data is in %APP% ^(maps\, views\, common.wpk^).
+exit /b 0
+
 :notools
 echo.
 echo [build] No Wii build tools found on this PC. The easiest fix:
@@ -172,6 +214,7 @@ echo   same dist\apps folder, built by GitHub.
 goto failed
 
 :done
+if /i "%TARGET%"=="package" if "%DATA%"=="1" call :data
 echo.
 if /i "%TARGET%"=="package" (
     echo Done. Copy the "apps" folder from:
