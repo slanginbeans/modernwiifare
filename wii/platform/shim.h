@@ -97,6 +97,10 @@ typedef struct {
 /* Allocate from MEM2 (bump allocator over the MEM2 arena; never freed). NULL when out of memory. */
 void *mwf_mem2_alloc(uint32_t size, uint32_t align);
 uint32_t mwf_mem2_free_bytes(void);
+/* The folder the game runs from, without a trailing slash ("sd:/apps/mwf_game"). Set once from argv[0]; when that is
+ * missing or has no folder (wiiload, emulators) it stays "sd:/apps/mwf_game". */
+void mwf_set_app_dir(const char *argv0);
+const char *mwf_app_dir(void);
 /* Mark / release the MEM2 bump allocator (everything allocated after the mark is freed; for map changes). */
 uint32_t mwf_mem2_mark(void);
 void mwf_mem2_release(uint32_t mark);

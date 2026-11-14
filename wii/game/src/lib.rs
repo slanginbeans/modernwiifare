@@ -1,4 +1,5 @@
-//! `mwf_game.dol`: load `sd:/modernwiifare/maps/<map>.wpk` and walk it with IW4L movement on the GameCube pad.
+//! `mwf_game.dol`: load `<app folder>/maps/<map>.wpk` (e.g. `sd:/apps/mwf_game/maps/`) and play it on the GameCube
+//! pad.
 //!
 //! Controls (port 1), walking: main stick move, C-stick look, A jump, B crouch (held), Z sprint, L ADS.
 //! D-pad up toggles free fly (main stick, C-stick, L/R triggers down/up, B fast). Y next spawn, START exit.
@@ -295,9 +296,32 @@ fn draw_gun_hud(
     gfx.hud_rects(rects, 0xc0c8d0c0);
 }
 
-/// `sd:/modernwiifare/common.wpk` (from `mwf-convert common`), or empty when it isn't there.
+/// A NUL-terminated path inside the app folder: `<app folder>/<rest>`.
+struct AppPath([u8; 192]);
+
+impl AppPath {
+    fn new(rest: &str) -> Option<AppPath> {
+        let dir = unsafe { core::ffi::CStr::from_ptr(ffi::mwf_app_dir()) }.to_bytes();
+        let mut p = AppPath([0; 192]);
+        let n = dir.len() + 1 + rest.len();
+        if n + 1 > p.0.len() {
+            return None;
+        }
+        p.0[..dir.len()].copy_from_slice(dir);
+        p.0[dir.len()] = b'/';
+        p.0[dir.len() + 1..n].copy_from_slice(rest.as_bytes());
+        Some(p)
+    }
+    fn as_ptr(&self) -> *const core::ffi::c_char {
+        self.0.as_ptr().cast()
+    }
+}
+
+/// `<app folder>/common.wpk` (from `mwf-convert common`), or empty when it isn't there.
 fn load_common() -> Vec<u8> {
-    let path = c"sd:/modernwiifare/common.wpk";
+    let Some(path) = AppPath::new("common.wpk") else {
+        return Vec::new();
+    };
     let mut head = [0u8; wpk::HEADER_LEN];
     let got = unsafe { ffi::mwf_file_read(path.as_ptr(), 0, head.len() as u32, head.as_mut_ptr()) };
     if got != head.len() as i32 {
@@ -329,13 +353,14 @@ enum Exit {
     Quit,
 }
 
-const MAP_DIR: &core::ffi::CStr = c"sd:/modernwiifare/maps";
-
 /// The map packs on the SD card (file stems, sorted).
 fn list_maps(buf: &mut [u8; 2048]) -> Vec<&str> {
+    let Some(dir) = AppPath::new("maps") else {
+        return Vec::new();
+    };
     let n = unsafe {
         ffi::mwf_list_dir(
-            MAP_DIR.as_ptr(),
+            dir.as_ptr(),
             c".wpk".as_ptr(),
             buf.as_mut_ptr(),
             buf.len() as u32,
@@ -398,7 +423,7 @@ fn menu(gfx: &mut Shim, maps: &[&str], selected: &mut usize) -> Option<usize> {
                 64,
                 140,
                 3,
-                "NO MAPS IN SD:/MODERNWIIFARE/MAPS\nCONVERT THEM WITH MWF-CONVERT PACK",
+                "NO MAPS IN THE APP FOLDER'S MAPS/\nCONVERT THEM WITH MWF-CONVERT PACK",
             );
             gfx.hud_rects(&rects, 0xe08060ff);
         }
@@ -433,20 +458,24 @@ fn menu(gfx: &mut Shim, maps: &[&str], selected: &mut usize) -> Option<usize> {
     }
 }
 
-/// Load `sd:/modernwiifare/maps/<name>.wpk` and play it until START (menu) or RESET (quit). Everything the map
+/// Load `<app folder>/maps/<name>.wpk` and play it until START (menu) or RESET (quit). Everything the map
 /// allocates in MEM2 is released by the caller (`mwf_mem2_release`); the MEM1 parts drop here.
 fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, weapons: &[u8]) -> Exit {
-    let mut path = [0u8; 128];
-    let prefix = b"sd:/modernwiifare/maps/";
-    let n = prefix.len() + name.len() + 4;
-    if n + 1 > path.len() {
+    let mut file = [0u8; 96];
+    let n = name.len() + 4;
+    if n > file.len() {
         return fail(0xc02020ff);
     }
-    path[..prefix.len()].copy_from_slice(prefix);
-    path[prefix.len()..prefix.len() + name.len()].copy_from_slice(name.as_bytes());
-    path[n - 4..n].copy_from_slice(b".wpk");
+    file[..name.len()].copy_from_slice(name.as_bytes());
+    file[name.len()..n].copy_from_slice(b".wpk");
+    let Some(path) = core::str::from_utf8(&file[..n])
+        .ok()
+        .and_then(|f| AppPath::new(&["maps/", f].concat()))
+    else {
+        return fail(0xc02020ff);
+    };
     unsafe { ffi::mwf_tex_reset() };
-    let cpath = path.as_ptr().cast();
+    let cpath = path.as_ptr();
     // Header and section table first, to plan the load.
     let mut head = [0u8; wpk::HEADER_LEN + 64 * wpk::SECTION_ENTRY_LEN];
     let got = unsafe { ffi::mwf_file_read(cpath, 0, head.len() as u32, head.as_mut_ptr()) };
@@ -650,7 +679,7 @@ pub extern "C" fn mwf_game_main() -> i32 {
     // The portal walk's scratch (~0.2 MiB) is static, never on the stack.
     let scratch: &'static mut WalkScratch = unsafe { &mut *core::ptr::addr_of_mut!(WALK_SCRATCH) };
     let mut selected = 0usize;
-    // Weapons and other shared data (optional): sd:/modernwiifare/common.wpk, kept in MEM1 for the whole run.
+    // Weapons and other shared data (optional): <app folder>/common.wpk, kept in MEM1 for the whole run.
     let common = load_common();
     loop {
         let mut names = [0u8; 2048];

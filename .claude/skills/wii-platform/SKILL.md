@@ -15,7 +15,7 @@ description: Nintendo Wii hardware budgets and homebrew toolchain (devkitPPC, li
 | Video | 480i/480p, 50/60 Hz | Target **30 fps render**. Run the sim at a fixed rate (decide via ADR). |
 | Audio | DSP with hardware ADPCM decoding. ASND/AESND in libogc mix in software on the DSP | Keep ~16–24 voices. Store sounds as DSP-ADPCM or 16-bit PCM at 22–32 kHz. |
 | Network | **USB LAN adapter (primary, wired)**, built-in 802.11b/g as a fallback. BSD-like sockets through IOS (`net_init`, `net_socket`, ...) | Socket calls go through IPC to IOS, so they are slow. Batch sends and avoid per-packet syscalls in the frame loop. |
-| Storage | SD (front slot) and USB via libfat | Packs are read from **`sd:/modernwiifare/`** by default. The Wii has only 2 USB ports, and the LAN adapter takes one, so USB storage and a USB controller compete for the other. Stream big assets. SD reads are only a few MB/s, so budget load times. |
+| Storage | SD (front slot) and USB via libfat | Packs are read from the game's app folder (**`sd:/apps/mwf_game/maps/`**, `common.wpk` beside `boot.dol`), found from `argv[0]`. The Wii has only 2 USB ports, and the LAN adapter takes one, so USB storage and a USB controller compete for the other. Stream big assets. SD reads are only a few MB/s, so budget load times. |
 
 ## Texture formats (GX)
 - `CMPR` is 4 bpp and DXT1-like with 1-bit alpha. Use it for most diffuse/lightmap data.

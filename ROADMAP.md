@@ -118,7 +118,7 @@ Decisions: [ADR 0001](docs/adr/0001-base-and-source-data.md) IW4L base, PC/IW4x 
 
 ## Phase 7: Source-only release
 - [ ] One command: `cargo xtask convert --game <IW4x path>` then `cargo xtask dol`.
-- [ ] User docs (SD layout `sd:/modernwiifare/`, Homebrew Channel, USB LAN setup, pack-hash mismatch help), vWii check.
+- [ ] User docs (SD layout: packs in `sd:/apps/mwf_game/`, Homebrew Channel, USB LAN setup, pack-hash mismatch help), vWii check.
 
 ---
 

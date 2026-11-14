@@ -4,8 +4,10 @@
 1. Convert the maps on your PC: `mwf-convert pack "<your MW2 / IW4x folder>" --map all` → `out/packs/<map>.wpk` for
    all 16 multiplayer maps (or `--map mp_rust` for one).
    `--map all` also writes `out/packs/common.wpk` (weapons; or run `mwf-convert common "<folder>"`).
-2. Copy the map `.wpk` files to the SD card in **`sd:/modernwiifare/maps/`**, and `common.wpk` to
-   **`sd:/modernwiifare/common.wpk`** (the `.json` reports are not needed). Without `common.wpk` you walk unarmed.
+2. The packs live in the game's own app folder: map `.wpk` files in **`sd:/apps/mwf_game/maps/`**, `common.wpk` in
+   **`sd:/apps/mwf_game/`** (the `.json` reports are not needed). Without `common.wpk` you walk unarmed. The game finds
+   its folder from the path the Homebrew Channel starts it with, so a USB copy (`usb:/apps/mwf_game/`) works too;
+   started without one (wiiload, emulators) it uses `sd:/apps/mwf_game`.
 3. Copy `apps/mwf_game` from the build (`make -C wii package` → `dist/apps`, or CI's `modernwiifare-sd-card`) to
    `sd:/apps/`, and start **Modern Wiifare** from the Homebrew Channel. GameCube controller in port 1.
 

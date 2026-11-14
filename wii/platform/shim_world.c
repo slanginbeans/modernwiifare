@@ -55,6 +55,23 @@ void mwf_mem2_release(uint32_t mark) {
     if (mark && (uintptr_t)mark <= mem2_lo) mem2_lo = (uintptr_t)mark;
 }
 
+static char app_dir[128] = "sd:/apps/mwf_game";
+
+void mwf_set_app_dir(const char *argv0) {
+    if (!argv0) return;
+    const char *slash = strrchr(argv0, '/');
+    /* Needs a device ("sd:" / "usb:") and a folder before the file name. */
+    if (!slash || !strchr(argv0, ':') || slash == argv0) return;
+    size_t n = (size_t)(slash - argv0);
+    if (n >= sizeof app_dir) return;
+    memcpy(app_dir, argv0, n);
+    app_dir[n] = 0;
+}
+
+const char *mwf_app_dir(void) {
+    return app_dir;
+}
+
 static int fat_state = -1; /* -1 not tried, 0 failed, 1 mounted */
 
 int mwf_list_dir(const char *dir, const char *suffix, char *out, uint32_t cap) {
