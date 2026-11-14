@@ -435,6 +435,120 @@ impl crate::records::Record for FpvRecord {
         FpvRecord::from_floats(&v)
     }
 }
+/// A thrown or launched weapon's numbers (IW4 weapon def, `WEQP`, parallel to `WEAP`; zero for guns): the offhand
+/// class (1 frag, 2 smoke, 3 flash ...), fuse and cooking, the explosion (radius, inner / outer damage), the throw
+/// (speed, extra up / forward speed, arming distance), stickiness, and the bounce factors per surface type (IW4's 31
+/// surface types: velocity kept along and against the surface).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EquipRecord {
+    pub offhand_class: i32,
+    pub fuse_time_ms: i32,
+    pub hold_fire_time_ms: i32,
+    pub cook_off_hold: bool,
+    pub timed_detonation: bool,
+    pub projectile_rotates: bool,
+    pub stickiness: i32,
+    pub explosion_radius: i32,
+    pub explosion_radius_min: i32,
+    pub explosion_inner_damage: i32,
+    pub explosion_outer_damage: i32,
+    pub projectile_speed: i32,
+    pub projectile_speed_up: i32,
+    pub projectile_speed_forward: i32,
+    pub projectile_activate_dist: i32,
+    pub projectile_explosion_type: i32,
+    pub start_ammo: i32,
+    pub parallel_bounce: [f32; 31],
+    pub perpendicular_bounce: [f32; 31],
+}
+
+impl Default for EquipRecord {
+    fn default() -> Self {
+        EquipRecord {
+            offhand_class: 0,
+            fuse_time_ms: 0,
+            hold_fire_time_ms: 0,
+            cook_off_hold: false,
+            timed_detonation: false,
+            projectile_rotates: false,
+            stickiness: 0,
+            explosion_radius: 0,
+            explosion_radius_min: 0,
+            explosion_inner_damage: 0,
+            explosion_outer_damage: 0,
+            projectile_speed: 0,
+            projectile_speed_up: 0,
+            projectile_speed_forward: 0,
+            projectile_activate_dist: 0,
+            projectile_explosion_type: 0,
+            start_ammo: 0,
+            parallel_bounce: [0.0; 31],
+            perpendicular_bounce: [0.0; 31],
+        }
+    }
+}
+
+impl crate::records::Record for EquipRecord {
+    const LEN: usize = 16 * 4 + 4 + 62 * 4;
+    fn write(&self, o: &mut Vec<u8>) {
+        for v in [
+            self.offhand_class,
+            self.fuse_time_ms,
+            self.hold_fire_time_ms,
+            self.stickiness,
+            self.explosion_radius,
+            self.explosion_radius_min,
+            self.explosion_inner_damage,
+            self.explosion_outer_damage,
+            self.projectile_speed,
+            self.projectile_speed_up,
+            self.projectile_speed_forward,
+            self.projectile_activate_dist,
+            self.projectile_explosion_type,
+            self.start_ammo,
+            0,
+            0,
+        ] {
+            o.u32(v as u32);
+        }
+        o.push(u8::from(self.cook_off_hold));
+        o.push(u8::from(self.timed_detonation));
+        o.push(u8::from(self.projectile_rotates));
+        o.push(0);
+        for v in self
+            .parallel_bounce
+            .iter()
+            .chain(&self.perpendicular_bounce)
+        {
+            o.f32(*v);
+        }
+    }
+    fn read(b: &[u8]) -> Self {
+        let i = |k: usize| be::u32(b, k * 4) as i32;
+        let f = |k: usize| be::f32(b, 68 + k * 4);
+        EquipRecord {
+            offhand_class: i(0),
+            fuse_time_ms: i(1),
+            hold_fire_time_ms: i(2),
+            stickiness: i(3),
+            explosion_radius: i(4),
+            explosion_radius_min: i(5),
+            explosion_inner_damage: i(6),
+            explosion_outer_damage: i(7),
+            projectile_speed: i(8),
+            projectile_speed_up: i(9),
+            projectile_speed_forward: i(10),
+            projectile_activate_dist: i(11),
+            projectile_explosion_type: i(12),
+            start_ammo: i(13),
+            cook_off_hold: b[64] != 0,
+            timed_detonation: b[65] != 0,
+            projectile_rotates: b[66] != 0,
+            parallel_bounce: core::array::from_fn(f),
+            perpendicular_bounce: core::array::from_fn(|k| f(31 + k)),
+        }
+    }
+}
 /// The record named `name` in a `WEAP` section, with its index.
 pub fn find_indexed(section: &[u8], name: &str) -> Option<(u32, WeaponRecord)> {
     section.chunks_exact(LEN).enumerate().find_map(|(i, r)| {

@@ -59,13 +59,19 @@ it (once fully pushed, full forward reaches IW4's sprint threshold). ADS zooms t
 
 Controls in a match (IW4L movement and the map's collision): main stick move, C-stick look, **A** jump, **B** crouch
 (held), **Z** sprint, **L** ADS, **R** fire, **X** reload, **Y** switch weapon (the gun drops, then the other raises,
-as in MW2), **D-pad right** melee. **D-pad up** toggles free fly (main
-stick, C-stick, L/R triggers down/up, B fast); leaving free fly drops the player where the camera is. **D-pad left**
-calls in your newest killstreak reward, **D-pad down** toggles the performance overlay (fps, frame / CPU /
+as in MW2), **D-pad right** melee, **D-pad up** lethal grenade (hold to cook), **D-pad down** tactical grenade,
+**D-pad left** calls in your newest killstreak reward. **Z + D-pad up** toggles free fly (main
+stick, C-stick, L/R triggers down/up, B fast); leaving free fly drops the player where the camera is.
+**Z + D-pad down** toggles the performance overlay (fps, frame / CPU /
 GPU-wait ms, triangles (of which static models), draws, state changes, visible cells, models, position; see
 `docs/perf.md`). A pack without a `CLIP` section starts in free fly.
 
-Equipment, special grenades and deathstreaks are chosen and saved but do nothing in a match yet.
+Grenades: your class's frag-type equipment (frag, semtex) is thrown through IW4L's offhand states (pull back, cook
+while held, throw) and flies as IW4L's sim flies it (throw speed, gravity, the weapon's per-surface bounce, the fuse;
+`WEQP` in `common.wpk`); the blast hurts everyone in reach, the thrower too, by IW4L's falloff and line-of-sight
+scaling. Bots throw frags at enemies they see at grenade range. Grenades and blasts show as placeholder boxes until
+the projectile models and explosion effects are converted, and the explosion has no sound yet. Throwing knives,
+claymores, C4, special grenades (flash, stun, smoke) and deathstreaks are chosen and saved but do nothing yet.
 Weapons with attachments use the attachment variant's combat numbers (`m4_acog_mp` ...) but the base weapon's
 first-person model.
 

@@ -20,6 +20,36 @@ pub struct WeaponTables<'a> {
     pub kicks: &'a [u8],
     pub moves: &'a [u8],
     pub aims: &'a [u8],
+    /// Thrown weapons' numbers (`WEQP`; empty with an older pack).
+    pub equips: &'a [u8],
+}
+
+/// The weapon fallback classes throw (MW2's frag).
+const FALLBACK_LETHAL: &str = "frag_grenade_mp";
+/// IW4 offhand class of frag-type grenades (thrown, bouncing, on a fuse): the ones this build throws.
+pub const OFFHAND_CLASS_FRAG: i32 = 1;
+
+/// The offhand row of grenade weapon `name` (with or without `_mp`), when it is one this build throws.
+pub fn offhand_row(t: &WeaponTables<'_>, name: &str) -> Option<weapon_iw4::OffhandInvRow> {
+    let (index, rec) = wpk::weapon::find_indexed(t.weapons, name)
+        .or_else(|| wpk::weapon::find_indexed(t.weapons, &alloc::format!("{name}_mp")))?;
+    let e = wpk::records::get::<wpk::weapon::EquipRecord>(t.equips, index as usize)?;
+    if e.offhand_class != OFFHAND_CLASS_FRAG {
+        return None;
+    }
+    let f = weapon_iw4::WeaponCombatFacts::try_from_captured(rec.combat).ok()?;
+    Some(weapon_iw4::OffhandInvRow {
+        weapon: index,
+        offhand_class: e.offhand_class,
+        ammo: e.start_ammo.max(1),
+        hold_fire_time_ms: e.hold_fire_time_ms,
+        fire_time_ms: f.fire_time_ms,
+        fire_delay_ms: f.fire_delay_ms,
+        fuse_time_ms: e.fuse_time_ms,
+        cook_off_hold: e.cook_off_hold,
+        weap_type: f.weap_type,
+        ..weapon_iw4::OffhandInvRow::default()
+    })
 }
 
 pub struct Arsenal {
@@ -128,6 +158,29 @@ impl Arsenal {
                 Some(g)
             });
         }
+        // Grenades: the class's equipment (lethal) and special grenade (tactical), full.
+        let lethal_name = match (cat, class) {
+            (Some(c), Some(l)) => c
+                .perks
+                .get(usize::from(l.equipment))
+                .map(|i| i.name.clone()),
+            _ => Some(alloc::string::String::from(FALLBACK_LETHAL)),
+        };
+        let tactical_name = match (cat, class) {
+            (Some(c), Some(l)) => c
+                .offhands
+                .get(usize::from(l.offhand))
+                .map(|i| i.name.clone()),
+            _ => None,
+        };
+        let rows: alloc::vec::Vec<weapon_iw4::OffhandInvRow> = [lethal_name, tactical_name]
+            .iter()
+            .flatten()
+            .filter_map(|n| offhand_row(t, n))
+            .collect();
+        for g in self.guns.iter_mut().flatten() {
+            g.set_offhands(&rows, OFFHAND_CLASS_FRAG, 2);
+        }
         self.active = if self.guns[0].is_some() { 0 } else { 1 };
         self.pending = None;
         self.used = [self.active == 0, self.active == 1];
@@ -179,6 +232,16 @@ impl Arsenal {
             return;
         };
         let other = 1 - a;
+        // The grenades go with the player to the other gun.
+        let (lo, hi) = self.guns.split_at_mut(1);
+        let (from, to) = if a == 0 {
+            (&lo[0], &mut hi[0])
+        } else {
+            (&hi[0], &mut lo[0])
+        };
+        if let (Some(f), Some(t)) = (from.as_ref(), to.as_mut()) {
+            t.take_offhands(f);
+        }
         if let Some(g) = self.guns[other].as_mut() {
             g.adopt(&hand);
             self.active = other;

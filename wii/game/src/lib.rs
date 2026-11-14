@@ -310,6 +310,16 @@ fn draw_gun_hud(
     name.push_str(g.name().trim_end_matches("_mp"));
     hud::text(rects, 520, 412, 2, name.as_str());
     gfx.hud_rects(rects, 0xc0c8d0c0);
+    // Grenades left (D-pad up throws).
+    let grenades: i32 = g.offhand_ammo().map(|(_, n)| n.max(0)).sum();
+    if g.offhand_ammo().next().is_some() {
+        let mut line = Str::default();
+        line.push_str("GRENADE ");
+        line.num(grenades as u32);
+        rects.clear();
+        hud::text(rects, 520, 400, 2, line.as_str());
+        gfx.hud_rects(rects, if grenades > 0 { 0xc0c8d0c0 } else { 0x606870c0 });
+    }
 }
 
 /// A NUL-terminated path inside the app folder: `<app folder>/<rest>`.
@@ -597,11 +607,16 @@ fn run_map(
     gfx: &mut Shim,
     name: &str,
     scratch: &mut WalkScratch,
-    common: &[u8],
+    common: &'static [u8],
     loadouts: Loadouts<'_>,
     input: &mut front::Input,
 ) -> Exit {
     let weapons = weapon_section(common);
+    // Thrown weapons' numbers (fuse, blast, bounce; empty with an older pack).
+    let equips = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::WEAPON_EQUIP))
+        .map_or(&[][..], |s| s.data);
     // How each first-person weapon moves (sway, bob ...; empty with an older pack).
     let fpvs = wpk::Pack::parse(common, false)
         .ok()
@@ -747,6 +762,7 @@ fn run_map(
                 kicks,
                 moves,
                 aims,
+                equips,
             },
             loadouts.catalog,
             l,
@@ -792,6 +808,17 @@ fn run_map(
             let mut g = Gun::with_index(&rec, index)?;
             g.set_moves(wpk::records::get(moves, index as usize));
             g.set_aim(wpk::records::get(aims, index as usize));
+            // Bots carry MW2's frag.
+            let tables = arsenal::WeaponTables {
+                weapons,
+                kicks,
+                moves,
+                aims,
+                equips,
+            };
+            if let Some(row) = arsenal::offhand_row(&tables, "frag_grenade_mp") {
+                g.set_offhands(&[row], arsenal::OFFHAND_CLASS_FRAG, 2);
+            }
             Some(g)
         })
     };
@@ -803,6 +830,9 @@ fn run_map(
         }
         _ => None,
     };
+    if let Some(a) = arena.as_mut() {
+        a.equips = equips;
+    }
     // Bots call in a UAV at its killstreakTable cost.
     if let (Some(a), Some(c)) = (arena.as_mut(), loadouts.catalog) {
         a.bot_uav_kills = c
@@ -817,6 +847,9 @@ fn run_map(
     let mut boxes: Vec<[f32; 6]> = Vec::with_capacity(BOTS * 10);
     let mut box_colours: Vec<u32> = Vec::with_capacity(BOTS * 10);
     let mut impacts: [(Option<[f32; 3]>, u32); 8] = [(None, 0); 8];
+    // Recent explosions (where, when) for their flash.
+    let mut blasts: [(Option<[f32; 3]>, u32); 4] = [(None, 0); 4];
+    let mut next_blast = 0usize;
     let mut last_shot_ms: Option<u32> = None;
     let mut next_impact = 0usize;
     let mut hud_rects: Vec<Rect> = Vec::with_capacity(512);
@@ -884,7 +917,8 @@ fn run_map(
         last = now;
         let dt = msec as f32 / 1000.0;
         let pad = ffi::pad0();
-        if pad.down & ffi::BTN_DOWN != 0 {
+        // Z + D-pad down: the performance overlay (D-pad down alone is the tactical grenade).
+        if pad.down & ffi::BTN_DOWN != 0 && pad.held & ffi::BTN_Z != 0 {
             show_overlay = !show_overlay;
         }
         if ffi::should_exit() {
@@ -946,7 +980,8 @@ fn run_map(
             }
             devlog::event(now, "killstreak", format_args!("used={r}"));
         }
-        if pad.down & ffi::BTN_UP != 0 && clip.is_some() {
+        // Z + D-pad up: free fly (D-pad up alone throws the lethal grenade).
+        if pad.down & ffi::BTN_UP != 0 && pad.held & ffi::BTN_Z != 0 && clip.is_some() {
             flying = !flying;
             if !flying {
                 // Drop the player where the camera is, facing the same way.
@@ -1111,6 +1146,9 @@ fn run_map(
                                 reload: pad.held & ffi::BTN_X != 0,
                                 // D-pad right: melee (MW2's console melee is a stick click; the pad has none).
                                 melee: pad.held & ffi::BTN_RIGHT != 0,
+                                // D-pad up: lethal grenade, D-pad down: tactical (held to cook, as the button).
+                                frag: pad.held & ffi::BTN_UP != 0 && pad.held & ffi::BTN_Z == 0,
+                                smoke: pad.held & ffi::BTN_DOWN != 0 && pad.held & ffi::BTN_Z == 0,
                                 pm_flags: p.ps.pm_flags,
                                 perks: p.ps.perks,
                                 switch_to,
@@ -1122,6 +1160,30 @@ fn run_map(
                         );
                         // The weapon's state goes into the player's (pmove reads it next step).
                         g.sync_player(&mut p.ps);
+                        if let Some(game_core::gun::WeaponTickEvent::OffhandUsed {
+                            weapon,
+                            remaining_fuse_ms,
+                        }) = event
+                            && let (Some(a), Some(e)) = (
+                                arena.as_mut(),
+                                wpk::records::get::<wpk::weapon::EquipRecord>(
+                                    equips,
+                                    weapon as usize,
+                                ),
+                            )
+                        {
+                            a.grenades.push(game_core::grenade::Grenade::throw(
+                                0,
+                                weapon,
+                                e,
+                                cam.eye,
+                                cam.forward(),
+                                p.ps.velocity,
+                                remaining_fuse_ms,
+                                now,
+                            ));
+                            devlog::event(now, "grenade", format_args!("weapon={weapon}"));
+                        }
                         if event == Some(game_core::gun::WeaponTickEvent::MeleeFired)
                             && let Some(a) = arena.as_mut()
                         {
@@ -1225,6 +1287,7 @@ fn run_map(
                 &mut events,
             );
             a.regen(now);
+            a.update_grenades(c, dt, now, &mut events);
             life = a.fighters[0].life;
             // Hits slow you (IW4 damage timer, set on the arena's copy of you).
             if let Some(p) = player.as_mut() {
@@ -1252,6 +1315,11 @@ fn run_map(
                             format_args!("by={attacker} on={victim} dmg={damage} loc={location}"),
                         );
                     }
+                }
+                Event::Explosion { origin, .. } => {
+                    blasts[next_blast] = (Some(origin), now);
+                    next_blast = (next_blast + 1) % blasts.len();
+                    devlog::event(now, "explosion", format_args!(""));
                 }
                 Event::Kill { attacker, victim } => {
                     feed.rotate_right(1);
@@ -1298,6 +1366,35 @@ fn run_map(
         if let Some(a) = arena.as_ref() {
             boxes.clear();
             box_colours.clear();
+            // Grenades: small dark boxes until the projectile models are converted; explosions: a short bright
+            // flash growing from the blast point (placeholder for MW2's explosion effect).
+            for g in &a.grenades {
+                let o = g.origin;
+                boxes.push([
+                    o[0] - 2.0,
+                    o[1] - 2.0,
+                    o[2] - 2.0,
+                    o[0] + 2.0,
+                    o[1] + 2.0,
+                    o[2] + 2.0,
+                ]);
+                box_colours.push(0x303828ff);
+            }
+            for (o, t) in blasts.iter().filter_map(|(o, t)| o.map(|o| (o, *t))) {
+                let age = now.wrapping_sub(t);
+                if age < 250 {
+                    let r = 20.0 + age as f32 * 0.4;
+                    boxes.push([
+                        o[0] - r,
+                        o[1] - r,
+                        o[2] - r * 0.5,
+                        o[0] + r,
+                        o[1] + r,
+                        o[2] + r,
+                    ]);
+                    box_colours.push(0xffc060ff);
+                }
+            }
             for f in a.fighters[1..].iter().filter(|f| f.life.alive()) {
                 for h in game_core::damage::boxes(f.draw_origin(now), f.player.crouched()) {
                     boxes.push([

@@ -92,6 +92,8 @@ pub mod tag {
     pub const WEAPON_AIM: Tag = *b"WAIM";
     /// How each first-person weapon moves (`weapon::FpvRecord`, parallel to `WEAP`).
     pub const WEAPON_FPV: Tag = *b"WFPV";
+    /// Thrown / launched weapons' numbers (`weapon::EquipRecord`, parallel to `WEAP`).
+    pub const WEAPON_EQUIP: Tag = *b"WEQP";
     /// Sound alias lists ([`crate::sound::AliasRecord`]).
     pub const SOUND_ALIASES: Tag = *b"SNDA";
     /// Sound variants ([`crate::sound::VariantRecord`]).

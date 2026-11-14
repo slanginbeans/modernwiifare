@@ -48,6 +48,9 @@ pub struct GunInput {
     pub reload: bool,
     /// The melee button (IW4 `BUTTON_MELEE`).
     pub melee: bool,
+    /// The lethal and tactical grenade buttons (IW4 `BUTTON_FRAG`, `BUTTON_SMOKE`).
+    pub frag: bool,
+    pub smoke: bool,
     /// The player's `pm_flags` (sprinting blocks firing, as in IW4).
     pub pm_flags: u32,
     /// The player's perk bits (`ps.perks`: Sleight of Hand reloads, fast sprint recovery ...).
@@ -83,6 +86,9 @@ pub struct Gun {
     pub name: [u8; wpk::weapon::NAME_LEN],
     /// The weapon's index in the weapon list (IW4 weapon number).
     index: u32,
+    /// The grenades carried and the offhand state between steps (IW4L `OffhandCmd`, kept as the sim keeps it in the
+    /// player state).
+    offhand: weapon_iw4::OffhandCmd,
     facts: WeaponCombatFacts,
     hand: WeaponHandState,
     server_time: i32,
@@ -130,6 +136,7 @@ impl Gun {
         Some(Gun {
             name: rec.name,
             index,
+            offhand: weapon_iw4::OffhandCmd::default(),
             hand: spawn_weapon_hand(index, &facts, true),
             facts,
             server_time: 1000,
@@ -170,6 +177,34 @@ impl Gun {
         self.hand = spawn_weapon_hand(self.hand.weapon, &self.facts, false);
         self.hand.clip = clip;
         self.hand.stock = stock;
+    }
+
+    /// The grenades this gun's hand can throw: `rows` (weapon, class, ammo, timings), the class the lethal button
+    /// throws and the one the tactical button throws (IW4 `offhandPrimary` / `offhandSecondary`).
+    pub fn set_offhands(&mut self, rows: &[weapon_iw4::OffhandInvRow], lethal: i32, tactical: i32) {
+        let mut inv = [weapon_iw4::OffhandInvRow::default(); weapon_iw4::OFFHAND_INV_SLOTS];
+        for (slot, r) in inv.iter_mut().zip(rows) {
+            *slot = *r;
+        }
+        self.offhand.inventory = inv;
+        self.offhand.offhand_primary = lethal;
+        self.offhand.offhand_secondary = tactical;
+    }
+
+    /// The grenades carried (weapon, ammo).
+    pub fn offhand_ammo(&self) -> impl Iterator<Item = (u32, i32)> + '_ {
+        self.offhand
+            .inventory
+            .iter()
+            .filter(|r| r.weapon != 0)
+            .map(|r| (r.weapon, r.ammo))
+    }
+
+    /// Hand the grenades over to the gun switched to (they belong to the player, not the gun).
+    pub fn take_offhands(&mut self, from: &Gun) {
+        self.offhand.inventory = from.offhand.inventory;
+        self.offhand.offhand_primary = from.offhand.offhand_primary;
+        self.offhand.offhand_secondary = from.offhand.offhand_secondary;
     }
 
     /// This weapon as a switch target (raised for the first time this life when `first`).
@@ -496,6 +531,12 @@ impl Gun {
         if input.melee {
             btn |= weapon_iw4::BUTTON_MELEE;
         }
+        if input.frag {
+            btn |= weapon_iw4::BUTTON_FRAG;
+        }
+        if input.smoke {
+            btn |= weapon_iw4::BUTTON_SMOKE;
+        }
         self.server_time += msec;
         let target = input.switch_to.unwrap_or(SwitchTarget {
             weapon: self.hand.weapon,
@@ -515,6 +556,7 @@ impl Gun {
             pm_flags: input.pm_flags,
             perks0: input.perks[0],
             perks1: input.perks[1],
+            offhand: self.offhand,
             ..WeaponCmd::default()
         };
         self.old_buttons = btn;
@@ -528,6 +570,7 @@ impl Gun {
         )[0]
         .map(|(_, e)| e);
         self.swung = cmd.melee_started.is_some();
+        self.offhand = cmd.offhand;
         self.pm_flags_out = Some(cmd.pm_flags);
         self.extra_pellets.clear();
         let shot = match event {
@@ -755,6 +798,49 @@ mod tests {
         assert!(fast * 10 < plain * 6, "{fast} vs {plain}");
     }
 
+    /// The lethal button throws a frag through IW4L's offhand states (prepare, hold, throw): `OffhandUsed` once,
+    /// spending the grenade; with none left, nothing.
+    #[test]
+    fn the_lethal_button_throws_a_frag() {
+        let clip = Clip::default();
+        let mc = MapClip::new(&clip);
+        let mut g = Gun::with_index(&rifle(), 2).unwrap();
+        g.set_offhands(
+            &[weapon_iw4::OffhandInvRow {
+                weapon: 9,
+                offhand_class: 1,
+                ammo: 1,
+                fire_time_ms: 600,
+                fire_delay_ms: 200,
+                fuse_time_ms: 3500,
+                weap_type: 1,
+                ..weapon_iw4::OffhandInvRow::default()
+            }],
+            1,
+            2,
+        );
+        let eye = [0.0, 0.0, 60.0];
+        let x = [1.0, 0.0, 0.0];
+        for _ in 0..60 {
+            g.update(&mc, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        let mut thrown = 0;
+        for k in 0..200 {
+            let input = GunInput {
+                frag: k < 3,
+                ..GunInput::default()
+            };
+            if let (Some(WeaponTickEvent::OffhandUsed { weapon, .. }), _) =
+                g.update(&mc, 16, &input, eye, x, Y, Z)
+            {
+                assert_eq!(weapon, 9);
+                thrown += 1;
+            }
+        }
+        assert_eq!(thrown, 1, "one throw");
+        assert_eq!(g.offhand_ammo().next(), Some((9, 0)), "the frag is spent");
+        assert!(g.can_switch(), "and the gun is back up");
+    }
     /// The melee button swings (IW4L `weapon_try_melee`): `MeleeFired` after the weapon's melee delay.
     #[test]
     fn melee_fires_after_its_delay() {

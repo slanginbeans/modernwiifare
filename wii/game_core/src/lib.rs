@@ -25,6 +25,7 @@ pub mod collision;
 pub mod damage;
 pub mod fly;
 pub mod gfx;
+pub mod grenade;
 pub mod gun;
 pub mod hud;
 pub mod life;

@@ -115,6 +115,31 @@ pub fn fpv(g: &WeaponGeometry) -> wpk::weapon::FpvRecord {
     }
 }
 
+/// A thrown / launched weapon's numbers (zero for guns).
+pub fn equip(g: &WeaponGeometry) -> wpk::weapon::EquipRecord {
+    wpk::weapon::EquipRecord {
+        offhand_class: g.offhand_class,
+        fuse_time_ms: g.fuse_time_ms,
+        hold_fire_time_ms: g.hold_fire_time_ms,
+        cook_off_hold: g.cook_off_hold,
+        timed_detonation: g.timed_detonation,
+        projectile_rotates: g.projectile_rotates,
+        stickiness: g.stickiness,
+        explosion_radius: g.explosion_radius,
+        explosion_radius_min: g.explosion_radius_min,
+        explosion_inner_damage: g.explosion_inner_damage,
+        explosion_outer_damage: g.explosion_outer_damage,
+        projectile_speed: g.projectile_speed,
+        projectile_speed_up: g.projectile_speed_up,
+        projectile_speed_forward: g.projectile_speed_forward,
+        projectile_activate_dist: g.projectile_activate_dist,
+        projectile_explosion_type: g.projectile_explosion_type,
+        start_ammo: g.start_ammo,
+        parallel_bounce: g.parallel_bounce.unwrap_or([0.0; 31]),
+        perpendicular_bounce: g.perpendicular_bounce.unwrap_or([0.0; 31]),
+    }
+}
+
 /// ADS zoom and aim-assist ranges.
 pub fn aims(g: &WeaponGeometry) -> wpk::weapon::AimRecord {
     wpk::weapon::AimRecord {

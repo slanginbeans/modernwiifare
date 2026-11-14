@@ -46,6 +46,10 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
    sight, the nearest enemy, the last spawn used): done. Still to do: the playlist's overrides (the stock script
    limit is 1000 points).
 9. Crouch as MW2's console toggle; prone.
+12. **Grenades**: frag-type lethals done (`game_core::grenade`, IW4L's throw / bounce / fuse / blast; bots throw
+    them). Not yet: throwing knife, claymore, C4, tactical insertion, blast shield; flash / stun (IW4L
+    `apply_flashbang_blast` and the shock) and smoke; the grenade and explosion models, effects and sounds; the
+    grenade danger indicator; Danger Close.
 11. **Minimap and killstreaks**: the HUD minimap (map pack `MINI`: MW2's `setupMiniMap` frame, the script's
     `compassmaxrange`; turned with the view; firing pings), kill streaks with your class's streak costs, the UAV
     (radar sweep and ping fade from IW4L's compass, duration from `_uav.gsc`), bots' UAVs. Not yet: the other

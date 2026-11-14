@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 /// 6: class select, pause, Create-a-Class and scoreboard screens, with their text labels. 7: match rules (`RULE`). 8: perk upgrades in `CLSS`, move speed rules.
 /// 9: HUD minimap (`MINI`), minimap layout and compass icons in `UIPK`, killstreak costs, UAV time.
 /// 10: every weapon animation slot in the view files, first-person weapon movement (`WFPV`).
-pub const REVISION: u32 = 10;
+/// 11: thrown weapons' numbers (`WEQP`).
+pub const REVISION: u32 = 11;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

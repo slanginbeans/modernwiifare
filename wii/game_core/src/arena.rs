@@ -95,7 +95,7 @@ impl Fighter {
 }
 
 /// Something that happened this frame (for the HUD and sounds).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
     /// `attacker` hit `victim` for `damage` (`location`: IW4 hit location).
     Hit {
@@ -112,6 +112,11 @@ pub enum Event {
     BotFired {
         bot: usize,
     },
+    /// A grenade went off at `origin`.
+    Explosion {
+        origin: [f32; 3],
+        weapon: u32,
+    },
 }
 
 /// The player's position for hit tests and for the bots to see.
@@ -126,6 +131,10 @@ pub struct Arena {
     pub rules: Rules,
     /// Kills in a row a bot needs for its UAV (the UAV's killstreakTable cost; 0 = bots get none).
     pub bot_uav_kills: u32,
+    /// Grenades in flight or lying on the ground.
+    pub grenades: Vec<crate::grenade::Grenade>,
+    /// The thrown weapons' numbers by weapon index (for grenades the bots throw).
+    pub equips: &'static [u8],
     rng: u32,
     /// Whether the human (slot 0) is in the match (not free-flying): bots ignore and can't hit it otherwise.
     pub human_present: bool,
@@ -208,6 +217,8 @@ impl Arena {
             fighters: Vec::with_capacity(bots + 1),
             rules,
             bot_uav_kills: 0,
+            grenades: Vec::new(),
+            equips: &[],
             rng: 0x2545_f491,
             human_present: true,
             spawn_count: 0,
@@ -467,6 +478,51 @@ impl Arena {
         }
     }
 
+    /// Fly every grenade for `dt` seconds; those whose fuse is up explode, hurting everyone in reach (the thrower
+    /// too) and crediting the thrower with the kills.
+    pub fn update_grenades(&mut self, clip: &MapClip<'_>, dt: f32, now: u32, out: &mut Vec<Event>) {
+        let mut i = 0;
+        while i < self.grenades.len() {
+            if !self.grenades[i].step(clip, dt, now) {
+                i += 1;
+                continue;
+            }
+            let g = self.grenades.swap_remove(i);
+            out.push(Event::Explosion {
+                origin: g.origin,
+                weapon: g.weapon,
+            });
+            for v in 0..self.fighters.len() {
+                let f = &self.fighters[v];
+                if !f.life.alive() || (v == 0 && !self.human_present) {
+                    continue;
+                }
+                let (_, yaw) = f.player.view();
+                let d = crate::grenade::blast_damage(
+                    &g.facts,
+                    g.origin,
+                    f.player.ps.origin,
+                    f.player.crouched(),
+                    yaw,
+                    |a, b| {
+                        let t = clip.trace(
+                            a,
+                            b,
+                            [0.0; 3],
+                            [0.0; 3],
+                            gamemode_iw4::G_CAN_DAMAGE_CONTENTS_MASK,
+                        );
+                        t.fraction >= 1.0 && t.startsolid == 0
+                    },
+                );
+                if d > 0 {
+                    let dir = core::array::from_fn(|k| f.player.ps.origin[k] - g.origin[k]);
+                    self.hurt(g.owner, v, d, damage::hitloc::NONE, dir, now, out);
+                }
+            }
+        }
+    }
+
     /// What fighter `me` perceives of the others.
     fn contacts(&self, clip: &MapClip<'_>, me: usize, now: u32) -> Vec<Contact> {
         let f = &self.fighters[me];
@@ -617,6 +673,7 @@ impl Arena {
                     fire: act.fire,
                     reload: act.reload,
                     melee: act.melee,
+                    frag: act.frag,
                     pm_flags: p.ps.pm_flags,
                     perks: p.ps.perks,
                     ..GunInput::default()
@@ -630,6 +687,25 @@ impl Arena {
             if matches!(ev, Some(WeaponTickEvent::ShotAccepted { .. })) {
                 f.last_fire_ms = Some(now);
                 out.push(Event::BotFired { bot: i });
+            }
+            if let Some(WeaponTickEvent::OffhandUsed {
+                weapon,
+                remaining_fuse_ms,
+            }) = ev
+                && let Some(e) =
+                    wpk::records::get::<wpk::weapon::EquipRecord>(self.equips, weapon as usize)
+            {
+                let g = crate::grenade::Grenade::throw(
+                    i,
+                    weapon,
+                    e,
+                    cam.eye,
+                    cam.forward(),
+                    f.player.ps.velocity,
+                    remaining_fuse_ms,
+                    now,
+                );
+                self.grenades.push(g);
             }
             let swing = (ev == Some(WeaponTickEvent::MeleeFired)).then(|| {
                 (
@@ -748,6 +824,46 @@ mod tests {
             attacker: 0,
             victim: 1
         }));
+    }
+
+    #[test]
+    fn a_frag_at_a_bots_feet_kills_it_for_the_thrower() {
+        let clip = boxes(&[([-4000.0, -4000.0, -64.0], [4000.0, 4000.0, 0.0])]);
+        let mc = MapClip::new(&clip);
+        let spawns = [([0.0, 0.0, 0.0], 0.0), ([1500.0, 0.0, 0.0], 180.0)];
+        let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+        let mut a = Arena::new(&mc, &spawns, 1, human, Rules::default(), |_| Some(rifle()));
+        let bot = a.fighters[1].player.ps.origin;
+        let frag = wpk::weapon::EquipRecord {
+            fuse_time_ms: 100,
+            timed_detonation: true,
+            explosion_radius: 256,
+            explosion_inner_damage: 130,
+            explosion_outer_damage: 55,
+            ..wpk::weapon::EquipRecord::default()
+        };
+        a.grenades.push(crate::grenade::Grenade::throw(
+            0,
+            9,
+            frag,
+            [bot[0], bot[1], bot[2] + 2.0],
+            [0.0, 0.0, -1.0],
+            [0.0; 3],
+            None,
+            1000,
+        ));
+        let mut ev = Vec::new();
+        for t in 0..20 {
+            a.update_grenades(&mc, 0.016, 1000 + t * 16, &mut ev);
+        }
+        assert!(ev.iter().any(|e| matches!(e, Event::Explosion { .. })));
+        assert!(!a.fighters[1].life.alive(), "the bot died");
+        assert!(
+            a.fighters[0].life.alive(),
+            "the thrower, 1500 units away, lived"
+        );
+        assert_eq!(a.fighters[0].kills, 1);
+        assert!(a.grenades.is_empty());
     }
 
     #[test]

@@ -75,7 +75,15 @@ pub struct Act {
     pub reload: bool,
     /// Swing (an enemy within melee reach ahead).
     pub melee: bool,
+    /// Throw the lethal grenade (an enemy seen at grenade range).
+    pub frag: bool,
 }
+
+/// A bot throws a grenade at an enemy it sees between these distances, at most once per [`FRAG_COOLDOWN_MS`], and
+/// then only with this chance per decision (bots don't throw at everything they see).
+const FRAG_RANGE: (f32, f32) = (400.0, 1100.0);
+const FRAG_COOLDOWN_MS: u32 = 8000;
+const FRAG_CHANCE: f32 = 0.08;
 
 /// A bot swings instead of shooting inside this distance (feet to feet): IW4's 64-unit melee reach from the eye,
 /// less a little so the swing lands.
@@ -92,6 +100,8 @@ pub struct Brain {
     armed: bool,
     target: Option<usize>,
     react_at_ms: u32,
+    /// No grenade before this time.
+    next_frag_ms: u32,
     last_known: Option<([f32; 3], u32)>,
     route: Vec<u16>,
     route_goal: Option<[f32; 3]>,
@@ -161,6 +171,7 @@ impl Brain {
             armed: false,
             target: None,
             react_at_ms: 0,
+            next_frag_ms: 0,
             last_known: None,
             route: Vec::new(),
             route_goal: None,
@@ -353,10 +364,22 @@ impl Brain {
             if let Some(t) = target.filter(|_| now >= self.react_at_ms) {
                 let on_target = libm::fabsf(angle_sub(dy, self.yaw)) <= FIRE_CONE_DEG
                     && libm::fabsf(dp - self.pitch) <= FIRE_CONE_DEG;
-                if dist2(t.feet, s.feet) < MELEE_DIST * MELEE_DIST {
+                let d2 = dist2(t.feet, s.feet);
+                if d2 < MELEE_DIST * MELEE_DIST {
                     act.melee = on_target;
                 } else {
                     act.fire = on_target;
+                }
+                if on_target
+                    && t.visible
+                    && now >= self.next_frag_ms
+                    && d2 > FRAG_RANGE.0 * FRAG_RANGE.0
+                    && d2 < FRAG_RANGE.1 * FRAG_RANGE.1
+                    && self.random() < FRAG_CHANCE
+                {
+                    act.frag = true;
+                    act.fire = false;
+                    self.next_frag_ms = now + FRAG_COOLDOWN_MS;
                 }
             }
         } else {

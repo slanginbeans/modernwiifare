@@ -12,6 +12,7 @@ test = false
 doctest = false
 
 [dependencies]
+weapon_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
 playerstate_iw4 = { git = "https://github.com/vladtrc/iw4L", rev = "acc57a5c9dd027db8eb5ef17c792fa69f059daa1" }
 game_core = { path = "../game_core" }
 wpk = { path = "../../shared/wpk" }
