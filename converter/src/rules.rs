@@ -345,6 +345,13 @@ pub fn read(scripts: &HashMap<String, String>) -> Rules {
                 white_fade_ms: p.white_fade_ms,
                 shot_fade_ms: p.shot_fade_ms,
                 movement: p.movement,
+                look: wpk::rules::ShockLook {
+                    affect: p.look.affect,
+                    fade_ms: p.look.fade_ms,
+                    sensitivity: p.look.mouse_sensitivity,
+                    max_pitch_speed: p.look.max_pitch_speed,
+                    max_yaw_speed: p.look.max_yaw_speed,
+                },
             };
             r.found_fx |= bit;
         }

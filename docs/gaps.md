@@ -54,7 +54,7 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
 12. **Grenades**: frag, semtex, the throwing knife (its hit, stick and pickup), claymore (trip and cone) and C4 (double-tap detonation) (lethal), flashbang, stun and smoke (tactical; the smoke's sight blocking) done (`game_core::grenade`, IW4L's throw /
     bounce / fuse / blast and flashbang amounts, the scripts' flash and stun durations, the shock files' white-out
     and slowdown; bots throw frags). Not yet: shooting charges to set them off, the C4 detonator in hand, the claymore's trip sound, Bomb Squad / Scavenger interplay, tactical insertion, blast shield; smoke sprites and drift;
-    the shock's look control, blur and tinnitus; the grenade and explosion models and effects (their sounds play); per-surface explosion sounds; the grenade
+    the shock's blur and tinnitus; the grenade and explosion models and effects (their sounds play); per-surface explosion sounds; the grenade
     danger indicator; Danger Close.
 11. **Minimap and killstreaks**: the HUD minimap (map pack `MINI`: MW2's `setupMiniMap` frame, the script's
     `compassmaxrange`; turned with the view; firing pings), kill streaks with your class's streak costs, the UAV

@@ -1188,7 +1188,7 @@ fn run_map(
                             .map_or(look::AimAssistRanges::NONE, Gun::aim_ranges),
                         dt: tick_ms as f32 / 1000.0,
                     };
-                    let look_delta = look::look_frame(
+                    let mut look_delta = look::look_frame(
                         &mut look_state,
                         &look_settings,
                         c_stick,
@@ -1196,6 +1196,18 @@ fn run_map(
                         &aim_targets,
                         ads_held,
                     );
+                    // A shock's hold on the view (the stun's `.shock` file: slower, capped turning).
+                    if let Some(s) = arena.as_ref().and_then(|a| a.fighters[0].shock)
+                        && s.remaining(now) > 0
+                    {
+                        look_delta = look::shock_look(
+                            look_delta,
+                            view.dt,
+                            &s.fx(&rules).look,
+                            now.wrapping_sub(s.start_ms),
+                            s.duration_ms,
+                        );
+                    }
                     // The class's perks and move speed (MW2: the primary's class, Lightweight), every step since a
                     // spawn resets the player state.
                     p.ps.perks = perk_set.bits;

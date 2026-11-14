@@ -258,6 +258,42 @@ fn best(screen: &[OnScreen], range: f32, region: [f32; 2], scale: f32) -> Option
     })
 }
 
+/// A look step `delta` (pitch, yaw degrees over `dt` seconds) under a shell shock's look control: each axis held to
+/// the shock's speed cap (IW4L `update_shellshock_look_control`, its caps applied as `capped_speed` caps the turn
+/// rate; easing off over the shock's last `fade_ms`). The shock's sensitivity scale is the mouse's
+/// (`lookControl_mousesensitivityscale`), so the stick doesn't take it. `elapsed_ms` / `duration_ms`: the shock's.
+pub fn shock_look(
+    delta: [f32; 2],
+    dt: f32,
+    look: &wpk::rules::ShockLook,
+    elapsed_ms: u32,
+    duration_ms: u32,
+) -> [f32; 2] {
+    let st = hud_iw4::update_shellshock_look_control(
+        elapsed_ms as i32 + 1,
+        1,
+        duration_ms as i32,
+        hud_iw4::ShellshockLookParms {
+            affect: look.affect,
+            fade_ms: look.fade_ms,
+            mouse_sensitivity: look.sensitivity,
+            max_pitch_speed: look.max_pitch_speed,
+            max_yaw_speed: look.max_yaw_speed,
+        },
+    );
+    let cap = |v: f32, max: f32| {
+        if max > 0.0 {
+            v.clamp(-max * dt, max * dt)
+        } else {
+            v
+        }
+    };
+    [
+        cap(delta[0], st.max_pitch_speed),
+        cap(delta[1], st.max_yaw_speed),
+    ]
+}
+
 /// One look step: the view change (pitch, yaw degrees) from the C-stick `look` (normalised, x right, y up) over
 /// `view.dt`, with aim assist against `targets` (visible enemies). IW4L `pad_look_frame`.
 pub fn look_frame(
@@ -493,5 +529,55 @@ mod tests {
         let mid = view_fov(0.65, true, &aim, true);
         assert!(mid < 65.0 && mid > 50.0, "{mid}");
         assert!((vertical_fov(65.0) - 51.08).abs() < 0.05);
+    }
+
+    #[test]
+    fn a_shock_caps_turning_then_lets_go() {
+        let look = wpk::rules::ShockLook {
+            affect: true,
+            fade_ms: 1000,
+            sensitivity: 0.5,
+            max_pitch_speed: 30.0,
+            max_yaw_speed: 60.0,
+        };
+        let dt = 0.1;
+        // Mid shock: held to 3 / 6 degrees a step.
+        let d = shock_look([10.0, -10.0], dt, &look, 1000, 5000);
+        assert!(
+            (d[0] - 3.0).abs() < 1e-4 && (d[1] + 6.0).abs() < 1e-4,
+            "{d:?}"
+        );
+        // Small moves pass.
+        assert_eq!(shock_look([1.0, 1.0], dt, &look, 1000, 5000), [1.0, 1.0]);
+        // Fading out (half the fade left): caps doubled.
+        let d = shock_look([100.0, 100.0], dt, &look, 4500, 5000);
+        assert!(
+            (d[0] - 6.0).abs() < 1e-3 && (d[1] - 12.0).abs() < 1e-3,
+            "{d:?}"
+        );
+        // Over, or a shock without look control: untouched.
+        assert_eq!(shock_look([4.0, 4.0], dt, &look, 5000, 5000), [4.0, 4.0]);
+        let free = wpk::rules::ShockLook::default();
+        assert_eq!(shock_look([4.0, 4.0], dt, &free, 100, 5000), [4.0, 4.0]);
+    }
+
+    /// The stun's look control from a locally converted `out/packs/common.wpk` (never in git; skipped when absent).
+    #[test]
+    fn real_stun_look_control() {
+        extern crate std;
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../out/packs/common.wpk");
+        let Ok(bytes) = std::fs::read(path) else {
+            std::println!("no local common pack, skipped");
+            return;
+        };
+        let pack = wpk::Pack::parse(&bytes, true).unwrap();
+        let rules = wpk::rules::Rules::decode(pack.section(wpk::tag::RULES).unwrap().data).unwrap();
+        std::println!(
+            "stun look {:?}, flash look {:?}",
+            rules.shock_stun.look,
+            rules.shock_flash.look
+        );
+        let l = rules.shock_stun.look;
+        assert!(!l.affect || l.sensitivity > 0.0);
     }
 }

@@ -42,7 +42,7 @@ pub mod found {
 
 /// A shell shock's screen and movement (an IW4 `.shock` file: `bg_shock_screenType`, blur blend / fade, white and
 /// shot fade, `bg_shock_movement`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShockFx {
     /// `hud_iw4::SCREEN_BLEND_*`.
     pub screen_type: i32,
@@ -52,6 +52,19 @@ pub struct ShockFx {
     pub shot_fade_ms: i32,
     /// The shock slows movement.
     pub movement: bool,
+    /// How it takes look control (`bg_shock_lookControl*`).
+    pub look: ShockLook,
+}
+
+/// A shock's hold on the view (`hud_iw4::ShellshockLookParms`): look sensitivity scale and pitch / yaw speed caps
+/// (degrees a second; 0: none), easing off over the last `fade_ms`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ShockLook {
+    pub affect: bool,
+    pub fade_ms: i32,
+    pub sensitivity: f32,
+    pub max_pitch_speed: f32,
+    pub max_yaw_speed: f32,
 }
 
 /// The weapon classes of [`Rules::class_speed`], in order (`_weapons.gsc` `updateMoveSpeedScale`).
@@ -159,6 +172,7 @@ impl Default for Rules {
                 white_fade_ms: 3500,
                 shot_fade_ms: 1000,
                 movement: false,
+                look: ShockLook::default(),
             },
             shock_stun: ShockFx {
                 screen_type: 1,
@@ -167,6 +181,7 @@ impl Default for Rules {
                 white_fade_ms: 7500,
                 shot_fade_ms: 15_000,
                 movement: true,
+                look: ShockLook::default(),
             },
             claymore_cone_deg: 70.0,
             claymore_min_dist: 20.0,
@@ -234,6 +249,13 @@ impl Rules {
         o.u32(self.claymore_grace_ms);
         o.f32(self.claymore_radius);
         o.u32(self.max_explosives);
+        for s in [&self.shock_flash, &self.shock_stun] {
+            o.u32(u32::from(s.look.affect));
+            o.u32(s.look.fade_ms as u32);
+            o.f32(s.look.sensitivity);
+            o.f32(s.look.max_pitch_speed);
+            o.f32(s.look.max_yaw_speed);
+        }
         o
     }
 
@@ -249,6 +271,19 @@ impl Rules {
             white_fade_ms: u(i + 3) as i32,
             shot_fade_ms: u(i + 4) as i32,
             movement: u(i + 5) != 0,
+            look: if b.len() >= 242 {
+                // The shocks' look control follows the explosives values (flash, then stun).
+                let at = 202 + if i == 32 { 0 } else { 20 };
+                ShockLook {
+                    affect: be::u32(b, at) != 0,
+                    fade_ms: be::u32(b, at + 4) as i32,
+                    sensitivity: be::f32(b, at + 8),
+                    max_pitch_speed: be::f32(b, at + 12),
+                    max_yaw_speed: be::f32(b, at + 16),
+                }
+            } else {
+                ShockLook::default()
+            },
         };
         let f = |i: usize| be::f32(b, i * 4);
         // Claymore and explosives values follow the found bits (packs before them keep the defaults).
