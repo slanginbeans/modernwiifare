@@ -116,6 +116,27 @@ pub struct Screen {
     pub labels: Vec<(u8, Label)>,
     /// The back button's rect (bottom left in MW2's menus), when the menu has one.
     pub back: Option<[f32; 4]>,
+    /// Items the game draws itself (IW4 owner draws: the minimap's map, player and enemies ...).
+    pub owner_draws: Vec<OwnerDraw>,
+}
+
+/// An owner-draw item: its IW4 owner-draw number, rect (screen pixels), material (texture or `NONE`) and colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OwnerDraw {
+    pub od: u16,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub texture: u16,
+    pub rgba: u32,
+}
+
+/// IW4 owner-draw numbers of the HUD minimap (`minimap_fullscreen`).
+pub mod od {
+    pub const MINIMAP_PLAYER: u16 = 150;
+    pub const MINIMAP_MAP: u16 = 159;
+    pub const MINIMAP_ENEMIES: u16 = 175;
 }
 
 impl Screen {
@@ -127,6 +148,10 @@ impl Screen {
     }
 
     /// The `n`th empty slot.
+    pub fn owner_draw(&self, od: u16) -> Option<&OwnerDraw> {
+        self.owner_draws.iter().find(|o| o.od == od)
+    }
+
     pub fn slot(&self, n: usize) -> Option<&Label> {
         self.labels
             .iter()
@@ -142,6 +167,8 @@ pub struct UiPack {
     pub screens: Vec<Screen>,
     /// The plain white texture (`TEXT` index or `NONE`), for filled rects.
     pub white: u16,
+    /// Named HUD images (the compass pings), by material name.
+    pub icons: Vec<(String, u16)>,
 }
 
 struct Reader<'a> {
@@ -304,8 +331,22 @@ impl UiPack {
                 }
                 None => o.push(0),
             }
+            o.u16(s.owner_draws.len() as u16);
+            for d in &s.owner_draws {
+                o.u16(d.od);
+                for v in [d.x, d.y, d.w, d.h] {
+                    o.f32(v);
+                }
+                o.u16(d.texture);
+                o.u32(d.rgba);
+            }
         }
         o.u16(self.white);
+        o.u16(self.icons.len() as u16);
+        for (n, t) in &self.icons {
+            put_str(&mut o, n);
+            o.u16(*t);
+        }
         o
     }
 
@@ -377,20 +418,48 @@ impl UiPack {
                 1 => Some([r.f32()?, r.f32()?, r.f32()?, r.f32()?]),
                 _ => None,
             };
+            let nd = r.u16()?;
+            let mut owner_draws = Vec::with_capacity(usize::from(nd));
+            for _ in 0..nd {
+                owner_draws.push(OwnerDraw {
+                    od: r.u16()?,
+                    x: r.f32()?,
+                    y: r.f32()?,
+                    w: r.f32()?,
+                    h: r.f32()?,
+                    texture: r.u16()?,
+                    rgba: r.u32()?,
+                });
+            }
             screens.push(Screen {
                 name,
                 quads,
                 buttons,
                 labels,
                 back,
+                owner_draws,
             });
         }
         let white = r.u16()?;
+        let ni = r.u16()?;
+        let mut icons = Vec::with_capacity(usize::from(ni));
+        for _ in 0..ni {
+            icons.push((r.str()?, r.u16()?));
+        }
         Some(UiPack {
             fonts,
             screens,
             white,
+            icons,
         })
+    }
+
+    /// The texture of HUD image `name`.
+    pub fn icon(&self, name: &str) -> Option<u16> {
+        self.icons
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, t)| *t)
     }
 
     pub fn screen(&self, name: &str) -> Option<&Screen> {
@@ -481,8 +550,16 @@ mod tests {
                     (label_kind::SLOT, Label::default()),
                 ],
                 back: Some([1.0, 2.0, 3.0, 4.0]),
+                owner_draws: vec![OwnerDraw {
+                    od: od::MINIMAP_MAP,
+                    x: 6.0,
+                    w: 100.0,
+                    texture: NONE,
+                    ..OwnerDraw::default()
+                }],
             }],
             white: 5,
+            icons: vec![("compassping_player".into(), 7)],
         };
         let back = UiPack::decode(&p.encode()).expect("decodes");
         assert_eq!(back, p);
@@ -493,6 +570,11 @@ mod tests {
             Some("TITLE")
         );
         assert!(back.screens[0].slot(0).is_some() && back.screens[0].slot(1).is_none());
+        assert_eq!(
+            back.screens[0].owner_draw(od::MINIMAP_MAP).map(|o| o.w),
+            Some(100.0)
+        );
+        assert_eq!(back.icon("CompassPing_Player"), Some(7));
         assert_eq!(back.font("FONTS/TEST"), Some(0));
         assert!(UiPack::decode(&p.encode()[..10]).is_none());
     }

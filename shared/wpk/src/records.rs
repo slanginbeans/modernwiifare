@@ -376,6 +376,46 @@ impl Record for Skybox {
     }
 }
 
+/// The HUD minimap (`MINI`): its texture, the map's northwest and southeast corners in world units (MW2's
+/// `setupMiniMap` frame from the two `minimap_corner` entities, `hud_iw4::compass::setup_mini_map_frame`), the map's
+/// north yaw, and how many world units the minimap's height covers (the map script's `compassmaxrange`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Minimap {
+    pub texture: u16,
+    pub northwest: [f32; 2],
+    pub southeast: [f32; 2],
+    pub north_yaw: f32,
+    pub max_range: f32,
+}
+
+impl Record for Minimap {
+    const LEN: usize = 28;
+    fn write(&self, o: &mut Vec<u8>) {
+        o.u16(self.texture);
+        o.zeros(2);
+        for v in [
+            self.northwest[0],
+            self.northwest[1],
+            self.southeast[0],
+            self.southeast[1],
+            self.north_yaw,
+            self.max_range,
+        ] {
+            o.f32(v);
+        }
+    }
+    fn read(b: &[u8]) -> Self {
+        let f = |i: usize| be::f32(b, 4 + 4 * i);
+        Minimap {
+            texture: be::u16(b, 0),
+            northwest: [f(0), f(1)],
+            southeast: [f(2), f(3)],
+            north_yaw: f(4),
+            max_range: f(5),
+        }
+    }
+}
+
 pub mod spawn_kind {
     pub const TDM: u8 = 0;
     pub const DM: u8 = 1;

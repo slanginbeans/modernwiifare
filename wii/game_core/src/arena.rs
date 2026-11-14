@@ -46,6 +46,10 @@ pub struct Fighter {
     pub last_spawn: Option<usize>,
     /// This fighter's bullet damage scale (Stopping Power: 1.4).
     pub bullet_scale: f32,
+    /// Kills since this fighter's last death.
+    pub streak: u32,
+    /// A bot's UAV: until when it knows where everyone is.
+    pub uav_until: Option<u32>,
     /// Bot stepping: when the next step is due, steps taken, the decision being carried out, and the position
     /// before the last step (with its time) for drawing in between.
     next_step_ms: Option<u32>,
@@ -70,6 +74,8 @@ impl Fighter {
             last_attacker: None,
             last_spawn: None,
             bullet_scale: 1.0,
+            streak: 0,
+            uav_until: None,
             next_step_ms: None,
             steps: 0,
             act: Act::default(),
@@ -118,6 +124,8 @@ pub fn feet_and_aim(p: &Player) -> ([f32; 3], [f32; 3]) {
 pub struct Arena {
     pub fighters: Vec<Fighter>,
     pub rules: Rules,
+    /// Kills in a row a bot needs for its UAV (the UAV's killstreakTable cost; 0 = bots get none).
+    pub bot_uav_kills: u32,
     rng: u32,
     /// Whether the human (slot 0) is in the match (not free-flying): bots ignore and can't hit it otherwise.
     pub human_present: bool,
@@ -199,6 +207,7 @@ impl Arena {
         let mut a = Arena {
             fighters: Vec::with_capacity(bots + 1),
             rules,
+            bot_uav_kills: 0,
             rng: 0x2545_f491,
             human_present: true,
             spawn_count: 0,
@@ -439,15 +448,20 @@ impl Arena {
                 attacker: from,
                 victim,
             });
+            self.fighters[victim].streak = 0;
             if from != victim {
                 let head = loc == damage::hitloc::HEAD || loc == damage::hitloc::HELMET;
-                let rules = self.rules;
+                let (rules, uav_kills) = (self.rules, self.bot_uav_kills);
                 let k = &mut self.fighters[from];
                 k.kills += 1;
+                k.streak += 1;
                 k.score += rules.kill_score;
                 if head {
                     k.headshots += 1;
                     k.score += rules.headshot_score;
+                }
+                if k.brain.is_some() && uav_kills > 0 && k.streak == uav_kills {
+                    k.uav_until = Some(now.wrapping_add(rules.uav_time_ms));
                 }
             }
         }
@@ -473,10 +487,15 @@ impl Arena {
                     let t = clip.trace(eye, aim, [0.0; 3], [0.0; 3], MASK_SHOT);
                     t.fraction >= 1.0
                 };
-                let heard = o.last_fire_ms.is_some_and(|t| {
-                    now.wrapping_sub(t) < 1500
-                        && dist2(feet, f.player.ps.origin) < HEARING * HEARING
-                });
+                // Under its UAV a bot knows where everyone is (as the radar shows them).
+                let uav = f
+                    .uav_until
+                    .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0);
+                let heard = uav
+                    || o.last_fire_ms.is_some_and(|t| {
+                        now.wrapping_sub(t) < 1500
+                            && dist2(feet, f.player.ps.origin) < HEARING * HEARING
+                    });
                 Contact {
                     id: i,
                     aim,

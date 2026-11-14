@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use wpk::ui::{ButtonStyle, Font, Glyph, Label, NONE, Quad, Screen, UiPack, label_kind};
+use wpk::ui::{ButtonStyle, Font, Glyph, Label, NONE, OwnerDraw, Quad, Screen, UiPack, label_kind};
 
 use crate::ui_capture::{Item, Menu, Rect, UiCapture};
 
@@ -26,7 +26,8 @@ pub const FONTS: [&str; 8] = [
 
 /// Screens baked from MW2 menus: (our name, MW2 menu, x offset in virtual pixels). The scoreboard page is drawn
 /// inside MW2's centred 544-wide scoreboard frame, so its centre-aligned items move left by half of that.
-pub const SCREENS: [(&str, &str, f32); 5] = [
+pub const SCREENS: [(&str, &str, f32); 6] = [
+    ("minimap", "minimap_fullscreen", 0.0),
     ("main", "main_text", 0.0),
     ("class_select", "changeclass", 0.0),
     ("pause", "class", 0.0),
@@ -45,8 +46,16 @@ const WINDOW_STYLE_FILLED: i32 = 1;
 const WINDOW_STYLE_SHADER: i32 = 3;
 /// The back button's text (its rect is kept; the front end draws its own hint there).
 const BACK_TEXT: &str = "@PLATFORM_BACK_CAPS";
-/// IW4 item type "button".
+/// IW4 item types "button" and "owner draw".
 const ITEM_TYPE_BUTTON: i32 = 1;
+const ITEM_TYPE_OWNERDRAW: i32 = 8;
+/// HUD images the game draws by name (`hud_iw4` compass pings and the radar sweep).
+pub const ICONS: [&str; 4] = [
+    "compassping_player",
+    "compassping_enemy",
+    "compassping_enemyfiring",
+    "compass_radarline",
+];
 
 #[derive(Debug, Default)]
 pub struct BakeReport {
@@ -135,7 +144,26 @@ fn bake_screen(
 ) -> Screen {
     let mut quads = Vec::new();
     let mut labels = Vec::new();
+    let mut owner_draws = Vec::new();
     for item in &menu.items {
+        if item.item_type == ITEM_TYPE_OWNERDRAW && shown(item) && item.owner_draw > 0 {
+            let r = place(p, &item.rect);
+            let texture = if item.background.is_empty() {
+                NONE
+            } else {
+                tex(material(&item.background)).unwrap_or(NONE)
+            };
+            owner_draws.push(OwnerDraw {
+                od: item.owner_draw as u16,
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+                texture,
+                rgba: rgba(item.fore_color),
+            });
+            continue;
+        }
         if !shown(item)
             || item.item_type == ITEM_TYPE_BUTTON
             || item.rect.w.abs() > SCROLLING_LAYER_W
@@ -252,6 +280,7 @@ fn bake_screen(
         buttons: style,
         labels,
         back,
+        owner_draws,
     }
 }
 
@@ -321,11 +350,16 @@ pub fn bake(
     }
     report.screens = screens.len();
     let white = tex("white").unwrap_or(NONE);
+    let icons = ICONS
+        .iter()
+        .filter_map(|&n| tex(n).map(|t| (n.to_owned(), t)))
+        .collect();
     (
         UiPack {
             fonts,
             screens,
             white,
+            icons,
         },
         report,
     )

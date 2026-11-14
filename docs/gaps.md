@@ -44,6 +44,11 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
    sight, the nearest enemy, the last spawn used): done. Still to do: the playlist's overrides (the stock script
    limit is 1000 points).
 9. Crouch as MW2's console toggle; prone.
+11. **Minimap and killstreaks**: the HUD minimap (map pack `MINI`: MW2's `setupMiniMap` frame, the script's
+    `compassmaxrange`; turned with the view; firing pings), kill streaks with your class's streak costs, the UAV
+    (radar sweep and ping fade from IW4L's compass, duration from `_uav.gsc`), bots' UAVs. Not yet: the other
+    streaks (care package, predator, sentry, harrier, airstrike, helicopters, AC-130, EMP, nuke), Counter-UAV,
+    Cold-Blooded / Scrambler on the radar, the minimap's fading edge and scan-line pass order.
 10. **Perks** (`game_core::perks`): a class's three perks and their Pro perks (perkTable's upgrade column;
     everything unlocked) become IW4's `ps.perks` bits that IW4L's movement and weapon code read (Marathon,
     Sleight of Hand, Steady Aim and their Pros, Commando's flag, ...); move speed by the primary's class and

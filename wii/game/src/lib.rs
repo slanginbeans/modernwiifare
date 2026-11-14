@@ -473,6 +473,73 @@ fn draw_match_hud(
     }
 }
 
+/// MW2's HUD minimap (`game_core::minimap`) in the `minimap_fullscreen` menu's place: the map turned with your view,
+/// your arrow, enemies that fired, and the UAV's contacts.
+fn draw_minimap(
+    world: &World<'_>,
+    arena: Option<&Arena>,
+    radar: &game_core::minimap::Radar,
+    cam: &Camera,
+    now: u32,
+) {
+    use game_core::minimap::{FIRING_PING_MS, Frame, RADAR_PING_MS, ping_alpha};
+    use wpk::ui::od;
+    let (Some((m, handle)), Some(u)) = (world.minimap.as_ref(), ui::get()) else {
+        return;
+    };
+    let Some(screen) = u.pack.screen("minimap") else {
+        return;
+    };
+    let Some(rect) = screen
+        .owner_draw(od::MINIMAP_MAP)
+        .map(|o| [o.x, o.y, o.w, o.h])
+    else {
+        return;
+    };
+    let Some(f) = Frame::new(m, rect, cam.eye, cam.yaw) else {
+        return;
+    };
+    let verts = f.map_quad(0xffff_ffff);
+    unsafe { ffi::mwf_ui_verts(*handle, verts.as_ptr(), 1) };
+    let enemy = u.pack.icon("compassping_enemy");
+    let firing = u.pack.icon("compassping_enemyfiring").or(enemy);
+    let me = u.pack.icon("compassping_player");
+    u.page(|ui, q| {
+        // MW2's own images over the map (the scan lines, the frame).
+        if let Some(s) = ui.screen("minimap") {
+            q.extend_from_slice(&s.quads);
+        }
+        let alpha = |a: f32| 0xffff_ff00 | (a.clamp(0.0, 1.0) * 255.0) as u32;
+        if let Some(a) = arena {
+            for (i, fi) in a.fighters.iter().enumerate().skip(1) {
+                if !fi.life.alive() {
+                    continue;
+                }
+                let radar_hit = radar.contacts.get(i).copied().flatten().and_then(|(p, t)| {
+                    ping_alpha(now.wrapping_sub(t), RADAR_PING_MS).map(|al| (p, al))
+                });
+                if let (Some((p, al)), Some(t)) = (radar_hit, enemy) {
+                    q.push(Frame::icon(f.to_screen(p), Frame::ENEMY_SIZE, t, alpha(al)));
+                }
+                let fired = fi
+                    .last_fire_ms
+                    .and_then(|t| ping_alpha(now.wrapping_sub(t), FIRING_PING_MS));
+                if let (Some(al), Some(t)) = (fired, firing) {
+                    q.push(Frame::icon(
+                        f.to_screen(fi.player.ps.origin),
+                        Frame::ENEMY_SIZE,
+                        t,
+                        alpha(al),
+                    ));
+                }
+            }
+        }
+        if let Some(t) = me {
+            q.push(f.player_icon(t));
+        }
+    });
+}
+
 /// End of match: everyone's score, best first (fewer deaths break ties), until A (or B).
 fn scoreboard(gfx: &mut Shim, input: &mut front::Input, a: &Arena) {
     let order = a.standings();
@@ -731,6 +798,14 @@ fn run_map(
         }
         _ => None,
     };
+    // Bots call in a UAV at its killstreakTable cost.
+    if let (Some(a), Some(c)) = (arena.as_mut(), loadouts.catalog) {
+        a.bot_uav_kills = c
+            .killstreaks
+            .iter()
+            .find(|k| k.name == "uav")
+            .map_or(0, |k| u32::from(k.kind));
+    }
     let mut events: Vec<Event> = Vec::with_capacity(32);
     let mut feed: [(Option<(usize, usize)>, u32); 4] = [(None, 0); 4];
     let mut hitmarker_ms: Option<u32> = None;
@@ -752,6 +827,12 @@ fn run_map(
     let mut flying = player.is_none();
     let mut last = ffi::ms();
     let mut show_overlay = true;
+    // Killstreaks: kills since your last death, the rewards earned and not yet used (newest last), the UAV's radar.
+    let mut streak = 0u32;
+    let mut rewards: Vec<alloc::string::String> = Vec::new();
+    let mut reward_note: Option<(&'static str, u32)> = None;
+    let mut radar = game_core::minimap::Radar::default();
+    let mut radar_at = last;
     let mut timing = Timing::default();
     let mut rects: Vec<Rect> = Vec::with_capacity(4096);
     let mut frame_start = ffi::us();
@@ -847,15 +928,18 @@ fn run_map(
                 format_args!("from={}", arsenal.active),
             );
         }
-        // D-pad left: next spawn point (debug), with the class's weapons.
-        if pad.down & ffi::BTN_LEFT != 0 {
-            spawn += 1;
-            cam = spawn_camera(&world, spawn);
-            cam.aspect = aspect;
-            if let Some(c) = &clip {
-                player = Some(spawn_player(&world, c, spawn));
+        // D-pad left: call in the newest killstreak reward (MW2's console uses the D-pad for it too).
+        if pad.down & ffi::BTN_LEFT != 0
+            && life.alive()
+            && let Some(r) = rewards.pop()
+        {
+            if r == "uav" {
+                radar.activate(now, rules.uav_time_ms);
+                reward_note = Some(("UAV ONLINE", now));
+            } else {
+                reward_note = Some(("THAT KILLSTREAK IS NOT IN THIS BUILD YET", now));
             }
-            perk_set = equip(&mut arsenal, gfx, class);
+            devlog::event(now, "killstreak", format_args!("used={r}"));
         }
         if pad.down & ffi::BTN_UP != 0 && clip.is_some() {
             flying = !flying;
@@ -1169,6 +1253,31 @@ fn run_map(
                     feed[0] = (Some((attacker, victim)), now);
                     devlog::event(now, "kill", format_args!("by={attacker} on={victim}"));
                     if victim == 0 {
+                        // MW2: a death resets the streak; rewards already earned are kept.
+                        streak = 0;
+                    } else if attacker == 0 {
+                        streak += 1;
+                        // The class's killstreaks (their costs from killstreakTable) reached by this kill.
+                        if let (Some(c), Some(l)) = (
+                            loadouts.catalog,
+                            class.and_then(|i| loadouts.classes.get(i)),
+                        ) {
+                            for &k in &l.killstreaks {
+                                if let Some(item) = c.killstreaks.get(usize::from(k))
+                                    && u32::from(item.kind) == streak
+                                {
+                                    rewards.push(item.name.clone());
+                                    reward_note = Some(("KILLSTREAK READY: D-PAD LEFT", now));
+                                    devlog::event(
+                                        now,
+                                        "killstreak",
+                                        format_args!("earned={}", item.name),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    if victim == 0 {
                         stick_event(&stick_max, &trigger_max, now);
                         // A natural break: write the log while you wait to respawn.
                         devlog::flush(now);
@@ -1237,6 +1346,34 @@ fn run_map(
             draw_life_hud(gfx, &mut hud_rects, &life, &clock, now);
             if let Some(a) = arena.as_ref() {
                 draw_match_hud(gfx, &mut hud_rects, a, &feed, hitmarker_ms, now);
+            }
+            // The UAV's sweep, then the minimap.
+            if let (Some((m, _)), Some(a)) = (world.minimap.as_ref(), arena.as_ref()) {
+                let enemies: Vec<(usize, [f32; 3])> = a
+                    .fighters
+                    .iter()
+                    .enumerate()
+                    .skip(1)
+                    .filter(|(_, f)| f.life.alive())
+                    .map(|(i, f)| (i, f.player.ps.origin))
+                    .collect();
+                radar.sweep(m, radar_at, now, &enemies);
+            }
+            radar_at = now;
+            draw_minimap(&world, arena.as_ref(), &radar, &cam, now);
+            if let Some((text, at)) = reward_note.filter(|(_, at)| now.wrapping_sub(*at) < 3000) {
+                let _ = at;
+                hud_rects.clear();
+                hud::text(&mut hud_rects, 200, 360, 2, text);
+                gfx.hud_rects(&hud_rects, 0xffd040e0);
+            }
+            if let Some(r) = rewards.last() {
+                let mut line = Str::default();
+                line.push_str("D-PAD LEFT: ");
+                line.push_str(&r.to_ascii_uppercase());
+                hud_rects.clear();
+                hud::text(&mut hud_rects, 430, 430, 2, line.as_str());
+                gfx.hud_rects(&hud_rects, 0xf0e8d0e0);
             }
         }
         if let Some(a) = arena.as_ref()

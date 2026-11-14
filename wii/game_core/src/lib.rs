@@ -31,6 +31,7 @@ pub mod life;
 pub mod loadout;
 pub mod look;
 pub mod menu;
+pub mod minimap;
 pub mod nav;
 pub mod perks;
 pub mod player;

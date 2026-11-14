@@ -61,7 +61,7 @@ Controls in a match (IW4L movement and the map's collision): main stick move, C-
 (held), **Z** sprint, **L** ADS, **R** fire, **X** reload, **Y** switch weapon (the gun drops, then the other raises,
 as in MW2), **D-pad right** melee. **D-pad up** toggles free fly (main
 stick, C-stick, L/R triggers down/up, B fast); leaving free fly drops the player where the camera is. **D-pad left**
-next spawn point (with the class's weapons), **D-pad down** toggles the performance overlay (fps, frame / CPU /
+calls in your newest killstreak reward, **D-pad down** toggles the performance overlay (fps, frame / CPU /
 GPU-wait ms, triangles (of which static models), draws, state changes, visible cells, models, position; see
 `docs/perf.md`). A pack without a `CLIP` section starts in free fly.
 
@@ -147,11 +147,15 @@ feed, and hits show MW2's hitmarker.
 ## Life and match
 Health 100; fall damage from IW4L's crash land (falls under 128 units are free, 300 and over kill); dropping 2048
 units below the lowest spawn point kills (MW2 uses trigger volumes). A death shows "YOU DIED", then you respawn at
-the next spawn point after 3 s, with a fresh gun. A red vignette shows missing health and flashes on damage; the
-bottom left shows the match clock (10 minutes, IW4L's FFA limit) and deaths. A free-flying player (D-pad up) is out
-of the match: the bots ignore it.
-Placeholders until MW2's game-type scripts run (GSC, ADR 0002): the 3 s respawn (MW2: death cam / killcam flow) and
-no health regeneration.
+the spawn MW2's free-for-all weighting picks after 3 s, with a fresh gun. Health regenerates as MW2's
+`_healthoverlay.gsc` does (numbers read from your scripts). A red vignette shows missing health and flashes on
+damage; the bottom left shows the match clock (the time limit from your `dm.gsc`) and deaths. A free-flying player
+(D-pad up) is out of the match: the bots ignore it.
+The minimap (top left, MW2's `minimap_fullscreen` layout) turns with your view; enemies who fire show for 2 s.
+Killstreaks: kills in a row since your last death earn your class's streaks at their killstreakTable cost; the UAV
+(D-pad left) runs MW2's radar sweep for its script time (every enemy marked as the sweep passes). Bots call in a UAV
+at its cost too. The other streaks are earned but not in this build yet.
+Placeholder until MW2's game-type scripts run (GSC, ADR 0002): the 3 s respawn (MW2: death cam / killcam flow).
 
 ## Movement status
 - `pmove` is IW4L's, unchanged; the context uses MW2's MP dvar defaults (190 speed, 800 gravity, jump 39, sprint ×1.5).

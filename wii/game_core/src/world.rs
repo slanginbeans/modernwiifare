@@ -164,6 +164,8 @@ pub struct World<'a> {
     dls: &'a [u8],
     sky: Option<[i32; 6]>,
     pub spawns: Vec<SpawnRecord>,
+    /// The HUD minimap and its texture handle, when the map has one.
+    pub minimap: Option<(records::Minimap, i32)>,
     model_vertices: &'a [u8],
     /// Compact vertex arrays and how each batch / model surface is stored (missing = float).
     vertices_q: &'a [u8],
@@ -365,6 +367,10 @@ impl<'a> World<'a> {
             .section(tag::SPAWNS)
             .map(|s| records::iter(s.data).collect())
             .unwrap_or_default();
+        let minimap = pack
+            .section(tag::MINIMAP)
+            .and_then(|s| records::get::<records::Minimap>(s.data, 0))
+            .map(|m| (m, handle(m.texture)));
         let name = core::str::from_utf8(&bytes[28..28 + wpk::NAME_LEN])
             .ok()
             .and_then(|s| s.split('\0').next())
@@ -379,6 +385,7 @@ impl<'a> World<'a> {
             dls,
             sky,
             spawns,
+            minimap,
             model_vertices,
             vertices_q,
             model_vertices_q,

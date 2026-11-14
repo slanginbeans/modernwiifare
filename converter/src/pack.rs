@@ -154,6 +154,46 @@ fn lightmap_from_secondary(w: u32, h: u32, bgra: &[u8]) -> Option<Image> {
     })
 }
 
+/// The minimap's frame from the map's entities: MW2's `setupMiniMap` with the two `minimap_corner` entities and
+/// worldspawn's `northyaw` (0 when absent); the visible range is the script's `compassmaxrange` or MW2's default.
+pub fn minimap_frame(
+    entities: &[BTreeMap<String, String>],
+    max_range: Option<f32>,
+    texture: u16,
+) -> Option<records::Minimap> {
+    let xy = |e: &BTreeMap<String, String>| -> Option<[f32; 2]> {
+        let v: Vec<f32> = e
+            .get("origin")?
+            .split_whitespace()
+            .filter_map(|t| t.parse().ok())
+            .collect();
+        (v.len() == 3).then(|| [v[0], v[1]])
+    };
+    let corners: Vec<[f32; 2]> = entities
+        .iter()
+        .filter(|e| e.get("targetname").map(String::as_str) == Some("minimap_corner"))
+        .filter_map(xy)
+        .collect();
+    let [a, b] = corners[..] else {
+        return None;
+    };
+    let north_yaw = entities
+        .iter()
+        .find(|e| e.get("classname").map(String::as_str) == Some("worldspawn"))
+        .and_then(|w| w.get("northyaw"))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0.0);
+    let (northwest, southeast) =
+        hud_iw4::setup_mini_map_frame(a, b, north_yaw, hud_iw4::REQUIRED_MAP_ASPECT_RATIO_DEFAULT);
+    Some(records::Minimap {
+        texture,
+        northwest,
+        southeast,
+        north_yaw,
+        max_range: max_range.unwrap_or(hud_iw4::COMPASS_MAX_RANGE_DEFAULT_MP),
+    })
+}
+
 /// A parsed map entity: key/value pairs.
 pub fn parse_entities(text: &str) -> Vec<BTreeMap<String, String>> {
     let mut out = Vec::new();
@@ -255,6 +295,7 @@ pub struct PackReport {
     pub surfaces_without_material: usize,
     pub materials_without_texture: usize,
     pub skybox: bool,
+    pub minimap: bool,
     pub spawns: usize,
     /// Bot walk graph: floor points and moves.
     pub nav_nodes: usize,
@@ -811,8 +852,26 @@ pub fn build(
     }
     report.skybox = skybox.is_some();
 
-    let spawns = spawns(&parse_entities(&world.entity_string));
+    let entities = parse_entities(&world.entity_string);
+    let spawns = spawns(&entities);
     report.spawns = spawns.len();
+    // The HUD minimap: the material the map script passes to `setupMiniMap`, framed by its two `minimap_corner`
+    // entities and the map's north (MW2 `_compass.gsc`).
+    let minimap = links
+        .material_info
+        .iter()
+        .position(|m| {
+            m.name
+                .as_deref()
+                .is_some_and(|n| links.minimap_materials.contains(&n.to_ascii_lowercase()))
+        })
+        .and_then(|m| links.colour_image(m))
+        .and_then(|img| files_by_image.get(&img))
+        .and_then(|entries| entries.first())
+        .map(|e| tex.add_file(tex_dir, &e.file, Wrap::Clamp))
+        .transpose()?
+        .and_then(|texture| minimap_frame(&entities, links.compass_max_range, texture));
+    report.minimap = minimap.is_some();
     report.textures = tex.records.len();
     report.materials = materials.len();
     for m in &materials {
@@ -888,6 +947,9 @@ pub fn build(
     );
     if let Some(sky) = skybox {
         b.section(wpk::tag::SKYBOX, 1, records::encode(&[sky]));
+    }
+    if let Some(m) = minimap {
+        b.section(wpk::tag::MINIMAP, 1, records::encode(&[m]));
     }
     b.section(
         wpk::tag::SPAWNS,

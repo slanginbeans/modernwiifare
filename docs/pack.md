@@ -22,6 +22,7 @@ Version 3 (2026-11-13): fixed-point vertices. Version 2: LOD tables in `ModelRec
 | `WBAT` | `BatchRecord` (48 B) | vertex base, vertex count, material, lightmap texture, display-list range in `WDLS`, triangles, bounds |
 | `WDLS` | – | GX display lists: `0x90` (triangles, VTXFMT0), u16 count, per vertex u16 indices for POS/CLR0/TEX0/TEX1 (all the same, relative to the batch's vertex base), NOP-padded to 32 |
 | `SKYB` | `Skybox` (16 B) | six sky face textures, D3D cube order |
+| `MINI` | `Minimap` (28 B) | the HUD minimap: its texture, northwest / southeast corners (MW2's `setupMiniMap` frame from the `minimap_corner` entities), north yaw, `compassmaxrange` |
 | `SPWN` | `SpawnRecord` (24 B) | origin, yaw, kind (TDM / DM), team, initial flag |
 | `MVTX` | `WorldVertex` (28 B) | static model vertices in model space (same format as `WVTX`; lightmap UV unused) |
 | `MSRF` | `BatchRecord` (48 B) | static model surfaces: vertex range in `MVTX`, material, display list in `WDLS`, model-space bounds |
@@ -51,7 +52,7 @@ ignores the section.
 | `KICK` | `KickRecord` (80 B) | recoil, parallel to `WEAP` |
 | `CLSS` | one blob (`wpk::classes::Catalog`) | Create-a-Class: weapons (group, display name, attachment mask), attachments and the pairs that clash, perks / equipment / deathstreaks by slot, special grenades, killstreaks, MW2's 5 default classes and 5 starting custom classes |
 | `RULE` | one blob (`wpk::rules::Rules`) | match rules read from the user's game-type scripts (`converter/src/rules.rs`): max health, regeneration (delay, step, tick, hurt cutoff, very-hurt wait), free-for-all time and score limits, points for a kill / headshot / assist, move speed by the primary weapon's class and Lightweight's scaler, and which values were read |
-| `UIPK` | one blob (`wpk::ui::UiPack`) | the menus: fonts (glyph tables over atlas textures), screens (textured quads on 640 × 480, the button style, text labels with their kind: MW2 text, title, or a slot for live text; the back button's rect), and a plain white texture for filled bars |
+| `UIPK` | one blob (`wpk::ui::UiPack`, also: owner-draw rects such as the minimap's, and named compass icons) | the menus: fonts (glyph tables over atlas textures), screens (textured quads on 640 × 480, the button style, text labels with their kind: MW2 text, title, or a slot for live text; the back button's rect), and a plain white texture for filled bars |
 | `TEXT` / `TXDA` | as in map packs | the menus' textures (font atlases, backgrounds, gradients, bars) |
 
 `views/<weapon>.wpk`, one per weapon a class can carry (its base name, e.g. `views/m4.wpk`):

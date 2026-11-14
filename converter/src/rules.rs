@@ -13,7 +13,16 @@ pub const FFA: &str = "maps/mp/gametypes/dm.gsc";
 /// The scripts the rules come from (captured from the zones' rawfiles).
 pub const WEAPONS: &str = "maps/mp/gametypes/_weapons.gsc";
 pub const PERK_FUNCTIONS: &str = "maps/mp/perks/_perkfunctions.gsc";
-pub const SCRIPTS: [&str; 5] = [TWEAKABLES, HEALTH_OVERLAY, FFA, WEAPONS, PERK_FUNCTIONS];
+pub const UAV: &str = "maps/mp/killstreaks/_uav.gsc";
+/// The scripts the rules come from (captured from the zones' rawfiles).
+pub const SCRIPTS: [&str; 6] = [
+    TWEAKABLES,
+    HEALTH_OVERLAY,
+    FFA,
+    WEAPONS,
+    PERK_FUNCTIONS,
+    UAV,
+];
 
 /// The text without `/* */` and `//` comments (scanned in order, so a `//*` line comment isn't a block).
 fn strip_comments(text: &str) -> String {
@@ -124,6 +133,7 @@ pub fn missing(r: &Rules) -> Vec<&'static str> {
         (found::ASSIST_SCORE, "assist points"),
         (found::CLASS_SPEED, "move speed by weapon class"),
         (found::LIGHTWEIGHT_SPEED, "Lightweight speed"),
+        (found::UAV_TIME, "UAV time"),
     ]
     .into_iter()
     .filter(|(bit, _)| r.found & bit == 0)
@@ -214,6 +224,10 @@ pub fn read(scripts: &HashMap<String, String>) -> Rules {
         r.lightweight_speed = v;
         r.found |= found::LIGHTWEIGHT_SPEED;
     }
+    if let Some(v) = get(UAV).and_then(|t| assignment(&t, "level.radarViewTime")) {
+        r.uav_time_ms = (v * 1000.0) as u32;
+        r.found |= found::UAV_TIME;
+    }
     if let Some(t) = get(FFA) {
         if let Some(v) = calls(&t, "registerTimeLimitDvar", 0)
             .first()
@@ -292,7 +306,13 @@ mod tests {
             PERK_FUNCTIONS.to_owned(),
             "setOther()\n{\n self.moveSpeedScaler = 2;\n}\n\nsetLightWeight()\n{\n self.moveSpeedScaler = 1.2;\n}\n".to_owned(),
         );
+        s.insert(
+            UAV.to_owned(),
+            "init()\n{\n level.radarViewTime = 25; // time\n level.uavBlockTime = 9;\n}\n"
+                .to_owned(),
+        );
         let r = read(&s);
+        assert_eq!(r.uav_time_ms, 25_000);
         assert_eq!(
             r.class_speed,
             [0.9, 1.0, 0.85, 1.05, 0.9, 0.75, 0.98, 0.7],

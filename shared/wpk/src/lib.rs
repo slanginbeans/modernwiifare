@@ -61,6 +61,8 @@ pub mod tag {
     pub const WORLD_DISPLAY_LISTS: Tag = *b"WDLS";
     /// Skybox: six texture indices ([`crate::records::Skybox`]).
     pub const SKYBOX: Tag = *b"SKYB";
+    /// The HUD minimap ([`crate::records::Minimap`]).
+    pub const MINIMAP: Tag = *b"MINI";
     /// Player spawn points ([`crate::records::SpawnRecord`]).
     pub const SPAWNS: Tag = *b"SPWN";
     /// Static model vertices (`WorldVertex`, model space, lightmap UV unused).

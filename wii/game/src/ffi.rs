@@ -97,6 +97,8 @@ unsafe extern "C" {
     pub fn mwf_mem2_alloc(size: u32, align: u32) -> *mut u8;
     pub fn mwf_flush(p: *const u8, len: u32);
     pub fn mwf_ui_quads(tex: i32, q: *const UiQuad, count: u32);
+    /// Quads with a texture coordinate per corner (4 vertices each).
+    pub fn mwf_ui_verts(tex: i32, v: *const game_core::minimap::Vert, quads: u32);
     pub fn mwf_draw_boxes(
         view: &[[f32; 4]; 3],
         boxes: *const [f32; 6],

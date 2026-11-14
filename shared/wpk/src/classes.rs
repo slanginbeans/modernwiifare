@@ -57,7 +57,7 @@ pub mod slot {
     pub const EQUIPMENT: u8 = 5;
 }
 
-/// Something a class can hold: its script name (`m4`, `specialty_marathon`, `acog`), its display name, a kind
+/// Something a class can hold: its script name (`m4`, `specialty_marathon`, `acog`), its display name, a kind (for a killstreak: the kills it costs)
 /// (weapon group or perk slot), for weapons the attachments it takes (bit n = attachment n), and for perks the Pro
 /// perk it brings once upgraded (perkTable's upgrade column; empty when none).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -253,7 +253,9 @@ pub struct Links {
     /// Every string-table cell in the zone (material names found here are looked up by name).
     table_strings: std::collections::HashSet<String>,
     /// Materials the zone's scripts pass to `setupMiniMap(...)` (lower case).
-    minimap_materials: std::collections::HashSet<String>,
+    pub minimap_materials: std::collections::HashSet<String>,
+    /// The map script's `compassmaxrange` (world units the HUD minimap's height covers), when it sets one.
+    pub compass_max_range: Option<f32>,
     /// Image index assigned to each loaded image, in load order (filled by the caller through `image_loaded`).
     image_count: usize,
     pub unresolved_texture_links: usize,
@@ -547,8 +549,11 @@ impl Links {
         } else {
             data.to_vec()
         };
-        self.minimap_materials
-            .extend(minimap_calls(&String::from_utf8_lossy(&text)));
+        let text = String::from_utf8_lossy(&text);
+        self.minimap_materials.extend(minimap_calls(&text));
+        if let Some(r) = compass_max_range(&text) {
+            self.compass_max_range = Some(r);
+        }
     }
 
     /// Add string-table cells from another zone (the shared tables in `code_post_gfx_mp`).
@@ -885,6 +890,20 @@ fn merge_group(a: Group, b: Group) -> Group {
     }
 }
 
+/// The number a map script sets `compassmaxrange` to (`setdvar( "compassmaxrange", "2200" )`).
+pub fn compass_max_range(source: &str) -> Option<f32> {
+    let lower = source.to_ascii_lowercase();
+    let i = lower.find("\"compassmaxrange\"")?;
+    let rest = &lower[i + "\"compassmaxrange\"".len()..];
+    let rest = rest.trim_start().strip_prefix(',')?.trim_start();
+    let num: String = rest
+        .trim_start_matches('"')
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    num.parse().ok().filter(|v: &f32| *v > 0.0)
+}
+
 /// Material names passed as a string literal to `setupMiniMap(` in GSC source (lower case).
 pub fn minimap_calls(source: &str) -> Vec<String> {
     let lower = source.to_ascii_lowercase();
@@ -1161,6 +1180,11 @@ mod tests {
     fn minimap_material_from_map_script() {
         let gsc = r#"main() { maps\mp\_compass::setupMiniMap( "Compass_Map_MP_Test" ); setupminimap(var); }"#;
         assert_eq!(minimap_calls(gsc), ["compass_map_mp_test"]);
+        assert_eq!(
+            compass_max_range(r#"setdvar( "compassmaxrange", "1800" ); x = 2;"#),
+            Some(1800.0)
+        );
+        assert_eq!(compass_max_range("setdvar(\"r_x\", \"1\");"), None);
         assert!(minimap_calls("no call here").is_empty());
         let minimaps = std::collections::HashSet::from(["compass_map_mp_test".to_owned()]);
         let mut m = material(",2d", 4, &[Owner::Standalone]);

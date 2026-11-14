@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 /// scales (`WMOV`). 3: ADS zoom and aim-assist ranges (`WAIM`). 4: blend / cull of model materials whose technique set
 /// comes from another zone (lit models were additive: see-through). 5: menu fonts and screens (`UIPK`).
 /// 6: class select, pause, Create-a-Class and scoreboard screens, with their text labels. 7: match rules (`RULE`). 8: perk upgrades in `CLSS`, move speed rules.
-pub const REVISION: u32 = 8;
+/// 9: HUD minimap (`MINI`), minimap layout and compass icons in `UIPK`, killstreak costs, UAV time.
+pub const REVISION: u32 = 9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

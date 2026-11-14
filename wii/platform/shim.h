@@ -157,6 +157,10 @@ typedef struct {
 } mwf_ui_quad;
 void mwf_ui_quads(int32_t tex, const mwf_ui_quad *q, uint32_t count);
 
+/* 2D quads with a texture coordinate per corner (the turned minimap): 4 vertices a quad, clockwise from top left. */
+typedef struct { float x, y, s, t; uint32_t rgba; } mwf_ui_vert;
+void mwf_ui_verts(int32_t tex, const mwf_ui_vert *v, uint32_t quads);
+
 /* Solid shaded boxes in world space (placeholder bodies), depth tested: mins b[i][0..3], maxs b[i][3..6]. */
 void mwf_draw_boxes(const float view[3][4], const float (*b)[6], const uint32_t *rgba, uint32_t count);
 

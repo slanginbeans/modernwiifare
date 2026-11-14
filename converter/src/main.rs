@@ -104,6 +104,14 @@ fn run(args: &[String]) -> ExitCode {
                         preview::write_png(&out, &img)?;
                         written.push(out);
                     }
+                    // With a map pack too: that map's HUD minimap at its first spawn.
+                    if let Some(map) = args.get(2) {
+                        let m = std::fs::read(map).map_err(|e| format!("{map}: {e}"))?;
+                        let img = menu_preview::render_minimap(&b, &m)?;
+                        let out = PathBuf::from("out/preview/menu_minimap.png");
+                        preview::write_png(&out, &img)?;
+                        written.push(out);
+                    }
                     Ok(written)
                 });
             match result {
@@ -788,6 +796,11 @@ fn run_common(args: &[String]) -> ExitCode {
     b.section(wpk::tag::RULES, 0, rules.encode());
     match built {
         Some((ui, r)) => {
+            println!(
+                "compass icons: {} of {}",
+                ui.icons.len(),
+                ui_bake::ICONS.len()
+            );
             println!(
                 "menus: {} fonts ({} glyphs), {} screens ({} images), {} textures, {} materials without a texture",
                 r.fonts,

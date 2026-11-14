@@ -648,6 +648,24 @@ void mwf_ui_quads(int32_t tex, const mwf_ui_quad *q, uint32_t count) {
     }
 }
 
+void mwf_ui_verts(int32_t tex, const mwf_ui_vert *v, uint32_t quads) {
+    if (quads == 0 || tex < 0 || tex >= tex_count) return;
+    ui_mode();
+    GX_LoadTexObj(&tex_obj[tex], GX_TEXMAP0);
+    while (quads > 0) {
+        uint32_t n = quads > 16383 ? 16383 : quads;
+        GX_Begin(GX_QUADS, GX_VTXFMT2, (u16)(n * 4));
+        for (uint32_t i = 0; i < n * 4; i++) {
+            const mwf_ui_vert *a = &v[i];
+            GX_Position2f32(a->x, a->y);
+            GX_Color4u8((u8)(a->rgba >> 24), (u8)(a->rgba >> 16), (u8)(a->rgba >> 8), (u8)a->rgba);
+            GX_TexCoord2f32(a->s, a->t);
+        }
+        GX_End();
+        v += n * 4;
+        quads -= n;
+    }
+}
 void mwf_hud_rects(const int16_t (*r)[4], uint32_t count, uint32_t rgba) {
     if (count == 0) return;
     hud_mode();

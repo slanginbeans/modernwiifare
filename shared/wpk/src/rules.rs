@@ -22,7 +22,8 @@ pub mod found {
     pub const ASSIST_SCORE: u16 = 1 << 10;
     pub const CLASS_SPEED: u16 = 1 << 11;
     pub const LIGHTWEIGHT_SPEED: u16 = 1 << 12;
-    pub const ALL: u16 = (1 << 13) - 1;
+    pub const UAV_TIME: u16 = 1 << 13;
+    pub const ALL: u16 = (1 << 14) - 1;
 }
 
 /// The weapon classes of [`Rules::class_speed`], in order (`_weapons.gsc` `updateMoveSpeedScale`).
@@ -60,6 +61,8 @@ pub struct Rules {
     pub class_speed: [f32; 8],
     /// Lightweight's move speed scaler (multiplies the class's).
     pub lightweight_speed: f32,
+    /// How long a UAV keeps the radar up (`_uav.gsc` `level.radarViewTime`).
+    pub uav_time_ms: u32,
     pub found: u16,
 }
 
@@ -80,6 +83,7 @@ impl Default for Rules {
             assist_score: 10,
             class_speed: [0.95, 1.0, 0.875, 1.0, 0.95, 0.8, 1.0, 0.8],
             lightweight_speed: 1.07,
+            uav_time_ms: 30_000,
             found: 0,
         }
     }
@@ -103,12 +107,13 @@ impl Rules {
             o.f32(v);
         }
         o.f32(self.lightweight_speed);
+        o.u32(self.uav_time_ms);
         o.u16(self.found);
         o
     }
 
     pub fn decode(b: &[u8]) -> Option<Rules> {
-        if b.len() < 82 {
+        if b.len() < 86 {
             return None;
         }
         let u = |i: usize| be::u32(b, i * 4);
@@ -127,7 +132,8 @@ impl Rules {
             assist_score: u(10),
             class_speed: core::array::from_fn(|k| f(11 + k)),
             lightweight_speed: f(19),
-            found: be::u16(b, 80),
+            uav_time_ms: u(20),
+            found: be::u16(b, 84),
         })
     }
 

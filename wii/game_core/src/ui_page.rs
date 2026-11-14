@@ -289,8 +289,10 @@ mod tests {
                     (label_kind::TEXT, l(400.0, "AB")),
                 ],
                 back: Some([0.0, 400.0, 200.0, 20.0]),
+                owner_draws: Vec::new(),
             }],
             white: 1,
+            icons: Vec::new(),
         }
     }
 

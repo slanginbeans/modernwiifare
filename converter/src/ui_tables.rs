@@ -199,7 +199,9 @@ pub fn catalog(
         if !numeric(streaks, r) || name.is_empty() || name == "none" {
             continue;
         }
-        killstreaks.push(item(name, text(streaks.cell(r, 2)), 0, 0));
+        // `kind` holds the kills the streak costs (column 4, as `_killstreaks.gsc` `getStreakCost` reads it).
+        let cost = streaks.cell(r, 4).trim().parse::<u8>().unwrap_or(0);
+        killstreaks.push(item(name, text(streaks.cell(r, 2)), cost, 0));
     }
 
     // Classes: one column each, rows keyed by column 0. Columns 1-5: the default classes; 6-10: the custom classes a
