@@ -46,6 +46,8 @@ pub struct Fighter {
     pub last_spawn: Option<usize>,
     /// This fighter's bullet damage scale (Stopping Power: 1.4).
     pub bullet_scale: f32,
+    /// This fighter's explosive damage scale (Danger Close).
+    pub explosive_scale: f32,
     /// Team in team modes (`TEAM_ALLIES` / `TEAM_AXIS`), `TEAM_NONE` in free-for-all.
     pub team: u8,
     /// Kills since this fighter's last death.
@@ -84,6 +86,7 @@ impl Fighter {
             last_attacker: None,
             last_spawn: None,
             bullet_scale: 1.0,
+            explosive_scale: 1.0,
             team: TEAM_NONE,
             streak: 0,
             shock: None,
@@ -868,6 +871,8 @@ impl Arena {
                         t.fraction >= 1.0 && t.startsolid == 0
                     },
                 );
+                // Danger Close: the thrower's extra explosive damage.
+                let d = (d as f32 * self.fighters[g.owner].explosive_scale) as i32;
                 if d > 0 {
                     let dir: [f32; 3] =
                         core::array::from_fn(|k| f.player.ps.origin[k] - g.origin[k]);

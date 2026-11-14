@@ -64,9 +64,9 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
 10. **Perks** (`game_core::perks`): a class's three perks and their Pro perks (perkTable's upgrade column;
     everything unlocked) become IW4's `ps.perks` bits that IW4L's movement and weapon code read (Marathon,
     Sleight of Hand, Steady Aim and their Pros, Commando's flag, ...); move speed by the primary's class and
-    Lightweight's scaler come from the user's `_weapons.gsc` / `_perkfunctions.gsc` (`RULE`); Stopping Power adds the
-    engine's 40% to bullet damage. Not yet: Scavenger packs, Hardline and the killstreak perks, Cold-Blooded /
-    Scrambler / Ninja against radar and sound (no UAV or footstep audio yet), Danger Close and Last Stand (no
+    Lightweight's scaler come from the user's `_weapons.gsc` / `_perkfunctions.gsc` (`RULE`); Stopping Power and Danger Close add `_perks.gsc`'s
+    `perk_bulletDamage` / `perk_explosiveDamage` percent to bullet / explosive damage. Not yet: Scavenger packs, Hardline and the killstreak perks, Cold-Blooded /
+    Scrambler / Ninja against radar and sound (no UAV or footstep audio yet), Last Stand (no
     explosives or last stand yet), One Man Army, deathstreaks.
 
 ## Next, performance (ranked by expected milliseconds; measure with the logs first)

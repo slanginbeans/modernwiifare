@@ -23,7 +23,9 @@ pub const SHOCK_FLASH: &str = "shock/flashbang_mp.shock";
 pub const DOM: &str = "maps/mp/gametypes/dom.gsc";
 pub const EMP: &str = "maps/mp/killstreaks/_emp.gsc";
 pub const NUKE: &str = "maps/mp/killstreaks/_nuke.gsc";
-pub const SCRIPTS: [&str; 14] = [
+pub const PERKS: &str = "maps/mp/perks/_perks.gsc";
+pub const SCRIPTS: [&str; 15] = [
+    PERKS,
     DOM,
     EMP,
     NUKE,
@@ -176,6 +178,7 @@ pub fn missing(r: &Rules) -> Vec<&'static str> {
             (found::DOM, "Domination"),
             (found::EMP, "EMP duration"),
             (found::NUKE, "nuke timing"),
+            (found::PERK_DAMAGE, "perk damage"),
         ]
         .into_iter()
         .filter(|(bit, _)| r.found_fx & bit == 0)
@@ -375,6 +378,20 @@ pub fn read(scripts: &HashMap<String, String>) -> Rules {
             r.dom_use_ms = (u * 1000.0) as u32;
             r.dom_tick_ms = (tick * 1000.0) as u32;
             r.found_fx |= found::DOM;
+        }
+    }
+    // Perk damage (`initPerkDvars`): `getIntProperty( "perk_bulletDamage", <percent> )` and the explosive one.
+    if let Some(t) = get(PERKS) {
+        let pct = |key: &str| {
+            calls(&t, "getIntProperty", 0)
+                .into_iter()
+                .find(|(_, a)| a.first().is_some_and(|n| n == key))
+                .and_then(|(_, a)| a.get(1).and_then(|s| number(s)))
+        };
+        if let (Some(b), Some(e)) = (pct("perk_bulletDamage"), pct("perk_explosiveDamage")) {
+            r.perk_bullet_damage = b / 100.0;
+            r.perk_explosive_damage = e / 100.0;
+            r.found_fx |= found::PERK_DAMAGE;
         }
     }
     // EMP: `EMP_JamTeam( otherTeam, <seconds>, delay )`.

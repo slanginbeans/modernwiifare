@@ -1325,7 +1325,8 @@ fn run_map(
                         rules.move_speed(class, perk_set.lightweight)
                     };
                     if let Some(a) = arena.as_mut() {
-                        a.fighters[0].bullet_scale = perk_set.bullet_scale();
+                        a.fighters[0].bullet_scale = perk_set.bullet_scale(&rules);
+                        a.fighters[0].explosive_scale = perk_set.explosive_scale(&rules);
                     }
                     // A stun's shock slows you (IW4 `PMF_SHELLSHOCKED`, when its `.shock` file says so).
                     if let Some(a) = arena.as_mut() {

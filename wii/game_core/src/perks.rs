@@ -12,9 +12,6 @@ use alloc::vec::Vec;
 
 use wpk::classes::{Catalog, Loadout, NONE};
 
-/// Stopping Power: bullet damage times 1.4 (IW4's `perk_bulletDamage` dvar, 40 percent).
-pub const STOPPING_POWER_SCALE: f32 = 1.4;
-
 /// IW4 player-state perk bits for perk `name` (`perks[0]`, `perks[1]`), as IW4L's `setPerk` maps them; 0 for perks
 /// the scripts handle.
 pub fn bits(name: &str) -> [u32; 2] {
@@ -52,6 +49,8 @@ pub struct PerkSet {
     pub bits: [u32; 2],
     pub stopping_power: bool,
     pub lightweight: bool,
+    /// Danger Close (`specialty_explosivedamage`).
+    pub danger_close: bool,
 }
 
 impl PerkSet {
@@ -59,10 +58,20 @@ impl PerkSet {
         self.names.iter().any(|n| n == name)
     }
 
-    /// Bullet damage scale for this class's shots.
-    pub fn bullet_scale(&self) -> f32 {
+    /// Bullet damage scale for this class's shots (Stopping Power: `_perks.gsc` adds `perk_bulletDamage` percent).
+    pub fn bullet_scale(&self, rules: &wpk::rules::Rules) -> f32 {
         if self.stopping_power {
-            STOPPING_POWER_SCALE
+            1.0 + rules.perk_bullet_damage
+        } else {
+            1.0
+        }
+    }
+
+    /// Explosive damage scale for this class's grenades and charges (Danger Close: `perk_explosiveDamage` percent
+    /// more, `_perks.gsc` `cac_modified_damage`).
+    pub fn explosive_scale(&self, rules: &wpk::rules::Rules) -> f32 {
+        if self.danger_close {
+            1.0 + rules.perk_explosive_damage
         } else {
             1.0
         }
@@ -92,6 +101,7 @@ pub fn of_loadout(cat: &Catalog, l: &Loadout) -> PerkSet {
     }
     set.stopping_power = set.has("specialty_bulletdamage");
     set.lightweight = set.has("specialty_lightweight");
+    set.danger_close = set.has("specialty_explosivedamage");
     set
 }
 
@@ -158,7 +168,7 @@ mod tests {
         assert_ne!(s.bits[0] & playerstate_iw4::PERK_FASTMANTLE, 0);
         assert_ne!(s.bits[1] & playerstate_iw4::PERK1_EXTENDEDMELEE, 0);
         assert!(s.stopping_power && !s.lightweight);
-        assert_eq!(s.bullet_scale(), 1.4);
+        assert_eq!(s.bullet_scale(&wpk::rules::Rules::default()), 1.4);
         assert_eq!(of_loadout(&cat, &Loadout::default()), PerkSet::default());
         assert_eq!(speed_class(2, false), Some(2));
         assert_eq!(speed_class(0, true), Some(7));

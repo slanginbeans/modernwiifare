@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 /// 17: smoke's sight blockers (`WSMK`). 18: shocks' look control.
 /// 19: footsteps (`STEP`). 20: bullet penetration (`WPEN`, `PENT`).
 /// 21: map objectives (`OBJS`: Domination flags). 22: EMP and nuke rules.
-pub const REVISION: u32 = 22;
+/// 23: perk damage (`_perks.gsc`).
+pub const REVISION: u32 = 23;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

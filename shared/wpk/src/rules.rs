@@ -40,7 +40,8 @@ pub mod found {
     pub const DOM: u16 = 1 << 6;
     pub const EMP: u16 = 1 << 7;
     pub const NUKE: u16 = 1 << 8;
-    pub const ALL_FX: u16 = (1 << 9) - 1;
+    pub const PERK_DAMAGE: u16 = 1 << 9;
+    pub const ALL_FX: u16 = (1 << 10) - 1;
 }
 
 /// A shell shock's screen and movement (an IW4 `.shock` file: `bg_shock_screenType`, blur blend / fade, white and
@@ -146,6 +147,10 @@ pub struct Rules {
     /// The tactical nuke's countdown (`scr_nukeTimer`'s default) and, after it, when everyone dies (`nukeDeath`).
     pub nuke_timer_ms: u32,
     pub nuke_death_ms: u32,
+    /// Stopping Power's and Danger Close's extra damage (`_perks.gsc` `initPerkDvars`: `perk_bulletDamage` and
+    /// `perk_explosiveDamage` percent, as fractions).
+    pub perk_bullet_damage: f32,
+    pub perk_explosive_damage: f32,
     pub found: u16,
     pub found_team: u16,
     pub found_fx: u16,
@@ -211,6 +216,8 @@ impl Default for Rules {
             emp_ms: 60_000,
             nuke_timer_ms: 10_000,
             nuke_death_ms: 1500,
+            perk_bullet_damage: 0.4,
+            perk_explosive_damage: 0.4,
             found: 0,
             found_team: 0,
             found_fx: 0,
@@ -291,6 +298,8 @@ impl Rules {
         ] {
             o.u32(v);
         }
+        o.f32(self.perk_bullet_damage);
+        o.f32(self.perk_explosive_damage);
         o
     }
 
@@ -400,6 +409,16 @@ impl Rules {
                 be::u32(b, 270)
             } else {
                 d.nuke_death_ms
+            },
+            perk_bullet_damage: if b.len() >= 282 {
+                be::f32(b, 274)
+            } else {
+                d.perk_bullet_damage
+            },
+            perk_explosive_damage: if b.len() >= 282 {
+                be::f32(b, 278)
+            } else {
+                d.perk_explosive_damage
             },
             found: be::u16(b, 176),
             found_team: be::u16(b, 178),
