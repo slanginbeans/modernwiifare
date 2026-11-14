@@ -10,9 +10,9 @@ header, file length, map name), a table of 16-byte section entries `{ tag, offse
 sections, **each 32-byte aligned**, so GX can use texture data and display lists where they lie once the file is in
 MEM2 (after `DCFlushRange`).
 
-## Sections (version 2)
-Version 2 (2026-11-13): LOD tables in `ModelRecord`. Older packs are rejected (magenta screen on the Wii); convert
-again.
+## Sections (version 3)
+Version 3 (2026-11-13): fixed-point vertices. Version 2: LOD tables in `ModelRecord`. Older packs are rejected
+(magenta screen on the Wii); convert again.
 | Tag | Records | Content |
 |---|---|---|
 | `TEXT` | `TextureRecord` (32 B) | GX format, levels, alpha-plane flag, wrap, size, offsets into `TXDA` |
@@ -27,6 +27,8 @@ again.
 | `MSRF` | `BatchRecord` (48 B) | static model surfaces: vertex range in `MVTX`, material, display list in `WDLS`, model-space bounds |
 | `MODL` | `ModelRecord` (68 B) | model-space bounding sphere and up to 4 LODs: each a run of `MSRF` surfaces and IW4's switch distance (`lodDist`); past the last, the model is not drawn |
 | `SMDL` | `InstanceRecord` (56 B) | a placed static model: model, draw distance, light-grid colour (RGBA8 at half intensity), model-to-world 3x4 matrix |
+| `WVTQ` / `MVTQ` | `CompactVertex` (18 B) | fixed-point world / static model vertices: position s16 × 3 at 1/8 unit around the batch's origin, RGBA8, UV s16 × 2 (12, 10 or 8 fraction bits: GX vertex formats 3, 4, 5), lightmap UV u16 × 2 |
+| `WBQZ` / `MSQZ` | `QuantRecord` (16 B) per batch / model surface | which array and GX vertex format its vertices use, and the origin the renderer adds through the position matrix |
 | `VISD` | one blob (`wpk::vis::Vis`) | IW4 visibility: dpvs planes and node stream (point → cell), cells (bounds, portal run), portals (plane, neighbour, vertices, hull axis) |
 | `WBCL` / `SMCL` | u16 per batch / instance | the visibility cell of each `WBAT` batch and `SMDL` instance (`0xFFFF`: none, drawn when in the frustum) |
 | `CLIP` | one blob (`wpk::clip::Clip`) | collision, unsimplified: a table of 16 arrays (count, offset), then pooled brush planes + surface flags, brushes (contents, glass), BSP nodes, leaves, leaf brushes, mesh vertices / triangles / walkable-edge bits / triangle flags / AABB trees / partitions / borders / roots, brush models. Decoded and validated at load into the `clipmap_iw4` types IW4L traces with |
@@ -73,6 +75,13 @@ performance problem (model LODs, visibility cells).
   coplanar geometry without writing depth (blend, add, multiply) are pulled towards the eye by a factor of
   `1 - level / 2048` in eye space. Same pixels, slightly smaller depth. GX has no polygon offset, and PC's layering
   relies on bit-identical depth from identical vertices, which strips (rotated triangles) don't keep.
+
+## Vertices (`wpk::quant`)
+Every batch owns its vertices (renumbered from 0). They are stored fixed-point when they fit: positions within
+±4096 units of an origin snapped to a 64-unit grid (so a vertex shared by two batches rounds identically: no cracks),
+and UVs within ±128 after removing a whole-number offset per connected piece (repeat wrapping samples the same).
+The rest stay float, snapped to the same 1/8-unit grid so coplanar layers stay coplanar across formats. Static models
+use one origin per model. `MWF_NO_QUANT=1` turns quantization off (A/B checks in the preview).
 
 ## Static models (`converter/src/static_models.rs`)
 - Instances come from `GfxWorld` static model draw instances (origin, axis, scale, model, draw distance).

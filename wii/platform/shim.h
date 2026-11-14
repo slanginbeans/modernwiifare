@@ -118,8 +118,10 @@ void mwf_tex_reset(void);
 
 /* Frame: clear, set the camera. view is a GX 3x4 world->eye matrix (row-major); fovy in degrees. */
 void mwf_frame_begin(const float view[3][4], float fovy_deg, float znear, float zfar, uint32_t clear_rgba);
-/* Point the world vertex arrays at an interleaved vertex block (stride 28: pos f32x3, rgba, uv f32x2, lm u16x2). */
-void mwf_world_arrays(const void *vertices);
+/* Point the world vertex arrays at an interleaved vertex block: stride 28 (pos f32x3, rgba, uv f32x2, lm u16x2;
+ * GX_VTXFMT0) or 18 (compact: pos s16x3 frac 3, rgba, uv s16x2 frac 12/10/8 for GX_VTXFMT3/4/5, lm u16x2 frac 15).
+ * The display list's opcode picks the format. */
+void mwf_world_arrays(const void *vertices, uint32_t stride);
 /* Set TEV, blend, alpha test, Z and cull for one world draw. */
 void mwf_world_state(const mwf_draw_state *s);
 /* Load the position matrix (GX_PNMTX0) for the following world / model draws: the view, or view x placement. */

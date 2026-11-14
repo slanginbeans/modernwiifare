@@ -20,6 +20,8 @@ use dpvs_iw4::{
     CPlane, CellPortalGraph, DpvsPlanes, PortalView, VisBits, WalkScratch, dpvs_view_plane,
     visit_cells,
 };
+use wpk::quant::{CompactVertex, QuantRecord};
+use wpk::records::Record;
 use wpk::vis::{ALWAYS, Vis};
 
 use crate::camera::{Camera, ZFAR, ZNEAR, dot, sub};
@@ -163,6 +165,11 @@ pub struct World<'a> {
     sky: Option<[i32; 6]>,
     pub spawns: Vec<SpawnRecord>,
     model_vertices: &'a [u8],
+    /// Compact vertex arrays and how each batch / model surface is stored (missing = float).
+    vertices_q: &'a [u8],
+    model_vertices_q: &'a [u8],
+    batch_quant: Vec<QuantRecord>,
+    surface_quant: Vec<QuantRecord>,
     model_surfaces: Vec<BatchRecord>,
     models: Vec<ModelRecord>,
     instances: Vec<InstanceRecord>,
@@ -286,10 +293,20 @@ impl<'a> World<'a> {
         let vertices = need(tag::WORLD_VERTICES)?.data;
         let batches: Vec<BatchRecord> = records::iter(need(tag::WORLD_BATCHES)?.data).collect();
         let dls = need(tag::WORLD_DISPLAY_LISTS)?.data;
+        let opt = |t: [u8; 4]| pack.section(t).map(|s| s.data).unwrap_or(&[]);
+        let vertices_q = opt(tag::WORLD_VERTICES_Q);
+        let batch_quant: Vec<QuantRecord> = records::iter(opt(tag::BATCH_QUANT)).collect();
+        // A batch's vertices: (array, stride) by how they are stored.
+        let span = |b: &BatchRecord, q: Option<&QuantRecord>, floats: &[u8], compact: &[u8]| {
+            let (len, arr) = if q.is_some_and(QuantRecord::is_compact) {
+                (CompactVertex::LEN, compact.len())
+            } else {
+                (records::WORLD_VERTEX_LEN, floats.len())
+            };
+            (b.vertex_base as usize + b.vertex_count as usize) * len <= arr
+        };
         for (i, b) in batches.iter().enumerate() {
-            let vend =
-                (b.vertex_base as usize + b.vertex_count as usize) * records::WORLD_VERTEX_LEN;
-            if vend > vertices.len()
+            if !span(b, batch_quant.get(i), vertices, vertices_q)
                 || (b.dl_off + b.dl_len) as usize > dls.len()
                 || b.dl_off % 32 != 0
                 || b.dl_len % 32 != 0
@@ -299,15 +316,14 @@ impl<'a> World<'a> {
             }
         }
         // Static models (optional sections; older packs have none).
-        let opt = |t: [u8; 4]| pack.section(t).map(|s| s.data).unwrap_or(&[]);
         let model_vertices = opt(tag::MODEL_VERTICES);
+        let model_vertices_q = opt(tag::MODEL_VERTICES_Q);
+        let surface_quant: Vec<QuantRecord> = records::iter(opt(tag::SURFACE_QUANT)).collect();
         let model_surfaces: Vec<BatchRecord> = records::iter(opt(tag::MODEL_SURFACES)).collect();
         let models: Vec<ModelRecord> = records::iter(opt(tag::MODELS)).collect();
         let instances: Vec<InstanceRecord> = records::iter(opt(tag::MODEL_INSTANCES)).collect();
         for (i, b) in model_surfaces.iter().enumerate() {
-            let vend =
-                (b.vertex_base as usize + b.vertex_count as usize) * records::WORLD_VERTEX_LEN;
-            if vend > model_vertices.len()
+            if !span(b, surface_quant.get(i), model_vertices, model_vertices_q)
                 || (b.dl_off + b.dl_len) as usize > dls.len()
                 || b.dl_off % 32 != 0
                 || b.dl_len % 32 != 0
@@ -361,6 +377,10 @@ impl<'a> World<'a> {
             sky,
             spawns,
             model_vertices,
+            vertices_q,
+            model_vertices_q,
+            batch_quant,
+            surface_quant,
             model_draws: Vec::with_capacity(model_surfaces.len()),
             model_surfaces,
             models,
@@ -507,39 +527,64 @@ impl<'a> World<'a> {
 
         let view = cam.view();
         let mut last_state: Option<DrawState> = None;
-        // Bound vertex block: (model vertices?, base). Loaded matrix: (instance or u32::MAX for the view, polygon
-        // offset level); the view alone is loaded by frame_begin.
-        let mut last_base = (false, u32::MAX);
-        let mut last_mtx = (u32::MAX, 0u8);
+        // Bound vertex block: (model vertices?, compact?, base). Loaded matrix: (instance or u32::MAX for the view,
+        // polygon offset level, vertex origin); the view alone is loaded by frame_begin.
+        let float = QuantRecord {
+            vtxfmt: records::WORLD_VTXFMT,
+            origin: [0.0; 3],
+        };
+        let mut last_base = (false, false, u32::MAX);
+        let mut last_mtx = (u32::MAX, 0u8, [0u32; 3]);
         for &(_, _, d) in &self.order {
-            let (b, verts, inst) = if d & MODEL_DRAW != 0 {
+            let (b, q, inst) = if d & MODEL_DRAW != 0 {
                 let (ii, si) = self.model_draws[(d & !MODEL_DRAW) as usize];
                 (
                     &self.model_surfaces[si as usize],
-                    self.model_vertices,
+                    self.surface_quant
+                        .get(si as usize)
+                        .copied()
+                        .unwrap_or(float),
                     Some(ii),
                 )
             } else {
-                (&self.batches[d as usize], self.vertices, None)
+                (
+                    &self.batches[d as usize],
+                    self.batch_quant.get(d as usize).copied().unwrap_or(float),
+                    None,
+                )
+            };
+            let (verts, stride) = match (inst.is_some(), q.is_compact()) {
+                (false, false) => (self.vertices, records::WORLD_VERTEX_LEN),
+                (false, true) => (self.vertices_q, CompactVertex::LEN),
+                (true, false) => (self.model_vertices, records::WORLD_VERTEX_LEN),
+                (true, true) => (self.model_vertices_q, CompactVertex::LEN),
             };
             let offset =
                 self.materials[usize::from(b.material)].flags & material_flags::POLYGON_OFFSET;
-            let want = (inst.map_or(u32::MAX, u32::from), offset);
+            let want = (
+                inst.map_or(u32::MAX, u32::from),
+                offset,
+                q.origin.map(f32::to_bits),
+            );
             if want != last_mtx {
                 last_mtx = want;
                 let mut m = match inst {
                     Some(ii) => mul34(&view, &self.instances[usize::from(ii)].mtx),
                     None => view,
                 };
+                // Compact vertices are relative to their batch's origin.
+                for row in m.iter_mut() {
+                    row[3] += row[0] * q.origin[0] + row[1] * q.origin[1] + row[2] * q.origin[2];
+                }
                 // Decals: pull towards the eye along each view ray (same pixels, smaller depth).
                 let pull = material_flags::depth_pull(offset);
                 m.iter_mut().flatten().for_each(|v| *v *= pull);
                 gfx.pos_matrix(&m);
             }
-            if (inst.is_some(), b.vertex_base) != last_base {
-                last_base = (inst.is_some(), b.vertex_base);
-                let off = b.vertex_base as usize * records::WORLD_VERTEX_LEN;
-                gfx.world_arrays(verts[off..].as_ptr());
+            if (inst.is_some(), q.is_compact(), b.vertex_base) != last_base {
+                last_base = (inst.is_some(), q.is_compact(), b.vertex_base);
+                let off = b.vertex_base as usize * stride;
+                gfx.world_arrays(verts[off..].as_ptr(), stride as u8);
             }
             let mut s = self.state(b);
             if let Some(ii) = inst {
@@ -601,7 +646,7 @@ mod tests {
         fn frame_begin(&mut self, _: &crate::gfx::Mtx34, _: f32, _: f32, _: f32, _: u32) {
             self.calls.push(Call::Begin);
         }
-        fn world_arrays(&mut self, v: *const u8) {
+        fn world_arrays(&mut self, v: *const u8, _stride: u8) {
             self.calls
                 .push(Call::Arrays((v as usize).wrapping_sub(self.base)));
         }

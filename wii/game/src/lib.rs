@@ -51,8 +51,8 @@ impl Gfx for Shim {
     fn frame_begin(&mut self, view: &Mtx34, fovy: f32, znear: f32, zfar: f32, clear: u32) {
         unsafe { ffi::mwf_frame_begin(view, fovy, znear, zfar, clear) }
     }
-    fn world_arrays(&mut self, v: *const u8) {
-        unsafe { ffi::mwf_world_arrays(v) }
+    fn world_arrays(&mut self, v: *const u8, stride: u8) {
+        unsafe { ffi::mwf_world_arrays(v, u32::from(stride)) }
     }
     fn world_state(&mut self, s: &DrawState) {
         let st = ffi::DrawState {

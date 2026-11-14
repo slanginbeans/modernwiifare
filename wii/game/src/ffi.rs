@@ -81,7 +81,7 @@ unsafe extern "C" {
         zfar: f32,
         clear_rgba: u32,
     );
-    pub fn mwf_world_arrays(vertices: *const u8);
+    pub fn mwf_world_arrays(vertices: *const u8, stride: u32);
     pub fn mwf_world_state(s: *const DrawState);
     pub fn mwf_pos_matrix(m: *const Mtx34);
     pub fn mwf_call_dl(dl: *const u8, len: u32);

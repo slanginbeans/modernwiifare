@@ -329,11 +329,16 @@ pub const WORLD_DL_ATTRS: usize = 4;
 /// Build a world display list: `tris` are vertex indices relative to the batch's `vertex_base`. Returns the bytes,
 /// padded with GX NOPs to 32 bytes. Splits into several draw commands when there are more than 65535 vertices.
 pub fn world_display_list(tris: &[u16]) -> Vec<u8> {
+    world_display_list_fmt(tris, WORLD_VTXFMT)
+}
+
+/// [`world_display_list`] in vertex format `vtxfmt` (the float world format or a compact one, `crate::quant`).
+pub fn world_display_list_fmt(tris: &[u16], vtxfmt: u8) -> Vec<u8> {
     let mut dl = Vec::with_capacity(tris.len() * 2 * WORLD_DL_ATTRS + 32);
     // Largest multiple of 3 that fits the u16 vertex count.
     const MAX: usize = 65535 / 3 * 3;
     for chunk in tris.chunks(MAX) {
-        dl.u8(gx_triangles(WORLD_VTXFMT));
+        dl.u8(gx_triangles(vtxfmt));
         dl.u16(chunk.len() as u16);
         for &i in chunk {
             for _ in 0..WORLD_DL_ATTRS {

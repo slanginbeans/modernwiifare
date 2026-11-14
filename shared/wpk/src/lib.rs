@@ -19,6 +19,7 @@ extern crate alloc;
 
 pub mod be;
 pub mod clip;
+pub mod quant;
 pub mod records;
 pub mod strips;
 pub mod vis;
@@ -26,7 +27,7 @@ pub mod vis;
 use alloc::vec::Vec;
 
 pub const MAGIC: [u8; 4] = *b"MWFP";
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 3;
 pub const HEADER_LEN: usize = 64;
 pub const SECTION_ENTRY_LEN: usize = 16;
 /// GX needs 32-byte aligned texture data and display lists.
@@ -63,6 +64,14 @@ pub mod tag {
     pub const MODELS: Tag = *b"MODL";
     /// Placed static models (`InstanceRecord`).
     pub const MODEL_INSTANCES: Tag = *b"SMDL";
+    /// Compact world vertices (`quant::CompactVertex`, 18 B) of batches stored fixed-point.
+    pub const WORLD_VERTICES_Q: Tag = *b"WVTQ";
+    /// How each `WBAT` batch's vertices are stored (`quant::QuantRecord`: format, origin).
+    pub const BATCH_QUANT: Tag = *b"WBQZ";
+    /// Compact static model vertices.
+    pub const MODEL_VERTICES_Q: Tag = *b"MVTQ";
+    /// How each `MSRF` surface's vertices are stored.
+    pub const SURFACE_QUANT: Tag = *b"MSQZ";
     /// World visibility (`vis::Vis`): cell BSP, cells, portals.
     pub const VIS: Tag = *b"VISD";
     /// Cell of each `WBAT` batch (u16, `vis::ALWAYS` = none).

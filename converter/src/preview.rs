@@ -13,6 +13,8 @@ use gx_texture::Converted;
 use gx_texture::format::TexFormat;
 use gx_texture::image::Image;
 use gx_texture::policy::{Alpha, Traits};
+use wpk::quant::{CompactVertex, QuantRecord, dequantize};
+use wpk::records::Record;
 use wpk::records::{
     self, BatchRecord, Blend, InstanceRecord, MaterialRecord, ModelRecord, NONE, Recipe, Skybox,
     SpawnRecord, TextureRecord, WORLD_VERTEX_LEN, WorldVertex, texture_flags,
@@ -321,17 +323,29 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
     // light-grid colour). Opaque and alpha-tested first, then blended back to front, like the GX renderer.
     struct Item<'a> {
         b: BatchRecord,
+        /// Float and compact vertex arrays; `quant` says which this batch uses.
         vtx: &'a [u8],
+        cvtx: &'a [u8],
+        quant: QuantRecord,
         mtx: Option<[[f32; 4]; 3]>,
         tint: Option<[f32; 3]>,
         min: [f32; 3],
         max: [f32; 3],
     }
+    let float_quant = QuantRecord {
+        vtxfmt: records::WORLD_VTXFMT,
+        origin: [0.0; 3],
+    };
+    let wvtq = section(tag::WORLD_VERTICES_Q);
+    let batch_quant: Vec<QuantRecord> = records::iter(section(tag::BATCH_QUANT)).collect();
     let mut items: Vec<Item> = batches
         .iter()
-        .map(|b| Item {
+        .enumerate()
+        .map(|(i, b)| Item {
             b: *b,
             vtx,
+            cvtx: wvtq,
+            quant: batch_quant.get(i).copied().unwrap_or(float_quant),
             mtx: None,
             tint: None,
             min: b.bounds_min,
@@ -340,6 +354,8 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
         .collect();
     let mvtx = section(tag::MODEL_VERTICES);
     let msrf: Vec<BatchRecord> = records::iter(section(tag::MODEL_SURFACES)).collect();
+    let mvtq = section(tag::MODEL_VERTICES_Q);
+    let surface_quant: Vec<QuantRecord> = records::iter(section(tag::SURFACE_QUANT)).collect();
     let models: Vec<ModelRecord> = records::iter(section(tag::MODELS)).collect();
     let place = |m: &[[f32; 4]; 3], p: [f32; 3]| -> [f32; 3] {
         std::array::from_fn(|r| m[r][0] * p[0] + m[r][1] * p[1] + m[r][2] * p[2] + m[r][3])
@@ -374,7 +390,12 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
             continue;
         };
         let first = lod.first_surface as usize;
-        for b in msrf.iter().skip(first).take(usize::from(lod.surface_count)) {
+        for (si, b) in msrf
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(usize::from(lod.surface_count))
+        {
             let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
             for c in 0..8 {
                 let p = [0, 1, 2].map(|k| {
@@ -393,6 +414,8 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
             items.push(Item {
                 b: *b,
                 vtx: mvtx,
+                cvtx: mvtq,
+                quant: surface_quant.get(si).copied().unwrap_or(float_quant),
                 mtx: Some(inst.mtx),
                 tint: Some(tint),
                 min,
@@ -461,12 +484,18 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
                 rgba: [0.0; 4],
             }; 3];
             for (k, &i) in t.iter().enumerate() {
-                let at = (b.vertex_base as usize + usize::from(i)) * WORLD_VERTEX_LEN;
-                let wv = it
-                    .vtx
-                    .get(at..at + WORLD_VERTEX_LEN)
-                    .and_then(|r| records::get::<WorldVertex>(r, 0))
-                    .ok_or("vertex out of range")?;
+                let vi = b.vertex_base as usize + usize::from(i);
+                let wv = if it.quant.is_compact() {
+                    let len = CompactVertex::LEN;
+                    it.cvtx
+                        .get(vi * len..(vi + 1) * len)
+                        .map(|r| dequantize(&CompactVertex::read(r), &it.quant))
+                } else {
+                    it.vtx
+                        .get(vi * WORLD_VERTEX_LEN..(vi + 1) * WORLD_VERTEX_LEN)
+                        .and_then(|r| records::get::<WorldVertex>(r, 0))
+                }
+                .ok_or("vertex out of range")?;
                 let c = wv.rgba.to_be_bytes();
                 let scale = 1.0 / (1u32 << records::LM_FRAC) as f32;
                 let pos = it.mtx.as_ref().map_or(wv.pos, |m| place(m, wv.pos));

@@ -248,6 +248,15 @@ static void world_mode(void) {
     GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
     GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
     GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX1, GX_TEX_ST, GX_U16, 15);
+    /* Compact vertices (wpk::quant): positions s16 at 1/8 unit, UVs s16 with 12 / 10 / 8 fraction bits. */
+    static const u8 uv_frac[3] = {12, 10, 8};
+    for (int i = 0; i < 3; i++) {
+        u8 fmt = (u8)(GX_VTXFMT3 + i);
+        GX_SetVtxAttrFmt(fmt, GX_VA_POS, GX_POS_XYZ, GX_S16, 3);
+        GX_SetVtxAttrFmt(fmt, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        GX_SetVtxAttrFmt(fmt, GX_VA_TEX0, GX_TEX_ST, GX_S16, uv_frac[i]);
+        GX_SetVtxAttrFmt(fmt, GX_VA_TEX1, GX_TEX_ST, GX_U16, 15);
+    }
     GX_SetNumChans(1);
     GX_SetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
     GX_SetNumTexGens(2);
@@ -255,15 +264,23 @@ static void world_mode(void) {
     GX_SetTexCoordGen(GX_TEXCOORD1, GX_TG_MTX2x4, GX_TG_TEX1, GX_IDENTITY);
 }
 
-void mwf_world_arrays(const void *v) {
+void mwf_world_arrays(const void *v, uint32_t stride) {
     world_mode();
     if (v == world_base) return;
     world_base = v;
     const uint8_t *b = (const uint8_t *)v;
-    GX_SetArray(GX_VA_POS, (void *)(b + 0), WORLD_STRIDE);
-    GX_SetArray(GX_VA_CLR0, (void *)(b + 12), WORLD_STRIDE);
-    GX_SetArray(GX_VA_TEX0, (void *)(b + 16), WORLD_STRIDE);
-    GX_SetArray(GX_VA_TEX1, (void *)(b + 24), WORLD_STRIDE);
+    if (stride == WORLD_STRIDE) {
+        GX_SetArray(GX_VA_POS, (void *)(b + 0), WORLD_STRIDE);
+        GX_SetArray(GX_VA_CLR0, (void *)(b + 12), WORLD_STRIDE);
+        GX_SetArray(GX_VA_TEX0, (void *)(b + 16), WORLD_STRIDE);
+        GX_SetArray(GX_VA_TEX1, (void *)(b + 24), WORLD_STRIDE);
+    } else {
+        /* 18-byte compact vertex: pos 0, rgba 6, uv 10, lm 14. */
+        GX_SetArray(GX_VA_POS, (void *)(b + 0), (u8)stride);
+        GX_SetArray(GX_VA_CLR0, (void *)(b + 6), (u8)stride);
+        GX_SetArray(GX_VA_TEX0, (void *)(b + 10), (u8)stride);
+        GX_SetArray(GX_VA_TEX1, (void *)(b + 14), (u8)stride);
+    }
     GX_InvVtxCache();
 }
 

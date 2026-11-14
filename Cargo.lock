@@ -1250,6 +1250,7 @@ name = "wpk"
 version = "0.1.0"
 dependencies = [
  "clipmap_iw4",
+ "libm",
 ]
 
 [[package]]

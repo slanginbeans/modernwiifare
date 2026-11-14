@@ -122,6 +122,11 @@ pub fn strip_triangles(s: &[u16]) -> impl Iterator<Item = [u16; 3]> + '_ {
 
 /// A world display list from a triangle list, as strips plus one triangle list. Padded with NOPs to 32 bytes.
 pub fn display_list(tris: &[u16]) -> Vec<u8> {
+    display_list_fmt(tris, WORLD_VTXFMT)
+}
+
+/// [`display_list`] in vertex format `vtxfmt`.
+pub fn display_list_fmt(tris: &[u16], vtxfmt: u8) -> Vec<u8> {
     let st = stripify(tris);
     let mut dl = Vec::new();
     let put = |dl: &mut Vec<u8>, op: u8, verts: &[u16]| {
@@ -138,14 +143,14 @@ pub fn display_list(tris: &[u16]) -> Vec<u8> {
         let mut at = 0;
         while at + 2 < s.len() {
             let end = (at + 65534).min(s.len());
-            put(&mut dl, gx_triangle_strip(WORLD_VTXFMT), &s[at..end]);
+            put(&mut dl, gx_triangle_strip(vtxfmt), &s[at..end]);
             at = end - 2;
         }
     }
     let flat: Vec<u16> = st.singles.iter().flatten().copied().collect();
     // 65535 vertices is a whole number of triangles (21845).
     for chunk in flat.chunks(65535) {
-        put(&mut dl, gx_triangles(WORLD_VTXFMT), chunk);
+        put(&mut dl, gx_triangles(vtxfmt), chunk);
     }
     while dl.len() % crate::ALIGN != 0 {
         dl.u8(0);

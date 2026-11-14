@@ -53,9 +53,12 @@ Not sacrificed: collision (never simplified), movement and weapon timings, 640×
 | Visibility cells (IW4 dpvs: camera cell, portal walk through the frustum) | `mp_rust` is **one cell** (open map): no gain. `mp_terminal` (10 cells, 90 portals): every spawn is in a cell, 55/57 see part of the map; triangles per view 726k → 656k (-10%) |
 | Static model LODs (IW4 `lodDist`; past the last LOD the model isn't drawn) | `mp_terminal` per view: static models 412k → 91k triangles (-78%); total 656k → **334k** (world 244k). Pack grows (all LODs): `mp_rust` 20.8 → 24.8 MiB, `mp_terminal` 47 MiB |
 
+| Collision and visibility out of MEM2 (decoded from a temporary MEM1 buffer) | `mp_checkpoint` MEM2 51.7 → 44.3 MiB |
+| Fixed-point vertices (18 B; float fallback for batches that don't fit) | all 16 maps in MEM2: **18.9–38.5 MiB** (was up to 51.7); `mp_checkpoint` 38.5, `mp_rust` 18.9. Models 100% compact; world batches ~60% compact (the rest: UV spans over ±128 or very large batches) |
+
 Where that leaves us: `mp_terminal` spends ~244k world + ~91k model triangles per view, still ~3× the 60 fps
-budget, and its 47 MiB pack is too close to MEM2's ~52 MiB. Next: fixed-point vertices (memory and bandwidth), then
-world draw distance (fog) and `LOD_SCALE` (in `game_core::world`) as the per-map 60 fps levers.
+budget. Memory is solved for every map. Next: world draw distance (fog) and `LOD_SCALE` (in `game_core::world`) as
+the per-map 60 fps levers, set from hardware numbers.
 
 IW4 geometry is cut by UV seams and small surfaces, so strips average ~1.7 vertices per triangle, not ~1.1. Better
 vertex welding on the converter side (merge vertices identical in every attribute) is a later step.

@@ -34,8 +34,8 @@ pub trait Gfx {
     /// Create a texture; returns a handle, or -1.
     fn tex_create(&mut self, desc: &TexDesc) -> i32;
     fn frame_begin(&mut self, view: &Mtx34, fovy_deg: f32, znear: f32, zfar: f32, clear_rgba: u32);
-    /// Point the world vertex arrays at `vertices` (interleaved, stride 28).
-    fn world_arrays(&mut self, vertices: *const u8);
+    /// Point the world vertex arrays at `vertices` (interleaved: 28-byte float or 18-byte compact vertices).
+    fn world_arrays(&mut self, vertices: *const u8, stride: u8);
     fn world_state(&mut self, state: &DrawState);
     /// Load the position matrix for the following draws (the view, or view x a model's placement).
     fn pos_matrix(&mut self, m: &Mtx34);

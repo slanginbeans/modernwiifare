@@ -247,6 +247,8 @@ pub struct PackReport {
     pub world_triangles: u64,
     /// Vertices the world's display lists send (strips: about one per triangle; lists: three).
     pub world_dl_vertices: u64,
+    /// Batches stored as fixed-point vertices (the rest stay float).
+    pub world_compact_batches: usize,
     pub batches: usize,
     pub vertex_groups: usize,
     pub sky_surfaces_dropped: usize,
@@ -279,6 +281,8 @@ pub struct StaticModelReport {
     pub triangles: u64,
     pub lods: usize,
     pub dl_vertices: u64,
+    /// Surfaces stored as fixed-point vertices.
+    pub compact_surfaces: usize,
     /// Triangles if every instance were drawn (what world-space baking would cost).
     pub placed_triangles: u64,
     pub unresolved: usize,
@@ -540,22 +544,48 @@ pub fn build(
     let mut batches = Vec::with_capacity(draws.len());
     let mut dls = Vec::new();
     let mut batch_cells: Vec<u16> = Vec::with_capacity(draws.len());
+    let mut batch_quant: Vec<wpk::quant::QuantRecord> = Vec::with_capacity(draws.len());
+    let mut world_floats: Vec<WorldVertex> = Vec::new();
+    let mut world_compact: Vec<wpk::quant::CompactVertex> = Vec::new();
     for (&(_, vis_cell, _, _, material, lightmap), d) in &draws {
         if d.indices.is_empty() {
             continue;
         }
-        let dl = display_list(d.blended, &d.indices);
+        // Each batch gets its own vertices (only those it uses), renumbered from 0.
+        let mut local = vec![u16::MAX; usize::from(*d.indices.iter().max().unwrap_or(&0)) + 1];
+        let mut verts: Vec<WorldVertex> = Vec::new();
+        let mut tris: Vec<u16> = Vec::with_capacity(d.indices.len());
+        for &rel in &d.indices {
+            let slot = &mut local[usize::from(rel)];
+            if *slot == u16::MAX {
+                *slot = verts.len() as u16;
+                verts.push(world.vertices[(d.group_base + u32::from(rel)) as usize]);
+            }
+            tris.push(*slot);
+        }
+        let centre = std::array::from_fn(|k| (d.min[k] + d.max[k]) * 0.5);
+        let (vertex_base, quant) = store_vertices(
+            &verts,
+            &tris,
+            wpk::quant::snap_origin(centre),
+            &mut world_floats,
+            &mut world_compact,
+        );
+        if quant.is_compact() {
+            report.world_compact_batches += 1;
+        }
+        let dl = display_list(d.blended, &tris, quant.vtxfmt);
         if !wpk::strips::same_triangles(
             wpk::strips::dl_triangles(&dl).into_iter(),
-            d.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]),
+            tris.chunks_exact(3).map(|t| [t[0], t[1], t[2]]),
         ) {
             return Err("display list self-check: triangles changed".into());
         }
-        let max_rel = *d.indices.iter().max().unwrap_or(&0) as u32;
         batch_cells.push(vis_cell);
+        batch_quant.push(quant);
         batches.push(BatchRecord {
-            vertex_base: d.group_base,
-            vertex_count: max_rel + 1,
+            vertex_base,
+            vertex_count: verts.len() as u32,
             material,
             lightmap,
             dl_off: dls.len() as u32,
@@ -576,6 +606,8 @@ pub fn build(
     let mut model_records: Vec<ModelRecord> = Vec::new();
     let mut model_surfaces: Vec<BatchRecord> = Vec::new();
     let mut model_vertices: Vec<WorldVertex> = Vec::new();
+    let mut model_compact: Vec<wpk::quant::CompactVertex> = Vec::new();
+    let mut surface_quant: Vec<wpk::quant::QuantRecord> = Vec::new();
     let mut model_tris: HashMap<u16, u64> = HashMap::new();
     let mut r = StaticModelReport {
         unresolved: sm.unresolved,
@@ -589,6 +621,26 @@ pub fn build(
         ..StaticModelReport::default()
     };
     for (&m, lods) in &sm.meshes {
+        // One origin for every surface of every LOD of the model (no cracks between its surfaces).
+        let (mut blo, mut bhi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for v in lods
+            .iter()
+            .take(1)
+            .flat_map(|l| &l.surfaces)
+            .flat_map(|s| &s.vertices)
+        {
+            for k in 0..3 {
+                blo[k] = blo[k].min(v.pos[k]);
+                bhi[k] = bhi[k].max(v.pos[k]);
+            }
+        }
+        let model_origin = wpk::quant::snap_origin(std::array::from_fn(|k| {
+            if blo[k] <= bhi[k] {
+                (blo[k] + bhi[k]) * 0.5
+            } else {
+                0.0
+            }
+        }));
         let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
         let mut tris = 0u64;
         let mut rec_lods = [records::ModelLod::default(); 4];
@@ -611,9 +663,20 @@ pub fn build(
                         smax[k] = smax[k].max(v.pos[k]);
                     }
                 }
+                let (vertex_base, quant) = store_vertices(
+                    &surf.vertices,
+                    &surf.indices,
+                    model_origin,
+                    &mut model_vertices,
+                    &mut model_compact,
+                );
+                if quant.is_compact() {
+                    r.compact_surfaces += 1;
+                }
                 let dl = display_list(
                     matches!(links.material_info[mat].blend, BlendMode::Blend),
                     &surf.indices,
+                    quant.vtxfmt,
                 );
                 if !wpk::strips::same_triangles(
                     wpk::strips::dl_triangles(&dl).into_iter(),
@@ -622,8 +685,9 @@ pub fn build(
                     return Err("display list self-check: triangles changed".into());
                 }
                 r.dl_vertices += wpk::strips::dl_vertex_count(&dl) as u64;
+                surface_quant.push(quant);
                 model_surfaces.push(BatchRecord {
-                    vertex_base: model_vertices.len() as u32,
+                    vertex_base,
                     vertex_count: surf.vertices.len() as u32,
                     material,
                     lightmap: NONE,
@@ -634,7 +698,6 @@ pub fn build(
                     bounds_max: smax,
                 });
                 dls.extend_from_slice(&dl);
-                model_vertices.extend_from_slice(&surf.vertices);
                 if li == 0 {
                     tris += (surf.indices.len() / 3) as u64;
                     for k in 0..3 {
@@ -746,8 +809,18 @@ pub fn build(
     );
     b.section(
         wpk::tag::WORLD_VERTICES,
-        world.vertices.len() as u32,
-        records::encode(&world.vertices),
+        world_floats.len() as u32,
+        records::encode(&world_floats),
+    );
+    b.section(
+        wpk::tag::WORLD_VERTICES_Q,
+        world_compact.len() as u32,
+        records::encode(&world_compact),
+    );
+    b.section(
+        wpk::tag::BATCH_QUANT,
+        batch_quant.len() as u32,
+        records::encode(&batch_quant),
     );
     b.section(
         wpk::tag::WORLD_BATCHES,
@@ -764,6 +837,16 @@ pub fn build(
         wpk::tag::MODEL_SURFACES,
         model_surfaces.len() as u32,
         records::encode(&model_surfaces),
+    );
+    b.section(
+        wpk::tag::MODEL_VERTICES_Q,
+        model_compact.len() as u32,
+        records::encode(&model_compact),
+    );
+    b.section(
+        wpk::tag::SURFACE_QUANT,
+        surface_quant.len() as u32,
+        records::encode(&surface_quant),
     );
     b.section(
         wpk::tag::MODELS,
@@ -835,6 +918,10 @@ pub fn build(
         wpk::tag::MODEL_SURFACES,
         wpk::tag::MODELS,
         wpk::tag::MODEL_INSTANCES,
+        wpk::tag::WORLD_VERTICES_Q,
+        wpk::tag::BATCH_QUANT,
+        wpk::tag::MODEL_VERTICES_Q,
+        wpk::tag::SURFACE_QUANT,
         wpk::tag::VIS,
         wpk::tag::BATCH_CELLS,
         wpk::tag::INSTANCE_CELLS,
@@ -854,11 +941,49 @@ pub fn build(
 
 /// Strips for order-independent materials; alpha-blended ones keep their authored triangle order (it is their
 /// layering order).
-fn display_list(blended: bool, tris: &[u16]) -> Vec<u8> {
+fn display_list(blended: bool, tris: &[u16], vtxfmt: u8) -> Vec<u8> {
     if blended {
-        records::world_display_list(tris)
+        records::world_display_list_fmt(tris, vtxfmt)
     } else {
-        wpk::strips::display_list(tris)
+        wpk::strips::display_list_fmt(tris, vtxfmt)
+    }
+}
+
+/// A batch's own vertices, fixed-point when they fit around `origin` (see `wpk::quant`), else floats. Appends them to
+/// the matching array and returns (vertex base, how they are stored).
+fn store_vertices(
+    verts: &[WorldVertex],
+    tris: &[u16],
+    origin: [f32; 3],
+    floats: &mut Vec<WorldVertex>,
+    compact: &mut Vec<wpk::quant::CompactVertex>,
+) -> (u32, wpk::quant::QuantRecord) {
+    let quantized = if std::env::var_os("MWF_NO_QUANT").is_some() {
+        None
+    } else {
+        wpk::quant::quantize(verts, tris, origin, false)
+    };
+    match quantized {
+        Some((vtxfmt, q)) => {
+            let base = compact.len() as u32;
+            compact.extend_from_slice(&q);
+            (base, wpk::quant::QuantRecord { vtxfmt, origin })
+        }
+        None => {
+            let base = floats.len() as u32;
+            // Same 1/8-unit grid as compact vertices: coplanar layers stay coplanar across formats.
+            floats.extend(verts.iter().map(|v| WorldVertex {
+                pos: wpk::quant::snap_position(v.pos),
+                ..*v
+            }));
+            (
+                base,
+                wpk::quant::QuantRecord {
+                    vtxfmt: records::WORLD_VTXFMT,
+                    origin: [0.0; 3],
+                },
+            )
+        }
     }
 }
 
