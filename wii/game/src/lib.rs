@@ -21,7 +21,7 @@ use game_core::camera::Camera;
 use game_core::collision::MapClip;
 use game_core::fly::{self, PadInput};
 use game_core::gfx::{DrawState, Gfx, Mtx34, TexDesc};
-use game_core::gun::{Gun, GunInput};
+use game_core::gun::{Gun, GunInput, SpreadInput};
 use game_core::hud::{self, Rect, heapless_str::Str};
 use game_core::life::{self, Life, MatchClock};
 use game_core::player::{MovePad, Player};
@@ -260,13 +260,15 @@ fn draw_gun_hud(
     impacts: &[(Option<[f32; 3]>, u32)],
     now: u32,
 ) {
-    // Crosshair: four ticks around the centre (static gap until spread is in).
+    // Crosshair: four ticks at the spread cone's edge (as MW2's hip-fire crosshair opens while firing or moving).
+    let half_w = libm::tanf(cam.fovy.to_radians() * 0.5) * cam.aspect;
+    let gap = (libm::tanf(g.spread_degrees.to_radians()) / half_w * 320.0).clamp(3.0, 120.0) as i16;
     rects.clear();
     rects.extend_from_slice(&[
-        [312, 239, 6, 2],
-        [322, 239, 6, 2],
-        [319, 232, 2, 6],
-        [319, 242, 2, 6],
+        [320 - gap - 8, 239, 8, 2],
+        [320 + gap, 239, 8, 2],
+        [319, 240 - gap - 8, 2, 8],
+        [319, 240 + gap, 2, 8],
     ]);
     gfx.hud_rects(rects, 0xffffffc0);
     rects.clear();
@@ -625,6 +627,16 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
                     life.damage(life.max_health, now);
                 }
                 if let Some(g) = gun.as_mut().filter(|_| life.alive()) {
+                    g.update_spread(
+                        msec as i32,
+                        &SpreadInput {
+                            ps: &p.ps,
+                            cmd_angles: p.cmd_angles,
+                            old_cmd_angles: p.old_cmd_angles,
+                            forwardmove: p.cmd_move.0,
+                            rightmove: p.cmd_move.1,
+                        },
+                    );
                     let (_, shot) = g.update(
                         c,
                         msec as i32,
@@ -635,6 +647,8 @@ fn run_map(gfx: &mut Shim, name: &str, scratch: &mut WalkScratch, common: &[u8])
                         },
                         cam.eye,
                         cam.forward(),
+                        cam.right(),
+                        cam.up(),
                     );
                     if let Some(s) = shot.filter(|s| s.hit) {
                         impacts[next_impact] = (Some(s.end), now);

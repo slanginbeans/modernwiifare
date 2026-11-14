@@ -39,6 +39,10 @@ pub struct Player {
     pub ps: PlayerState,
     server_time: i32,
     old_buttons: u32,
+    /// The last command's view angles (IW4 shorts), the one before, and its move (for aim spread).
+    pub cmd_angles: [i32; 3],
+    pub old_cmd_angles: [i32; 3],
+    pub cmd_move: (i8, i8),
     /// View angles the pad has built, in degrees (pitch down positive, as IW4).
     yaw: f32,
     pitch: f32,
@@ -138,6 +142,9 @@ impl Player {
             ps,
             server_time,
             old_buttons: 0,
+            cmd_angles: [0; 3],
+            old_cmd_angles: [0; 3],
+            cmd_move: (0, 0),
             yaw,
             pitch: 0.0,
         }
@@ -178,6 +185,9 @@ impl Player {
             rightmove: to_move(pad.sx),
             ..UserCmd::default()
         };
+        self.old_cmd_angles = self.cmd_angles;
+        self.cmd_angles = cmd.angles;
+        self.cmd_move = (cmd.forwardmove, cmd.rightmove);
         let result = pmove(
             &mut self.ps,
             &mut cmd,

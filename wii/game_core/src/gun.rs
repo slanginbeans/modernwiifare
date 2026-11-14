@@ -2,14 +2,16 @@
 //! rechamber) driven by the pad, with combat numbers from `common.wpk`, and bullets traced against the map's
 //! collision (IW4 `MASK_SHOT`).
 //!
-//! Not yet: spread (bullets go exactly to the crosshair), recoil / view kick, penetration, damage to players, the
-//! viewmodel and sounds. Timings are IW4L's and therefore the PC game's.
+//! Aim spread is IW4L's (decay, move / turn / fire increases, stance and ADS cones); a bullet leaves in a random
+//! direction inside the cone. Not yet: recoil / view kick, penetration, damage to players, sounds. Timings are IW4L's and therefore the PC game's.
 
+use playerstate_iw4::PlayerState;
 use playerstate_iw4::buttons;
 use trace_iw4::Trace;
 use weapon_iw4::{
-    WeaponCmd, WeaponCombatFacts, WeaponHandState, WeaponTickEvent, spawn_weapon_hand,
-    weapon_ordinary,
+    AimSpreadMotion, AimSpreadState, SpreadOverrideState, WeaponCmd, WeaponCombatFacts,
+    WeaponHandState, WeaponTickEvent, add_aim_spread_fire, adjust_aim_spread_scale,
+    fire_weapon_spread_degrees, get_spread_for_weapon, spawn_weapon_hand, weapon_ordinary,
 };
 use wpk::weapon::WeaponRecord;
 
@@ -36,6 +38,16 @@ pub struct GunInput {
     pub pm_flags: u32,
 }
 
+/// What aim spread needs from the player each frame (IW4 `PM_UpdateAimDownSightFlag` / `BG_UpdateAimSpread` inputs).
+#[derive(Clone, Copy, Debug)]
+pub struct SpreadInput<'a> {
+    pub ps: &'a PlayerState,
+    pub cmd_angles: [i32; 3],
+    pub old_cmd_angles: [i32; 3],
+    pub forwardmove: i8,
+    pub rightmove: i8,
+}
+
 pub struct Gun {
     pub name: [u8; wpk::weapon::NAME_LEN],
     facts: WeaponCombatFacts,
@@ -44,6 +56,13 @@ pub struct Gun {
     old_buttons: u32,
     /// Shots fired since the gun was raised (for the HUD / tests).
     pub shots: u32,
+    /// IW4 aim spread scale (0..255) and override state.
+    spread: AimSpreadState,
+    /// Spread cone of the last frame, degrees (for the crosshair).
+    pub spread_degrees: f32,
+    rng: u32,
+    /// ADS fraction of the last frame.
+    ads_frac: f32,
 }
 
 impl Gun {
@@ -65,6 +84,14 @@ impl Gun {
             server_time: 1000,
             old_buttons: 0,
             shots: 0,
+            spread: AimSpreadState {
+                aim_spread_scale: 0.0,
+                spread_override: 0,
+                spread_override_state: SpreadOverrideState::None as i32,
+            },
+            spread_degrees: 0.0,
+            rng: 0x1234_5678 ^ index,
+            ads_frac: 0.0,
         })
     }
 
@@ -106,7 +133,58 @@ impl Gun {
         self.hand.weaponstate
     }
 
-    /// Run the weapon for `msec`; a fired bullet is traced from `eye` along `dir` (unit vector).
+    /// Update aim spread for this frame (IW4L `adjust_aim_spread_scale`) and the current cone.
+    pub fn update_spread(&mut self, msec: i32, s: &SpreadInput<'_>) {
+        let ps = s.ps;
+        let motion = AimSpreadMotion {
+            frametime: msec as f32 / 1000.0,
+            cmd_angles: s.cmd_angles,
+            old_angles: s.old_cmd_angles,
+            forwardmove: s.forwardmove,
+            rightmove: s.rightmove,
+            velocity_xy: [ps.velocity[0], ps.velocity[1]],
+            speed: ps.speed,
+            move_speed_threshold: weapon_iw4::AIM_SPREAD_MOVE_SPEED_THRESHOLD_DEFAULT,
+        };
+        adjust_aim_spread_scale(
+            &mut self.spread,
+            &self.facts.spread_facts(),
+            &self.facts.aim_spread_decay_facts(),
+            ps.ground_entity_num,
+            ps.pm_type,
+            ps.e_flags,
+            ps.f_weapon_pos_frac,
+            &motion,
+        );
+        let cone = get_spread_for_weapon(
+            ps.view_height_current,
+            self.spread.spread_override,
+            SpreadOverrideState::from_i32(self.spread.spread_override_state),
+            &self.facts.spread_facts(),
+            1.0,
+        );
+        self.spread_degrees = fire_weapon_spread_degrees(
+            cone,
+            self.facts.ads_spread,
+            ps.f_weapon_pos_frac,
+            self.spread.aim_spread_scale,
+        );
+        self.ads_frac = ps.f_weapon_pos_frac;
+    }
+
+    fn random(&mut self) -> f32 {
+        // xorshift32
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        (x >> 8) as f32 / (1u32 << 24) as f32
+    }
+
+    /// Run the weapon for `msec`; a fired bullet leaves `eye` along `dir` (unit) inside the spread cone, with
+    /// `right` and `up` the view's other axes.
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         clip: &MapClip<'_>,
@@ -114,6 +192,8 @@ impl Gun {
         input: &GunInput,
         eye: [f32; 3],
         dir: [f32; 3],
+        right: [f32; 3],
+        up: [f32; 3],
     ) -> (Option<WeaponTickEvent>, Option<Shot>) {
         let mut btn = 0;
         if input.fire {
@@ -138,7 +218,21 @@ impl Gun {
         let shot = match event {
             Some(WeaponTickEvent::ShotAccepted { .. }) => {
                 self.shots += 1;
-                Some(self.trace_bullet(clip, eye, dir))
+                // A random direction in the cone (angle and radius uniform, so hits gather towards the centre),
+                // then the shot widens the spread (IW4L add_aim_spread_fire).
+                let t = libm::tanf(self.spread_degrees.to_radians());
+                let a = self.random() * core::f32::consts::TAU;
+                let r = self.random() * t;
+                let (x, y) = (libm::cosf(a) * r, libm::sinf(a) * r);
+                let d: [f32; 3] = core::array::from_fn(|k| dir[k] + right[k] * x + up[k] * y);
+                let len = libm::sqrtf(d.iter().map(|v| v * v).sum::<f32>()).max(1e-6);
+                let shot = self.trace_bullet(clip, eye, d.map(|v| v / len));
+                add_aim_spread_fire(
+                    &mut self.spread.aim_spread_scale,
+                    self.ads_frac,
+                    self.facts.hip_spread_fire_add,
+                );
+                Some(shot)
             }
             _ => None,
         };
@@ -172,6 +266,9 @@ mod tests {
     use super::*;
     use weapon_iw4::{CapturedCombatInput, EmptyReloadPolicy};
     use wpk::clip::Clip;
+
+    const Y: [f32; 3] = [0.0, -1.0, 0.0];
+    const Z: [f32; 3] = [0.0, 0.0, 1.0];
 
     /// A full-auto rifle: 600 rpm (100 ms), 30-round magazine, 2 s reload.
     fn rifle() -> WeaponRecord {
@@ -253,12 +350,20 @@ mod tests {
             ..GunInput::default()
         };
         for _ in 0..200 {
-            g.update(&clip, 16, &GunInput::default(), [0.0; 3], [1.0, 0.0, 0.0]);
+            g.update(
+                &clip,
+                16,
+                &GunInput::default(),
+                [0.0; 3],
+                [1.0, 0.0, 0.0],
+                Y,
+                Z,
+            );
         }
         let mut shots = 0;
         for _ in 0..125 {
             shots += usize::from(
-                g.update(&clip, 16, &fire, [0.0; 3], [1.0, 0.0, 0.0])
+                g.update(&clip, 16, &fire, [0.0; 3], [1.0, 0.0, 0.0], Y, Z)
                     .1
                     .is_some(),
             );
@@ -269,6 +374,58 @@ mod tests {
         let expected = 125 / frames_per_shot;
         std::println!("{shots} shots in 2 s ({expected} expected at 16 ms frames)");
         assert!(shots.abs_diff(expected.min(c.clip_size as usize)) <= 1);
+    }
+
+    #[test]
+    fn spread_widens_while_firing_and_bullets_stay_in_the_cone() {
+        let c = wall();
+        let clip = MapClip::new(&c);
+        let mut rec = rifle();
+        rec.combat.hip_spread_stand_min = 2.0;
+        rec.combat.hip_spread_stand_max = 6.0;
+        rec.combat.hip_spread_decay_rate = 4.0;
+        rec.combat.hip_spread_fire_add = 0.6;
+        let mut g = Gun::new(&rec).expect("usable");
+        let mut ps = PlayerState::ZERO;
+        ps.view_height_current = 60.0;
+        ps.ground_entity_num = 0x7fe;
+        let input = SpreadInput {
+            ps: &ps,
+            cmd_angles: [0; 3],
+            old_cmd_angles: [0; 3],
+            forwardmove: 0,
+            rightmove: 0,
+        };
+        let (eye, x) = ([0.0, 0.0, 60.0], [1.0, 0.0, 0.0]);
+        for _ in 0..40 {
+            g.update_spread(16, &input);
+            g.update(&clip, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        let rest = g.spread_degrees;
+        assert!(
+            (rest - 2.0).abs() < 0.01,
+            "standing still the cone is the minimum: {rest}"
+        );
+        let fire = GunInput {
+            fire: true,
+            ..GunInput::default()
+        };
+        let mut widest = 0.0f32;
+        for _ in 0..60 {
+            g.update_spread(16, &input);
+            widest = widest.max(g.spread_degrees);
+            if let (_, Some(s)) = g.update(&clip, 16, &fire, eye, x, Y, Z) {
+                // Off-axis angle of the hit, at 500 units.
+                let off = libm::sqrtf(s.end[1] * s.end[1] + (s.end[2] - 60.0) * (s.end[2] - 60.0));
+                let deg = libm::atanf(off / (s.end[0] - eye[0])).to_degrees();
+                assert!(deg <= 6.0 + 0.01, "hit {deg} degrees off, cone at most 6");
+            }
+        }
+        assert!(widest > 4.0, "firing widens the cone ({widest})");
+        for _ in 0..120 {
+            g.update_spread(16, &input);
+        }
+        assert!(g.spread_degrees < widest, "and it recovers");
     }
 
     #[test]
@@ -284,13 +441,13 @@ mod tests {
         let x = [1.0, 0.0, 0.0];
         // Raising: no shots for the first 500 ms.
         for _ in 0..30 {
-            let (_, s) = g.update(&clip, 16, &GunInput::default(), eye, x);
+            let (_, s) = g.update(&clip, 16, &GunInput::default(), eye, x, Y, Z);
             assert!(s.is_none());
         }
         // One second of fire at 100 ms per round: about 10 shots, all into the wall at x = 500.
         let mut hits = 0;
         for _ in 0..63 {
-            if let (_, Some(s)) = g.update(&clip, 16, &fire, eye, x) {
+            if let (_, Some(s)) = g.update(&clip, 16, &fire, eye, x, Y, Z) {
                 assert!(s.hit && (s.end[0] - 500.0).abs() < 1.0, "{s:?}");
                 hits += 1;
             }
@@ -308,9 +465,11 @@ mod tests {
             },
             eye,
             x,
+            Y,
+            Z,
         );
         for _ in 0..200 {
-            g.update(&clip, 16, &GunInput::default(), eye, x);
+            g.update(&clip, 16, &GunInput::default(), eye, x, Y, Z);
         }
         let (clip_after, stock_after) = g.ammo();
         assert_eq!(clip_after, 30);
