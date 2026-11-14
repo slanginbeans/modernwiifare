@@ -28,9 +28,11 @@ pub struct WeaponTables<'a> {
 const FALLBACK_LETHAL: &str = "frag_grenade_mp";
 /// IW4 offhand class of frag grenades (the bots' lethal).
 pub const OFFHAND_CLASS_FRAG: i32 = 1;
-/// What this build throws: frag, semtex and the throwing knife (lethal), flashbang and stun (tactical). Claymores,
-/// C4, tactical insertions, blast shields and smoke are not in yet.
-const THROWN: [&str; 5] = [
+/// What this build throws: frag, semtex, the throwing knife, C4 and claymores (lethal), flashbang and stun
+/// (tactical). Tactical insertions, blast shields and smoke are not in yet.
+const THROWN: [&str; 7] = [
+    "c4_mp",
+    "claymore_mp",
     "frag_grenade_mp",
     "semtex_mp",
     "throwingknife_mp",

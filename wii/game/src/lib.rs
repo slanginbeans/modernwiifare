@@ -952,6 +952,9 @@ fn run_map(
     let mut hip_fov_scale = 1.0f32;
     // When X started being held over a knife you can pick up (IW4L: the use button held 250 ms takes the item).
     let mut use_hold_ms: Option<u32> = None;
+    // X double tap for C4 (`watchC4AltDetonate`): when X went down, and when a short press ended.
+    let mut x_down_ms: Option<u32> = None;
+    let mut x_short_release_ms: Option<u32> = None;
     // Fixed-step clock for the player: milliseconds × 3 not yet simulated, and steps taken.
     let mut tick_acc3 = 0u32;
     // Largest stick and trigger values seen (calibration: IW4 needs 105 of 127 forward to sprint).
@@ -1091,6 +1094,25 @@ fn run_map(
         };
         let x_held = pad.held & ffi::BTN_X != 0;
         let reload_held = x_held && knife_near.is_none();
+        // C4: X pressed, let go within 0.5 s, pressed again within 0.5 s detonates it.
+        match (x_held, x_down_ms) {
+            (true, None) => {
+                if x_short_release_ms.is_some_and(|r| now.wrapping_sub(r) < 500)
+                    && let Some(a) = arena.as_mut()
+                    && life.alive()
+                    && a.detonate_c4(0, now)
+                {
+                    devlog::event(now, "c4", format_args!("detonate"));
+                }
+                x_short_release_ms = None;
+                x_down_ms = Some(now);
+            }
+            (false, Some(d)) => {
+                x_short_release_ms = (now.wrapping_sub(d) < 500).then_some(now);
+                x_down_ms = None;
+            }
+            _ => {}
+        }
         match (knife_near, x_held) {
             (Some(k), true) => {
                 let since = *use_hold_ms.get_or_insert(now);
@@ -1282,16 +1304,19 @@ fn run_map(
                                 ),
                             )
                         {
-                            a.grenades.push(game_core::grenade::Grenade::throw(
-                                0,
-                                weapon,
-                                e,
-                                cam.eye,
-                                cam.forward(),
-                                p.ps.velocity,
-                                remaining_fuse_ms,
+                            a.add_grenade(
+                                game_core::grenade::Grenade::throw(
+                                    0,
+                                    weapon,
+                                    e,
+                                    cam.eye,
+                                    cam.forward(),
+                                    p.ps.velocity,
+                                    remaining_fuse_ms,
+                                    now,
+                                ),
                                 now,
-                            ));
+                            );
                             devlog::event(now, "grenade", format_args!("weapon={weapon}"));
                             if let Some(w) = world_sounds.as_mut() {
                                 w.play(equip_sound(weapon, wpk::weapon::equip_sound::THROW));
@@ -1367,6 +1392,10 @@ fn run_map(
                 if life.ready_to_respawn(now) {
                     spawn += 1;
                     // MW2's spawn weighting, as for the bots.
+                    // Your C4 and claymores from the last life go (`_weapons.gsc` on spawn).
+                    if let Some(a) = arena.as_mut() {
+                        a.clear_charges(0);
+                    }
                     player = Some(match arena.as_mut() {
                         Some(a) if !spawn_list.is_empty() => {
                             let (o, yaw) = a.spawn_point(c, &spawn_list, 0);

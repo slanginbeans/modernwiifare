@@ -128,6 +128,10 @@ pub enum Event {
         origin: [f32; 3],
         weapon: u32,
     },
+    /// A claymore saw an enemy (it goes off after the grace period).
+    ClaymoreTripped {
+        origin: [f32; 3],
+    },
 }
 
 /// The player's position for hit tests and for the bots to see.
@@ -416,6 +420,7 @@ impl Arena {
         gun: Option<Gun>,
     ) {
         let (o, yaw) = self.spawn_point(clip, spawns, i);
+        self.clear_charges(i);
         let f = &mut self.fighters[i];
         f.player = Player::spawn(clip, o, yaw);
         f.prev_origin = o;
@@ -666,6 +671,9 @@ impl Arena {
     pub fn update_grenades(&mut self, clip: &MapClip<'_>, dt: f32, now: u32, out: &mut Vec<Event>) {
         let mut i = 0;
         while i < self.grenades.len() {
+            if self.grenades[i].charge() == Some(crate::grenade::Charge::Claymore) {
+                self.claymore_watch(clip, i, now, out);
+            }
             let due = self.grenades[i].step(clip, dt, now);
             let g = &self.grenades[i];
             if g.bounced {
@@ -749,6 +757,7 @@ impl Arena {
                     f.player.ps.origin,
                     f.player.crouched(),
                     yaw,
+                    g.cone(),
                     |a, b| {
                         let t = clip.trace(
                             a,
@@ -771,6 +780,102 @@ impl Arena {
                     }
                 }
             }
+        }
+    }
+
+    /// Put a thrown grenade in play. A C4 or claymore over the owner's limit of that kind blows the oldest one
+    /// (`_weapons.gsc` `watchC4` / `watchClaymores`: `self.c4array[0] detonate()` at `maxPerPlayerExplosives`).
+    pub fn add_grenade(&mut self, g: crate::grenade::Grenade, now: u32) {
+        if let Some(kind) = g.charge() {
+            let mine = || {
+                self.grenades
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, o)| o.owner == g.owner && o.charge() == Some(kind))
+            };
+            if mine().count() as u32 >= self.rules.max_explosives
+                && let Some((oldest, _)) = mine().min_by_key(|(_, o)| o.thrown_ms)
+            {
+                self.grenades[oldest].detonate_at(now);
+            }
+        }
+        self.grenades.push(g);
+    }
+
+    /// Fighter `owner`'s C4 goes off (`watchC4AltDetonation`: each live charge 0.1 s later). True when there was any.
+    pub fn detonate_c4(&mut self, owner: usize, now: u32) -> bool {
+        let mut any = false;
+        for g in &mut self.grenades {
+            if g.owner == owner && g.charge() == Some(crate::grenade::Charge::C4) {
+                g.detonate_at(now.wrapping_add(100));
+                any = true;
+            }
+        }
+        any
+    }
+
+    /// Whether fighter `owner` has C4 out.
+    pub fn has_c4(&self, owner: usize) -> bool {
+        self.grenades
+            .iter()
+            .any(|g| g.owner == owner && g.charge() == Some(crate::grenade::Charge::C4))
+    }
+
+    /// Remove fighter `owner`'s C4 and claymores (they don't outlive the life they were planted in).
+    pub fn clear_charges(&mut self, owner: usize) {
+        self.grenades
+            .retain(|g| !(g.owner == owner && g.charge().is_some()));
+    }
+
+    /// A planted claymore (grenade `i`) watching for enemies (`claymoreDetonation`): once stuck, an enemy of its
+    /// owner inside its trigger (a cylinder of the rules' radius, as high above as below), moving, at least the
+    /// minimum distance ahead of it and inside its cone (`shouldAffectClaymore`, from 32 units above the enemy's feet),
+    /// and in its sight trips it; it goes off after the grace period.
+    fn claymore_watch(&mut self, clip: &MapClip<'_>, i: usize, now: u32, out: &mut Vec<Event>) {
+        let g = self.grenades[i];
+        if g.stuck_ms.is_none() || g.trip_at_ms.is_some() {
+            return;
+        }
+        let r = self.rules;
+        let y = g.yaw.to_radians();
+        let fwd = [libm::cosf(y), libm::sinf(y), 0.0];
+        let cos = libm::cosf(r.claymore_cone_deg.to_radians());
+        let tripped = self.fighters.iter().enumerate().any(|(v, f)| {
+            if !self.enemies(g.owner, v) || !f.life.alive() || (v == 0 && !self.human_present) {
+                return false;
+            }
+            let p = f.player.ps.origin;
+            let (dx, dy, dz) = (p[0] - g.origin[0], p[1] - g.origin[1], p[2] - g.origin[2]);
+            if dx * dx + dy * dy > r.claymore_radius * r.claymore_radius
+                || libm::fabsf(dz) > r.claymore_radius
+            {
+                return false;
+            }
+            let v2: f32 = f.player.ps.velocity.iter().map(|x| x * x).sum();
+            if v2 < 10.0 {
+                return false;
+            }
+            let to = [dx, dy, dz + 32.0];
+            let ahead = to[0] * fwd[0] + to[1] * fwd[1];
+            let l = libm::sqrtf(to.iter().map(|x| x * x).sum());
+            if ahead < r.claymore_min_dist || l <= 0.0 || ahead / l <= cos {
+                return false;
+            }
+            let t = clip.trace(
+                [g.origin[0], g.origin[1], g.origin[2] + 4.0],
+                [p[0], p[1], p[2] + 32.0],
+                [0.0; 3],
+                [0.0; 3],
+                gamemode_iw4::G_CAN_DAMAGE_CONTENTS_MASK,
+            );
+            t.fraction >= 1.0 && t.startsolid == 0
+        });
+        if tripped {
+            let at = now.wrapping_add(r.claymore_grace_ms);
+            let c = &mut self.grenades[i];
+            c.trip_at_ms = Some(at);
+            c.detonate_at(at);
+            out.push(Event::ClaymoreTripped { origin: g.origin });
         }
     }
 
@@ -1234,6 +1339,103 @@ mod tests {
         );
         assert_eq!(a.fighters[0].kills, 1);
         assert!(a.grenades.is_empty());
+    }
+
+    #[test]
+    fn claymores_trip_on_enemies_ahead_and_c4_waits_for_its_owner() {
+        let clip = boxes(&[([-4000.0, -4000.0, -64.0], [4000.0, 4000.0, 0.0])]);
+        let mc = MapClip::new(&clip);
+        let spawns = [([0.0, 0.0, 0.0], 0.0), ([1500.0, 0.0, 0.0], 180.0)];
+        let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+        let mut a = Arena::new(&mc, &spawns, 1, human, Rules::default(), |_| Some(rifle()));
+        let charge = wpk::weapon::EquipRecord {
+            offhand_class: 5,
+            fuse_time_ms: 3500,
+            timed_detonation: false,
+            explosion_radius: 256,
+            explosion_inner_damage: 200,
+            explosion_outer_damage: 50,
+            ..wpk::weapon::EquipRecord::default()
+        };
+        // A claymore planted at x = 1000 facing +x: it sticks to the floor and its fuse stops.
+        let claymore = wpk::weapon::EquipRecord {
+            stickiness: 4,
+            projectile_speed_up: -10_000,
+            projectile_speed_forward: 2000,
+            damage_cone_angle: 70.0,
+            ..charge
+        };
+        a.add_grenade(
+            crate::grenade::Grenade::throw(
+                0,
+                5,
+                claymore,
+                [1000.0, 0.0, 40.0],
+                [1.0, 0.0, 0.0],
+                [0.0; 3],
+                None,
+                1000,
+            ),
+            1000,
+        );
+        let mut ev = Vec::new();
+        let mut t = 1000;
+        for _ in 0..300 {
+            a.update_grenades(&mc, 0.016, t, &mut ev);
+            t += 16;
+        }
+        assert_eq!(a.grenades.len(), 1, "no fuse once planted");
+        assert!(a.grenades[0].resting && a.grenades[0].stuck_ms.is_some());
+        // The bot standing still ahead of it doesn't trip it; walking there does.
+        a.fighters[1].player.ps.origin = [1150.0, 0.0, 0.0];
+        a.update_grenades(&mc, 0.016, t, &mut ev);
+        assert!(a.grenades[0].trip_at_ms.is_none(), "not moving");
+        a.fighters[1].player.ps.velocity = [-100.0, 0.0, 0.0];
+        a.update_grenades(&mc, 0.016, t, &mut ev);
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, Event::ClaymoreTripped { .. }))
+        );
+        for _ in 0..60 {
+            t += 16;
+            a.update_grenades(&mc, 0.016, t, &mut ev);
+        }
+        assert!(!a.fighters[1].life.alive(), "the claymore killed it");
+        assert!(a.grenades.is_empty());
+
+        // C4: three planted, the oldest goes at the third (two out at once); the owner sets off the rest.
+        let c4 = wpk::weapon::EquipRecord {
+            stickiness: 2,
+            projectile_speed: 300,
+            ..charge
+        };
+        for k in 0..3u32 {
+            a.add_grenade(
+                crate::grenade::Grenade::throw(
+                    0,
+                    6,
+                    c4,
+                    [-1000.0 - 200.0 * k as f32, 0.0, 20.0],
+                    [0.0, 0.0, -1.0],
+                    [0.0; 3],
+                    None,
+                    t + k,
+                ),
+                t + k,
+            );
+        }
+        assert!(a.has_c4(0));
+        for _ in 0..10 {
+            t += 16;
+            a.update_grenades(&mc, 0.016, t, &mut ev);
+        }
+        assert_eq!(a.grenades.len(), 2, "the first one blew");
+        assert!(a.detonate_c4(0, t));
+        for _ in 0..10 {
+            t += 16;
+            a.update_grenades(&mc, 0.016, t, &mut ev);
+        }
+        assert!(!a.has_c4(0) && a.grenades.is_empty());
     }
 
     #[test]

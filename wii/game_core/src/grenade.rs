@@ -111,6 +111,40 @@ pub struct Grenade {
     pub from: [f32; 3],
     /// A knife that already hit someone (it drops and does no more harm).
     pub spent: bool,
+    /// Whether the fuse runs (IW4L `settle_equipment`: a charge without a timed detonation that sticks loses it).
+    pub fused: bool,
+    /// The throw's yaw in degrees (a claymore faces it).
+    pub yaw: f32,
+    pub thrown_ms: u32,
+    /// When it stuck (C4 is live 50 ms later, `c4Activate`; a claymore starts watching, `claymoreDetonation`).
+    pub stuck_ms: Option<u32>,
+    /// When a tripped claymore goes off.
+    pub trip_at_ms: Option<u32>,
+}
+
+/// What a planted charge is (by its numbers: a charge has no timed detonation and sticks).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Charge {
+    /// Sticks to the ground facing the throw and goes off when an enemy walks into its cone (stickiness 4).
+    Claymore,
+    /// Sticks to anything and goes off when its owner detonates it (stickiness 2).
+    C4,
+}
+
+pub fn charge(f: &EquipRecord) -> Option<Charge> {
+    if f.timed_detonation || f.offhand_class == OFFHAND_CLASS_THROWINGKNIFE {
+        return None;
+    }
+    match f.stickiness {
+        4 => Some(Charge::Claymore),
+        2 => Some(Charge::C4),
+        _ => None,
+    }
+}
+
+/// IW4L `sticks_to_surface`: stickiness 1 and 2 stick to anything, 3 and 4 to ground (normal z over 0.7).
+pub fn sticks_to(stickiness: i32, normal: [f32; 3]) -> bool {
+    matches!(stickiness, 1 | 2) || (matches!(stickiness, 3 | 4) && normal[2] > 0.7)
 }
 
 fn len(v: [f32; 3]) -> f32 {
@@ -196,11 +230,39 @@ impl Grenade {
             bounced: false,
             from: origin,
             spent: false,
+            fused: true,
+            yaw: libm::atan2f(dir[1], dir[0]).to_degrees(),
+            thrown_ms: now_ms,
+            stuck_ms: None,
+            trip_at_ms: None,
         }
     }
 
     pub fn is_knife(&self) -> bool {
         self.facts.offhand_class == OFFHAND_CLASS_THROWINGKNIFE
+    }
+
+    pub fn charge(&self) -> Option<Charge> {
+        charge(&self.facts)
+    }
+
+    /// Go off at `at_ms` (a detonated C4, a tripped claymore, the oldest charge over the limit).
+    pub fn detonate_at(&mut self, at_ms: u32) {
+        self.fused = true;
+        self.detonate_at_ms = at_ms;
+    }
+
+    /// The blast's cone (direction, cosine of the half angle) when the weapon has one (IW4L `ExplosionBlast::cone`:
+    /// along the charge's facing).
+    pub fn cone(&self) -> Option<([f32; 3], f32)> {
+        let a = self.facts.damage_cone_angle;
+        (a > 0.0 && a < 180.0).then(|| {
+            let y = self.yaw.to_radians();
+            (
+                [libm::cosf(y), libm::sinf(y), 0.0],
+                libm::cosf(a.to_radians()),
+            )
+        })
     }
 
     /// Fly for `dt` seconds: under gravity, bouncing off what it hits. Returns true when the fuse is up at `now_ms`
@@ -235,11 +297,16 @@ impl Grenade {
                     left -= used.max(1e-4);
                     continue;
                 }
-                // Sticky grenades (semtex) stay where they hit.
-                if self.facts.stickiness != 0 {
+                // Sticky grenades stay where they hit (IW4L `settle_equipment`): semtex and C4 anywhere, claymores on
+                // the ground; one without a timed detonation then waits for its trigger instead of its fuse.
+                if sticks_to(self.facts.stickiness, t.normal) {
                     self.origin = core::array::from_fn(|k| t.endpos[k] + t.normal[k] * 0.25);
                     self.velocity = [0.0; 3];
                     self.resting = true;
+                    self.stuck_ms = Some(now_ms);
+                    if !self.facts.timed_detonation {
+                        self.fused = false;
+                    }
                     break;
                 }
                 // Back off the surface a little, then bounce by its surface type.
@@ -267,7 +334,7 @@ impl Grenade {
                 left -= used.max(1e-4);
             }
         }
-        (now_ms.wrapping_sub(self.detonate_at_ms) as i32) >= 0
+        self.fused && (now_ms.wrapping_sub(self.detonate_at_ms) as i32) >= 0
     }
 
     /// A knife hitting the world at `end` with surface `normal` (IW4L `knife_impact`): it bounces by the surface's
@@ -347,6 +414,7 @@ pub fn blast_damage(
     feet: [f32; 3],
     crouched: bool,
     yaw: f32,
+    cone: Option<([f32; 3], f32)>,
     mut sees: impl FnMut([f32; 3], [f32; 3]) -> bool,
 ) -> i32 {
     let radius = f.explosion_radius as f32;
@@ -359,6 +427,13 @@ pub fn blast_damage(
     let dist = gamemode_iw4::radius_damage_distance_to_aabb(origin, mid, half);
     if dist >= radius {
         return 0;
+    }
+    if let Some((fwd, cos)) = cone {
+        let d: [f32; 3] = core::array::from_fn(|k| mid[k] - origin[k]);
+        let l = len(d);
+        if l > f32::EPSILON && d[0] * fwd[0] + d[1] * fwd[1] + d[2] * fwd[2] < cos * l {
+            return 0;
+        }
     }
     let view_height = if crouched { 40.0 } else { 60.0 };
     let r = yaw.to_radians();
@@ -462,6 +537,18 @@ mod tests {
             return;
         };
         let weap = pack.section(wpk::tag::WEAPONS).unwrap().data;
+        // MW2's claymore and C4: charges (a claymore with its blast cone).
+        for (n, kind) in [("claymore_mp", Charge::Claymore), ("c4_mp", Charge::C4)] {
+            if let Some((k, _)) = wpk::weapon::find_indexed(weap, n) {
+                let e = wpk::records::get::<EquipRecord>(eq.data, k as usize).unwrap();
+                std::println!(
+                    "{n}: cone {} radius {}",
+                    e.damage_cone_angle,
+                    e.explosion_radius
+                );
+                assert_eq!(charge(&e), Some(kind));
+            }
+        }
         // MW2's throwing knife: a knife-class offhand that kills on a direct hit.
         if let Some((k, _)) = wpk::weapon::find_indexed(weap, "throwingknife_mp") {
             let e = wpk::records::get::<EquipRecord>(eq.data, k as usize).unwrap();
@@ -585,8 +672,17 @@ mod tests {
     #[test]
     fn blast_damage_falls_off_and_walls_stop_it() {
         let f = frag();
-        let at =
-            |x: f32| blast_damage(&f, [0.0, 0.0, 10.0], [x, 0.0, 0.0], false, 0.0, |_, _| true);
+        let at = |x: f32| {
+            blast_damage(
+                &f,
+                [0.0, 0.0, 10.0],
+                [x, 0.0, 0.0],
+                false,
+                0.0,
+                None,
+                |_, _| true,
+            )
+        };
         assert!(at(0.0) >= 125, "point blank: {}", at(0.0));
         assert!(at(100.0) < at(0.0) && at(100.0) > at(200.0));
         assert_eq!(at(400.0), 0, "outside the radius");
@@ -596,9 +692,31 @@ mod tests {
             [50.0, 0.0, 0.0],
             false,
             0.0,
+            None,
             |_, _| false,
         );
         assert_eq!(behind_wall, 0);
+        // A claymore's cone (facing +x, 70°): nothing behind it, full in front.
+        let cone = Some(([1.0, 0.0, 0.0], libm::cosf(70f32.to_radians())));
+        let front = blast_damage(
+            &f,
+            [0.0, 0.0, 10.0],
+            [80.0, 0.0, 0.0],
+            false,
+            0.0,
+            cone,
+            |_, _| true,
+        );
+        let behind = blast_damage(
+            &f,
+            [0.0, 0.0, 10.0],
+            [-80.0, 0.0, 0.0],
+            false,
+            0.0,
+            cone,
+            |_, _| true,
+        );
+        assert!(front > 0 && behind == 0, "{front} {behind}");
         // A bounce off a floor keeps the parallel share of the speed.
         let v = bounce([100.0, 0.0, -100.0], [0.0, 0.0, 1.0], 0.5, 0.5);
         assert!((v[0] - 50.0).abs() < 1e-3 && (v[2] - 50.0).abs() < 1e-3);

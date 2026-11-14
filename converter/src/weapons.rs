@@ -136,6 +136,7 @@ pub fn equip(g: &WeaponGeometry) -> wpk::weapon::EquipRecord {
         projectile_explosion_type: g.projectile_explosion_type,
         start_ammo: g.start_ammo,
         impact_damage: g.damage,
+        damage_cone_angle: g.damage_cone_angle,
         parallel_bounce: g.parallel_bounce.unwrap_or([0.0; 31]),
         perpendicular_bounce: g.perpendicular_bounce.unwrap_or([0.0; 31]),
         sounds: [wpk::sound::NONE; 4],

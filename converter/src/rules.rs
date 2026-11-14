@@ -165,6 +165,8 @@ pub fn missing(r: &Rules) -> Vec<&'static str> {
             (found::STUN, "stun duration"),
             (found::SHOCK_FLASH, "flashbang shock"),
             (found::SHOCK_STUN, "stun shock"),
+            (found::CLAYMORE, "claymore trip"),
+            (found::EXPLOSIVES, "explosives per player"),
         ]
         .into_iter()
         .filter(|(bit, _)| r.found_fx & bit == 0)
@@ -300,6 +302,32 @@ pub fn read(scripts: &HashMap<String, String>) -> Rules {
             r.stun_base = base;
             r.stun_extra = extra;
             r.found_fx |= found::STUN;
+        }
+    }
+    // Claymores (`init`): `claymoreDetectionConeAngle = 70;`, `level.claymoreDetectionMinDist = 20;`,
+    // `level.claymoreDetectionGracePeriod = .75;`, `level.claymoreDetonateRadius = 192;`.
+    if let Some(t) = get(WEAPONS) {
+        if let (Some(cone), Some(min), Some(grace), Some(radius)) = (
+            assignment(&t, "claymoreDetectionConeAngle"),
+            assignment(&t, "level.claymoreDetectionMinDist"),
+            assignment(&t, "level.claymoreDetectionGracePeriod"),
+            assignment(&t, "level.claymoreDetonateRadius"),
+        ) {
+            r.claymore_cone_deg = cone;
+            r.claymore_min_dist = min;
+            r.claymore_grace_ms = (grace * 1000.0).round() as u32;
+            r.claymore_radius = radius;
+            r.found_fx |= found::CLAYMORE;
+        }
+        // `level.maxPerPlayerExplosives = max( getIntProperty( "scr_maxPerPlayerExplosives", 2 ), 1 );`: the
+        // property's default (no dvar set), at least the floor.
+        if let Some(at) = t.find("level.maxPerPlayerExplosives")
+            && let Some((_, a)) = calls(&t, "getIntProperty", at).into_iter().next()
+            && a.first().is_some_and(|n| n == "scr_maxPerPlayerExplosives")
+            && let Some(v) = a.get(1).and_then(|s| number(s))
+        {
+            r.max_explosives = (v as u32).max(1);
+            r.found_fx |= found::EXPLOSIVES;
         }
     }
     for (name, bit, slot) in [

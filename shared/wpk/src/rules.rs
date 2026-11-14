@@ -35,7 +35,9 @@ pub mod found {
     pub const STUN: u16 = 1 << 1;
     pub const SHOCK_FLASH: u16 = 1 << 2;
     pub const SHOCK_STUN: u16 = 1 << 3;
-    pub const ALL_FX: u16 = (1 << 4) - 1;
+    pub const CLAYMORE: u16 = 1 << 4;
+    pub const EXPLOSIVES: u16 = 1 << 5;
+    pub const ALL_FX: u16 = (1 << 6) - 1;
 }
 
 /// A shell shock's screen and movement (an IW4 `.shock` file: `bg_shock_screenType`, blur blend / fade, white and
@@ -108,6 +110,14 @@ pub struct Rules {
     /// The flashbang's and the stun grenade's shocks.
     pub shock_flash: ShockFx,
     pub shock_stun: ShockFx,
+    /// Claymores (`_weapons.gsc`): the trip cone's half angle (degrees) and minimum distance ahead, the delay
+    /// between the trip and the blast, and the trip trigger's radius (a cylinder as high as twice that).
+    pub claymore_cone_deg: f32,
+    pub claymore_min_dist: f32,
+    pub claymore_grace_ms: u32,
+    pub claymore_radius: f32,
+    /// How many C4 / claymores a player may have out (`scr_maxPerPlayerExplosives`): a new one blows the oldest.
+    pub max_explosives: u32,
     pub found: u16,
     pub found_team: u16,
     pub found_fx: u16,
@@ -158,6 +168,11 @@ impl Default for Rules {
                 shot_fade_ms: 15_000,
                 movement: true,
             },
+            claymore_cone_deg: 70.0,
+            claymore_min_dist: 20.0,
+            claymore_grace_ms: 750,
+            claymore_radius: 192.0,
+            max_explosives: 2,
             found: 0,
             found_team: 0,
             found_fx: 0,
@@ -214,6 +229,11 @@ impl Rules {
         o.u16(self.found);
         o.u16(self.found_team);
         o.u16(self.found_fx);
+        o.f32(self.claymore_cone_deg);
+        o.f32(self.claymore_min_dist);
+        o.u32(self.claymore_grace_ms);
+        o.f32(self.claymore_radius);
+        o.u32(self.max_explosives);
         o
     }
 
@@ -231,6 +251,11 @@ impl Rules {
             movement: u(i + 5) != 0,
         };
         let f = |i: usize| be::f32(b, i * 4);
+        // Claymore and explosives values follow the found bits (packs before them keep the defaults).
+        let d = Rules::default();
+        let tail = b.len() >= 202;
+        let tf = |o: usize, def: f32| if tail { be::f32(b, 182 + o) } else { def };
+        let tu = |o: usize, def: u32| if tail { be::u32(b, 182 + o) } else { def };
         Some(Rules {
             max_health: u(0) as i32,
             regen_delay_ms: u(1),
@@ -259,6 +284,11 @@ impl Rules {
             stun_extra: f(31),
             shock_flash: shock(32),
             shock_stun: shock(38),
+            claymore_cone_deg: tf(0, d.claymore_cone_deg),
+            claymore_min_dist: tf(4, d.claymore_min_dist),
+            claymore_grace_ms: tu(8, d.claymore_grace_ms),
+            claymore_radius: tf(12, d.claymore_radius),
+            max_explosives: tu(16, d.max_explosives),
             found: be::u16(b, 176),
             found_team: be::u16(b, 178),
             found_fx: be::u16(b, 180),
