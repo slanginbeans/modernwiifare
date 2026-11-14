@@ -50,6 +50,8 @@ pub struct Fighter {
     pub team: u8,
     /// Kills since this fighter's last death.
     pub streak: u32,
+    /// A flash or stun shock on this fighter.
+    pub shock: Option<Shock>,
     /// A bot's UAV: until when it knows where everyone is.
     pub uav_until: Option<u32>,
     /// Bot stepping: when the next step is due, steps taken, the decision being carried out, and the position
@@ -78,6 +80,7 @@ impl Fighter {
             bullet_scale: 1.0,
             team: TEAM_NONE,
             streak: 0,
+            shock: None,
             uav_until: None,
             next_step_ms: None,
             steps: 0,
@@ -127,6 +130,30 @@ pub fn feet_and_aim(p: &Player) -> ([f32; 3], [f32; 3]) {
     let o = p.ps.origin;
     let chest = if p.crouched() { 32.0 } else { 45.0 };
     (o, [o[0], o[1], o[2] + chest])
+}
+
+/// A shell shock (IW4 `shellShock`): a flashbang's or a stun grenade's, from `start_ms` for `duration_ms`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shock {
+    pub flash: bool,
+    pub start_ms: u32,
+    pub duration_ms: u32,
+}
+
+impl Shock {
+    pub fn remaining(&self, now: u32) -> u32 {
+        self.duration_ms
+            .saturating_sub(now.wrapping_sub(self.start_ms))
+    }
+
+    /// The shock's screen and movement numbers.
+    pub fn fx(&self, rules: &Rules) -> wpk::rules::ShockFx {
+        if self.flash {
+            rules.shock_flash
+        } else {
+            rules.shock_stun
+        }
+    }
 }
 
 /// The match's game type.
@@ -643,9 +670,54 @@ impl Arena {
                 origin: g.origin,
                 weapon: g.weapon,
             });
+            let kind = crate::grenade::effect(&g.facts);
             for v in 0..self.fighters.len() {
                 let f = &self.fighters[v];
                 if !f.life.alive() || (v == 0 && !self.human_present) {
+                    continue;
+                }
+                // Teammates' flashes and stuns don't affect you (MW2's default: no friendly fire); your own do.
+                let friendly = v != g.owner && self.mode == Mode::Tdm && !self.enemies(g.owner, v);
+                if kind == crate::grenade::Effect::Flash {
+                    let seen = {
+                        let (_, yaw) = f.player.view();
+                        let to = [g.origin[0], g.origin[1], g.origin[2]];
+                        let vis = gamemode_iw4::can_damage_player_vis_scale(
+                            f.player.ps.origin,
+                            if f.player.crouched() { 40.0 } else { 60.0 },
+                            [
+                                libm::sinf(yaw.to_radians()),
+                                -libm::cosf(yaw.to_radians()),
+                                0.0,
+                            ],
+                            to,
+                            |a, b| {
+                                let t = clip.trace(
+                                    a,
+                                    b,
+                                    [0.0; 3],
+                                    [0.0; 3],
+                                    gamemode_iw4::G_CAN_DAMAGE_CONTENTS_MASK,
+                                );
+                                t.fraction >= 1.0 && t.startsolid == 0
+                            },
+                        );
+                        vis > 0.0
+                    };
+                    let cam = f.player.camera(4.0 / 3.0);
+                    let secs = crate::grenade::flash_seconds(
+                        &self.rules,
+                        &g.facts,
+                        g.origin,
+                        cam.eye,
+                        cam.forward(),
+                    );
+                    if seen && !friendly && secs > 0.0 {
+                        self.shock(v, true, secs, now);
+                    }
+                    continue;
+                }
+                if kind == crate::grenade::Effect::Smoke || friendly {
                     continue;
                 }
                 let (_, yaw) = f.player.view();
@@ -667,11 +739,48 @@ impl Arena {
                     },
                 );
                 if d > 0 {
-                    let dir = core::array::from_fn(|k| f.player.ps.origin[k] - g.origin[k]);
+                    let dir: [f32; 3] =
+                        core::array::from_fn(|k| f.player.ps.origin[k] - g.origin[k]);
+                    let dist = libm::sqrtf(dir.iter().map(|x| x * x).sum());
                     self.hurt(g.owner, v, d, damage::hitloc::NONE, dir, now, out);
+                    if kind == crate::grenade::Effect::Stun && self.fighters[v].life.alive() {
+                        let secs = crate::grenade::stun_seconds(&self.rules, dist);
+                        self.shock(v, false, secs, now);
+                    }
                 }
             }
         }
+    }
+
+    /// Put fighter `v` under a flash or stun shock for `secs` seconds (a longer one already running stays).
+    pub fn shock(&mut self, v: usize, flash: bool, secs: f32, now: u32) {
+        let s = Shock {
+            flash,
+            start_ms: now,
+            duration_ms: (secs * 1000.0) as u32,
+        };
+        let f = &mut self.fighters[v];
+        if f.shock.is_none_or(|old| old.remaining(now) < s.duration_ms) {
+            f.shock = Some(s);
+        }
+    }
+
+    /// Whether fighter `i` is under a shock whose `.shock` file slows movement (IW4 `PMF_SHELLSHOCKED`), clearing
+    /// shocks that ran out.
+    pub fn shock_slows(&mut self, i: usize, now: u32) -> bool {
+        let rules = self.rules;
+        let f = &mut self.fighters[i];
+        if f.shock.is_some_and(|s| s.remaining(now) == 0) || !f.life.alive() {
+            f.shock = None;
+        }
+        f.shock.is_some_and(|s| s.fx(&rules).movement)
+    }
+
+    /// Whether fighter `i` is blinded by a flashbang now.
+    pub fn flashed(&self, i: usize, now: u32) -> bool {
+        self.fighters[i]
+            .shock
+            .is_some_and(|s| s.flash && s.remaining(now) > 0)
     }
 
     /// What fighter `me` perceives of the others.
@@ -692,7 +801,8 @@ impl Arena {
                 off -= libm::floorf((off + 180.0) / 360.0) * 360.0;
                 let in_view = libm::fabsf(off) <= VIEW_HALF_DEG
                     && dist2(aim, eye) <= SIGHT_RANGE * SIGHT_RANGE;
-                let visible = in_view && {
+                // A flashed fighter sees nothing until it wears off.
+                let visible = in_view && !self.flashed(me, now) && {
                     let t = clip.trace(eye, aim, [0.0; 3], [0.0; 3], MASK_SHOT);
                     t.fraction >= 1.0
                 };
@@ -776,7 +886,13 @@ impl Arena {
                 }
             }
             clip.set_bodies(self.bodies_except(i));
+            let slowed = self.shock_slows(i, now);
             let f = &mut self.fighters[i];
+            if slowed {
+                f.player.ps.pm_flags |= playerstate_iw4::pm_flags::SHELLSHOCKED;
+            } else {
+                f.player.ps.pm_flags &= !playerstate_iw4::pm_flags::SHELLSHOCKED;
+            }
             if f.brain.is_none() {
                 continue;
             }
@@ -1084,6 +1200,69 @@ mod tests {
             ),
             Some(1)
         );
+    }
+
+    #[test]
+    fn a_flashbang_blinds_and_a_stun_slows() {
+        let clip = boxes(&[([-4000.0, -4000.0, -64.0], [4000.0, 4000.0, 0.0])]);
+        let mc = MapClip::new(&clip);
+        let spawns = [([0.0, 0.0, 0.0], 0.0), ([1500.0, 0.0, 0.0], 180.0)];
+        let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+        let mut a = Arena::new(&mc, &spawns, 1, human, Rules::default(), |_| Some(rifle()));
+        let bot = a.fighters[1].player.ps.origin;
+        let flash = wpk::weapon::EquipRecord {
+            offhand_class: 3,
+            projectile_explosion_type: 2,
+            fuse_time_ms: 50,
+            timed_detonation: true,
+            explosion_radius: 800,
+            explosion_radius_min: 200,
+            ..wpk::weapon::EquipRecord::default()
+        };
+        // Just in front of the bot (it faces -x), at eye height.
+        let at = [bot[0] - 100.0, bot[1], bot[2] + 50.0];
+        a.grenades.push(crate::grenade::Grenade::throw(
+            0,
+            9,
+            flash,
+            at,
+            [0.0, 0.0, -1.0],
+            [0.0; 3],
+            None,
+            1000,
+        ));
+        let mut ev = Vec::new();
+        for t in 0..8 {
+            a.update_grenades(&mc, 0.016, 1000 + t * 16, &mut ev);
+        }
+        assert!(a.flashed(1, 1200), "the bot is blinded");
+        assert!(a.contacts(&mc, 1, 1200).iter().all(|c| !c.visible));
+        assert!(!a.flashed(1, 1000 + 7000), "for at most six seconds");
+        let stun = wpk::weapon::EquipRecord {
+            offhand_class: 2,
+            projectile_explosion_type: 3,
+            fuse_time_ms: 50,
+            timed_detonation: true,
+            explosion_radius: 512,
+            explosion_inner_damage: 1,
+            explosion_outer_damage: 1,
+            ..wpk::weapon::EquipRecord::default()
+        };
+        a.grenades.push(crate::grenade::Grenade::throw(
+            0,
+            9,
+            stun,
+            at,
+            [0.0, 0.0, -1.0],
+            [0.0; 3],
+            None,
+            9000,
+        ));
+        for t in 0..8 {
+            a.update_grenades(&mc, 0.016, 9000 + t * 16, &mut ev);
+        }
+        assert!(a.shock_slows(1, 9200), "the stun slows the bot");
+        assert!(!a.shock_slows(1, 9000 + 7000), "for at most 2 + 4 seconds");
     }
 
     #[test]

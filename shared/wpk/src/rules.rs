@@ -30,6 +30,26 @@ pub mod found {
     pub const TEAM_HEADSHOT_SCORE: u16 = 1 << 1;
     pub const ALL: u16 = u16::MAX;
     pub const ALL_TEAM: u16 = (1 << 2) - 1;
+    /// Flash and stun (in `found_fx`).
+    pub const FLASH: u16 = 1;
+    pub const STUN: u16 = 1 << 1;
+    pub const SHOCK_FLASH: u16 = 1 << 2;
+    pub const SHOCK_STUN: u16 = 1 << 3;
+    pub const ALL_FX: u16 = (1 << 4) - 1;
+}
+
+/// A shell shock's screen and movement (an IW4 `.shock` file: `bg_shock_screenType`, blur blend / fade, white and
+/// shot fade, `bg_shock_movement`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShockFx {
+    /// `hud_iw4::SCREEN_BLEND_*`.
+    pub screen_type: i32,
+    pub blur_blend_ms: i32,
+    pub blur_fade_ms: i32,
+    pub white_fade_ms: i32,
+    pub shot_fade_ms: i32,
+    /// The shock slows movement.
+    pub movement: bool,
 }
 
 /// The weapon classes of [`Rules::class_speed`], in order (`_weapons.gsc` `updateMoveSpeedScale`).
@@ -75,8 +95,22 @@ pub struct Rules {
     pub tdm_score_limit: u32,
     pub team_kill_score: u32,
     pub team_headshot_score: u32,
+    /// Flashbang (`_flashgrenades.gsc`): seconds = distance amount × look amount × `flash_seconds`, the look amount
+    /// raised to `flash_angle_min` below it and to 1 above `flash_angle_full`; under `flash_min_seconds` nothing.
+    pub flash_seconds: f32,
+    pub flash_angle_min: f32,
+    pub flash_angle_full: f32,
+    pub flash_min_seconds: f32,
+    /// Stun (`_weapons.gsc` `onWeaponDamage`): seconds = `stun_base + stun_extra × (1 - distance / stun_radius)`.
+    pub stun_radius: f32,
+    pub stun_base: f32,
+    pub stun_extra: f32,
+    /// The flashbang's and the stun grenade's shocks.
+    pub shock_flash: ShockFx,
+    pub shock_stun: ShockFx,
     pub found: u16,
     pub found_team: u16,
+    pub found_fx: u16,
 }
 
 impl Default for Rules {
@@ -101,8 +135,32 @@ impl Default for Rules {
             tdm_score_limit: 500,
             team_kill_score: 100,
             team_headshot_score: 100,
+            flash_seconds: 6.0,
+            flash_angle_min: 0.5,
+            flash_angle_full: 0.8,
+            flash_min_seconds: 0.25,
+            stun_radius: 512.0,
+            stun_base: 2.0,
+            stun_extra: 4.0,
+            shock_flash: ShockFx {
+                screen_type: 1,
+                blur_blend_ms: 400,
+                blur_fade_ms: 1000,
+                white_fade_ms: 3500,
+                shot_fade_ms: 1000,
+                movement: false,
+            },
+            shock_stun: ShockFx {
+                screen_type: 1,
+                blur_blend_ms: 400,
+                blur_fade_ms: 12_000,
+                white_fade_ms: 7500,
+                shot_fade_ms: 15_000,
+                movement: true,
+            },
             found: 0,
             found_team: 0,
+            found_fx: 0,
         }
     }
 }
@@ -130,16 +188,48 @@ impl Rules {
         o.u32(self.tdm_score_limit);
         o.u32(self.team_kill_score);
         o.u32(self.team_headshot_score);
+        for v in [
+            self.flash_seconds,
+            self.flash_angle_min,
+            self.flash_angle_full,
+            self.flash_min_seconds,
+            self.stun_radius,
+            self.stun_base,
+            self.stun_extra,
+        ] {
+            o.f32(v);
+        }
+        for s in [&self.shock_flash, &self.shock_stun] {
+            for v in [
+                s.screen_type,
+                s.blur_blend_ms,
+                s.blur_fade_ms,
+                s.white_fade_ms,
+                s.shot_fade_ms,
+                i32::from(s.movement),
+            ] {
+                o.u32(v as u32);
+            }
+        }
         o.u16(self.found);
         o.u16(self.found_team);
+        o.u16(self.found_fx);
         o
     }
 
     pub fn decode(b: &[u8]) -> Option<Rules> {
-        if b.len() < 104 {
+        if b.len() < 182 {
             return None;
         }
         let u = |i: usize| be::u32(b, i * 4);
+        let shock = |i: usize| ShockFx {
+            screen_type: u(i) as i32,
+            blur_blend_ms: u(i + 1) as i32,
+            blur_fade_ms: u(i + 2) as i32,
+            white_fade_ms: u(i + 3) as i32,
+            shot_fade_ms: u(i + 4) as i32,
+            movement: u(i + 5) != 0,
+        };
         let f = |i: usize| be::f32(b, i * 4);
         Some(Rules {
             max_health: u(0) as i32,
@@ -160,8 +250,18 @@ impl Rules {
             tdm_score_limit: u(22),
             team_kill_score: u(23),
             team_headshot_score: u(24),
-            found: be::u16(b, 100),
-            found_team: be::u16(b, 102),
+            flash_seconds: f(25),
+            flash_angle_min: f(26),
+            flash_angle_full: f(27),
+            flash_min_seconds: f(28),
+            stun_radius: f(29),
+            stun_base: f(30),
+            stun_extra: f(31),
+            shock_flash: shock(32),
+            shock_stun: shock(38),
+            found: be::u16(b, 176),
+            found_team: be::u16(b, 178),
+            found_fx: be::u16(b, 180),
         })
     }
 

@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 /// 9: HUD minimap (`MINI`), minimap layout and compass icons in `UIPK`, killstreak costs, UAV time.
 /// 10: every weapon animation slot in the view files, first-person weapon movement (`WFPV`).
 /// 11: thrown weapons' numbers (`WEQP`). 12: team deathmatch rules, friendly compass icon.
-pub const REVISION: u32 = 12;
+/// 13: flashbang and stun durations, their shock files.
+pub const REVISION: u32 = 13;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

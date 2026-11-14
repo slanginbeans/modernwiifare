@@ -801,8 +801,10 @@ fn run_common(args: &[String]) -> ExitCode {
     let rules = rules::read(&scripts);
     println!(
         "match rules: {} of {} values read from the game-type scripts ({} scripts found)",
-        rules.found.count_ones() + rules.found_team.count_ones(),
-        wpk::rules::found::ALL.count_ones() + wpk::rules::found::ALL_TEAM.count_ones(),
+        rules.found.count_ones() + rules.found_team.count_ones() + rules.found_fx.count_ones(),
+        wpk::rules::found::ALL.count_ones()
+            + wpk::rules::found::ALL_TEAM.count_ones()
+            + wpk::rules::found::ALL_FX.count_ones(),
         scripts.len()
     );
     let missing = rules::missing(&rules);

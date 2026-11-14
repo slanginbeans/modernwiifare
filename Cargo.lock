@@ -759,6 +759,7 @@ version = "0.1.0"
 dependencies = [
  "dpvs_iw4",
  "game_core",
+ "hud_iw4",
  "libm",
  "playerstate_iw4",
  "weapon_iw4",

@@ -8,7 +8,72 @@
 
 use alloc::vec::Vec;
 
+use wpk::rules::Rules;
 use wpk::weapon::EquipRecord;
+
+/// What a grenade does when it goes off (by its offhand class and IW4 projectile explosion type).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Effect {
+    /// Damage over the radius (frag, semtex).
+    Blast,
+    /// Blinds by distance and where you look (flashbang: explosion type 2).
+    Flash,
+    /// A little damage and a slowing shock by distance (stun: smoke class, explosion type 3).
+    Stun,
+    /// Smoke (explosion type 5): not in this build.
+    Smoke,
+}
+
+pub fn effect(f: &EquipRecord) -> Effect {
+    match (f.offhand_class, f.projectile_explosion_type) {
+        (_, 2) => Effect::Flash,
+        (2, 3) => Effect::Stun,
+        (_, 5) => Effect::Smoke,
+        _ => Effect::Blast,
+    }
+}
+
+/// Seconds a flashbang at `origin` blinds a player whose eye is at `eye` looking along `forward` (IW4L
+/// `apply_flashbang_blast`'s distance and angle amounts, then `_flashgrenades.gsc`'s duration). 0: not blinded.
+pub fn flash_seconds(
+    r: &Rules,
+    f: &EquipRecord,
+    origin: [f32; 3],
+    eye: [f32; 3],
+    forward: [f32; 3],
+) -> f32 {
+    let min_r = (f.explosion_radius_min as f32).max(1.0);
+    let max_r = (f.explosion_radius as f32).max(min_r);
+    let to: [f32; 3] = core::array::from_fn(|k| origin[k] - eye[k]);
+    let dist = len(to);
+    if dist > max_r {
+        return 0.0;
+    }
+    let amount_distance = if dist <= min_r || max_r <= min_r {
+        1.0
+    } else {
+        1.0 - (dist - min_r) / (max_r - min_r)
+    };
+    let dot = if dist > 0.0 {
+        (to[0] * forward[0] + to[1] * forward[1] + to[2] * forward[2]) / dist
+    } else {
+        1.0
+    };
+    let mut amount_angle = (dot + 1.0) * 0.5;
+    if amount_angle < r.flash_angle_min {
+        amount_angle = r.flash_angle_min;
+    } else if amount_angle > r.flash_angle_full {
+        amount_angle = 1.0;
+    }
+    let s = amount_distance * amount_angle * r.flash_seconds;
+    if s < r.flash_min_seconds { 0.0 } else { s }
+}
+
+/// Seconds a stun grenade at distance `dist` shocks a player it hurt (`_weapons.gsc` `onWeaponDamage`).
+pub fn stun_seconds(r: &Rules, dist: f32) -> f32 {
+    let scale = (1.0 - dist / r.stun_radius.max(1.0)).max(0.0);
+    r.stun_base + r.stun_extra * scale
+}
 
 use crate::collision::MapClip;
 
@@ -132,6 +197,13 @@ impl Grenade {
                 }
                 let used = left * t.fraction;
                 self.velocity[2] -= GRAVITY * used;
+                // Sticky grenades (semtex) stay where they hit.
+                if self.facts.stickiness != 0 {
+                    self.origin = core::array::from_fn(|k| t.endpos[k] + t.normal[k] * 0.25);
+                    self.velocity = [0.0; 3];
+                    self.resting = true;
+                    break;
+                }
                 // Back off the surface a little, then bounce by its surface type.
                 self.origin = core::array::from_fn(|k| t.endpos[k] + t.normal[k] * 0.25);
                 let surf = ((t.surface_flags >> 20) & 0x1f) as usize;
@@ -280,6 +352,28 @@ mod tests {
             return;
         };
         let weap = pack.section(wpk::tag::WEAPONS).unwrap().data;
+        for n in [
+            "flash_grenade_mp",
+            "concussion_grenade_mp",
+            "smoke_grenade_mp",
+            "semtex_mp",
+            "throwingknife_mp",
+        ] {
+            if let Some((k, _)) = wpk::weapon::find_indexed(weap, n) {
+                let e = wpk::records::get::<EquipRecord>(eq.data, k as usize).unwrap();
+                std::println!(
+                    "TMP {n}: class {} fuse {} radius {}/{} dmg {}..{} type {} stick {}",
+                    e.offhand_class,
+                    e.fuse_time_ms,
+                    e.explosion_radius,
+                    e.explosion_radius_min,
+                    e.explosion_outer_damage,
+                    e.explosion_inner_damage,
+                    e.projectile_explosion_type,
+                    e.stickiness
+                );
+            }
+        }
         let (i, _) = wpk::weapon::find_indexed(weap, "frag_grenade_mp").expect("frag in the pack");
         let f = wpk::records::get::<EquipRecord>(eq.data, i as usize).unwrap();
         std::println!(

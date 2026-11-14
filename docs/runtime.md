@@ -77,8 +77,12 @@ Grenades: your class's frag-type equipment (frag, semtex) is thrown through IW4L
 while held, throw) and flies as IW4L's sim flies it (throw speed, gravity, the weapon's per-surface bounce, the fuse;
 `WEQP` in `common.wpk`); the blast hurts everyone in reach, the thrower too, by IW4L's falloff and line-of-sight
 scaling. Bots throw frags at enemies they see at grenade range. Grenades and blasts show as placeholder boxes until
-the projectile models and explosion effects are converted, and the explosion has no sound yet. Throwing knives,
-claymores, C4, special grenades (flash, stun, smoke) and deathstreaks are chosen and saved but do nothing yet.
+the projectile models and explosion effects are converted, and the explosion has no sound yet. Semtex sticks where
+it lands. Special grenades: the flashbang blinds by distance and where you look (IW4L's flashbang amounts, then
+`_flashgrenades.gsc`'s duration; a white-out by the shock file's fade times; flashed bots see nothing); the stun
+grenade's shock slows movement for `2 + 4 × closeness` seconds (`_weapons.gsc`). Teammates' flashes and stuns
+don't affect you. Throwing knives, claymores, C4, tactical insertion, blast shield, smoke and deathstreaks are
+chosen and saved but do nothing yet.
 Weapons with attachments use the attachment variant's combat numbers (`m4_acog_mp` ...) but the base weapon's
 first-person model.
 

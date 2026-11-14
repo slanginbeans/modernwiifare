@@ -17,7 +17,10 @@ pub const UAV: &str = "maps/mp/killstreaks/_uav.gsc";
 pub const TDM: &str = "maps/mp/gametypes/war.gsc";
 pub const RANK: &str = "maps/mp/gametypes/_rank.gsc";
 /// The scripts the rules come from (captured from the zones' rawfiles).
-pub const SCRIPTS: [&str; 8] = [
+pub const FLASH: &str = "maps/mp/_flashgrenades.gsc";
+pub const SHOCK_CONCUSSION: &str = "shock/concussion_grenade_mp.shock";
+pub const SHOCK_FLASH: &str = "shock/flashbang_mp.shock";
+pub const SCRIPTS: [&str; 11] = [
     TWEAKABLES,
     HEALTH_OVERLAY,
     FFA,
@@ -26,6 +29,9 @@ pub const SCRIPTS: [&str; 8] = [
     UAV,
     TDM,
     RANK,
+    FLASH,
+    SHOCK_CONCUSSION,
+    SHOCK_FLASH,
 ];
 
 /// The text without `/* */` and `//` comments (scanned in order, so a `//*` line comment isn't a block).
@@ -153,6 +159,17 @@ pub fn missing(r: &Rules) -> Vec<&'static str> {
         .filter(|(bit, _)| r.found_team & bit == 0)
         .map(|(_, name)| name),
     )
+    .chain(
+        [
+            (found::FLASH, "flashbang duration"),
+            (found::STUN, "stun duration"),
+            (found::SHOCK_FLASH, "flashbang shock"),
+            (found::SHOCK_STUN, "stun shock"),
+        ]
+        .into_iter()
+        .filter(|(bit, _)| r.found_fx & bit == 0)
+        .map(|(_, name)| name),
+    )
     .collect()
 }
 
@@ -242,6 +259,67 @@ pub fn read(scripts: &HashMap<String, String>) -> Rules {
     if let Some(v) = get(UAV).and_then(|t| assignment(&t, "level.radarViewTime")) {
         r.uav_time_ms = (v * 1000.0) as u32;
         r.found |= found::UAV_TIME;
+    }
+    // Flashbang duration (`monitorFlash`): `duration = amount_distance * amount_angle * <seconds>;`, the look amount
+    // clamps `amount_angle < a` / `amount_angle > b`, and `duration < <min>`.
+    if let Some(t) = get(FLASH)
+        && let Some(body) = function_body(&t, "monitorFlash")
+    {
+        let after = |key: &str| -> Option<f32> {
+            let i = body.find(key)? + key.len();
+            number(body[i..].split([';', ')', '\n']).next()?)
+        };
+        if let (Some(sec), Some(lo), Some(hi), Some(min)) = (
+            after("amount_distance * amount_angle *"),
+            after("amount_angle <"),
+            after("amount_angle >"),
+            after("duration <"),
+        ) {
+            r.flash_seconds = sec;
+            r.flash_angle_min = lo;
+            r.flash_angle_full = hi;
+            r.flash_min_seconds = min;
+            r.found_fx |= found::FLASH;
+        }
+    }
+    // Stun (`onWeaponDamage`, the concussion case): `radius = <r>;` and `time = <base> + ( <extra> * scale );`.
+    if let Some(t) = get(WEAPONS)
+        && let Some(body) = function_body(&t, "onWeaponDamage")
+        && let Some(at) = body.find("\"concussion_grenade_mp\"")
+    {
+        let case = &body[at..];
+        let radius = assignment(case, "radius");
+        let time = case.find("time =").and_then(|i| {
+            let expr = case[i + "time =".len()..].split(';').next()?;
+            let (base, rest) = expr.split_once('+')?;
+            let extra = rest.trim().trim_start_matches('(').split('*').next()?;
+            Some((number(base)?, number(extra)?))
+        });
+        if let (Some(radius), Some((base, extra))) = (radius, time) {
+            r.stun_radius = radius;
+            r.stun_base = base;
+            r.stun_extra = extra;
+            r.found_fx |= found::STUN;
+        }
+    }
+    for (name, bit, slot) in [
+        (SHOCK_FLASH, found::SHOCK_FLASH, &mut r.shock_flash),
+        (SHOCK_CONCUSSION, found::SHOCK_STUN, &mut r.shock_stun),
+    ] {
+        if let Some(p) = scripts
+            .get(name)
+            .and_then(|t| hud_iw4::ShockParams::parse(t).ok())
+        {
+            *slot = wpk::rules::ShockFx {
+                screen_type: p.screen_type,
+                blur_blend_ms: p.blur_blend_ms,
+                blur_fade_ms: p.blur_fade_ms,
+                white_fade_ms: p.white_fade_ms,
+                shot_fade_ms: p.shot_fade_ms,
+                movement: p.movement,
+            };
+            r.found_fx |= bit;
+        }
     }
     if let Some(t) = get(TDM) {
         if let Some(v) = calls(&t, "registerTimeLimitDvar", 0)
@@ -376,8 +454,37 @@ mod tests {
             "init()\n{\n if ( level.teamBased )\n {\n  registerScoreInfo( \"kill\", 90 );\n  registerScoreInfo( \"headshot\", 80 );\n }\n else\n {\n  registerScoreInfo( \"kill\", 7 );\n }\n}\n"
                 .to_owned(),
         );
+        s.insert(
+            FLASH.to_owned(),
+            "monitorFlash()\n{\n if ( amount_angle < 0.4 )\n  amount_angle = 0.4;\n else if ( amount_angle > 0.9 )\n  amount_angle = 1;\n duration = amount_distance * amount_angle * 5;\n if ( duration < 0.3 )\n  continue;\n}\n"
+                .to_owned(),
+        );
+        let weapons = s.get(WEAPONS).cloned().unwrap_or_default();
+        s.insert(
+            WEAPONS.to_owned(),
+            weapons
+                + "\nonWeaponDamage( a )\n{\n switch( a )\n {\n  case \"concussion_grenade_mp\":\n   radius = 400;\n   time = 1.5 + ( 3 * scale );\n  break;\n }\n}\n",
+        );
+        s.insert(
+            SHOCK_FLASH.to_owned(),
+            "bg_shock_screenType \"flashed\"\nbg_shock_screenBlurBlendTime \"0.2\"\nbg_shock_screenBlurBlendFadeTime \"1\"\nbg_shock_screenFlashWhiteFadeTime \"2\"\nbg_shock_screenFlashShotFadeTime \"1\"\nbg_shock_viewKickPeriod \"1\"\nbg_shock_viewKickRadius \"0\"\nbg_shock_viewKickFadeTime \"1\"\nbg_shock_sound \"0\"\nbg_shock_lookControl \"0\"\nbg_shock_lookControl_maxpitchspeed \"90\"\nbg_shock_lookControl_maxyawspeed \"90\"\nbg_shock_lookControl_mousesensitivityscale \"1\"\nbg_shock_lookControl_fadeTime \"1\"\nbg_shock_movement \"1\"\n"
+                .to_owned(),
+        );
         let r = read(&s);
         assert_eq!(r.uav_time_ms, 25_000);
+        assert_eq!(
+            (
+                r.flash_seconds,
+                r.flash_angle_min,
+                r.flash_angle_full,
+                r.flash_min_seconds
+            ),
+            (5.0, 0.4, 0.9, 0.3)
+        );
+        assert_eq!(
+            (r.stun_radius, r.stun_base, r.stun_extra),
+            (400.0, 1.5, 3.0)
+        );
         assert_eq!((r.tdm_time_limit_ms, r.tdm_score_limit), (900_000, 7000));
         assert_eq!((r.team_kill_score, r.team_headshot_score), (90, 80));
         assert_eq!(

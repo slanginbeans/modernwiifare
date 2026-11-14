@@ -26,17 +26,29 @@ pub struct WeaponTables<'a> {
 
 /// The weapon fallback classes throw (MW2's frag).
 const FALLBACK_LETHAL: &str = "frag_grenade_mp";
-/// IW4 offhand class of frag-type grenades (thrown, bouncing, on a fuse): the ones this build throws.
+/// IW4 offhand class of frag grenades (the bots' lethal).
 pub const OFFHAND_CLASS_FRAG: i32 = 1;
+/// The grenades this build throws: frag and semtex (lethal), flashbang and stun (tactical). Throwing knives,
+/// claymores, C4, tactical insertions, blast shields and smoke are not in yet.
+const THROWN: [&str; 4] = [
+    "frag_grenade_mp",
+    "semtex_mp",
+    "flash_grenade_mp",
+    "concussion_grenade_mp",
+];
 
 /// The offhand row of grenade weapon `name` (with or without `_mp`), when it is one this build throws.
 pub fn offhand_row(t: &WeaponTables<'_>, name: &str) -> Option<weapon_iw4::OffhandInvRow> {
-    let (index, rec) = wpk::weapon::find_indexed(t.weapons, name)
-        .or_else(|| wpk::weapon::find_indexed(t.weapons, &alloc::format!("{name}_mp")))?;
-    let e = wpk::records::get::<wpk::weapon::EquipRecord>(t.equips, index as usize)?;
-    if e.offhand_class != OFFHAND_CLASS_FRAG {
+    let full = if name.ends_with("_mp") {
+        alloc::string::String::from(name)
+    } else {
+        alloc::format!("{name}_mp")
+    };
+    if !THROWN.contains(&full.as_str()) {
         return None;
     }
+    let (index, rec) = wpk::weapon::find_indexed(t.weapons, &full)?;
+    let e = wpk::records::get::<wpk::weapon::EquipRecord>(t.equips, index as usize)?;
     let f = weapon_iw4::WeaponCombatFacts::try_from_captured(rec.combat).ok()?;
     Some(weapon_iw4::OffhandInvRow {
         weapon: index,
@@ -173,13 +185,17 @@ impl Arsenal {
                 .map(|i| i.name.clone()),
             _ => None,
         };
-        let rows: alloc::vec::Vec<weapon_iw4::OffhandInvRow> = [lethal_name, tactical_name]
-            .iter()
-            .flatten()
-            .filter_map(|n| offhand_row(t, n))
-            .collect();
+        let lethal = lethal_name.as_deref().and_then(|n| offhand_row(t, n));
+        let tactical = tactical_name.as_deref().and_then(|n| offhand_row(t, n));
+        let rows: alloc::vec::Vec<weapon_iw4::OffhandInvRow> =
+            [lethal, tactical].into_iter().flatten().collect();
+        // The lethal button throws the equipment's class, the tactical button the special grenade's.
+        let (lc, tc) = (
+            lethal.map_or(OFFHAND_CLASS_FRAG, |r| r.offhand_class),
+            tactical.map_or(0, |r| r.offhand_class),
+        );
         for g in self.guns.iter_mut().flatten() {
-            g.set_offhands(&rows, OFFHAND_CLASS_FRAG, 2);
+            g.set_offhands(&rows, lc, tc);
         }
         self.active = if self.guns[0].is_some() { 0 } else { 1 };
         self.pending = None;

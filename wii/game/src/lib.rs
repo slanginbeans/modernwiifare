@@ -1148,6 +1148,14 @@ fn run_map(
                     if let Some(a) = arena.as_mut() {
                         a.fighters[0].bullet_scale = perk_set.bullet_scale();
                     }
+                    // A stun's shock slows you (IW4 `PMF_SHELLSHOCKED`, when its `.shock` file says so).
+                    if let Some(a) = arena.as_mut() {
+                        if a.shock_slows(0, now) {
+                            p.ps.pm_flags |= playerstate_iw4::pm_flags::SHELLSHOCKED;
+                        } else {
+                            p.ps.pm_flags &= !playerstate_iw4::pm_flags::SHELLSHOCKED;
+                        }
+                    }
                     // Other players block you (IW4 player clipping).
                     match arena.as_ref() {
                         Some(a) => c.set_bodies(a.bodies_except(0)),
@@ -1540,6 +1548,22 @@ fn run_map(
             }
             radar_at = now;
             draw_minimap(&world, arena.as_ref(), &radar, &cam, &blasts, now);
+            // A flashbang's or stun's white-out (IW4L `shellshock_flash_blend` with the shock's fade times).
+            if let Some(a) = arena.as_ref()
+                && let Some(s) = a.fighters[0].shock
+            {
+                let fx = s.fx(&a.rules);
+                if fx.screen_type == hud_iw4::SCREEN_BLEND_FLASHED
+                    && let Some((white, _)) = hud_iw4::shellshock_flash_blend(
+                        s.remaining(now) as i32,
+                        fx.white_fade_ms,
+                        fx.shot_fade_ms,
+                    )
+                {
+                    let alpha = (white.clamp(0.0, 1.0) * 255.0) as u32;
+                    gfx.hud_rects(&[[0, 0, 640, 480]], 0xffff_ff00 | alpha);
+                }
+            }
             if let Some((text, at)) = reward_note.filter(|(_, at)| now.wrapping_sub(*at) < 3000) {
                 let _ = at;
                 hud_rects.clear();

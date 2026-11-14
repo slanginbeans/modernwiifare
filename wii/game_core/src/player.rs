@@ -125,7 +125,8 @@ fn context(old_buttons: u32, w: &WeaponMove) -> PmoveSingleContext {
                 player_last_stand_crawl_speed_scale: 0.15,
                 weapon_move_speed_scale: w.move_speed_scale,
                 weapon_ads_move_speed_scale: w.ads_move_speed_scale,
-                shellshock_affects_movement: false,
+                // A shell shock whose `.shock` file says so slows movement (the arena sets `SHELLSHOCKED` only then).
+                shellshock_affects_movement: true,
             },
             weapon_move_scale: 1.0,
             old_buttons,
