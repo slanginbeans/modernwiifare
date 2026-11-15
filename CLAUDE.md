@@ -63,7 +63,10 @@ never run (supersedes 0002)
     in place on the Wii. See `docs/pack.md`.
 - `tools/`: asset guard, Windows/Docker build helpers (`winbuild.sh`, `docker-build.sh`, `mwf-convert.ps1`).
 - `docs/`: ADRs, `runtime.md`, `pack.md`, `textures.md`, `perf.md`, `gaps.md`, `testing.md`, references, upstream patches.
-- Root: `build.bat` (update, build, convert, package `dist\apps\mwf_game`), `inventory.bat`, `report.bat`.
+- Root: `build.bat` (update, build, convert, package `dist\apps\mwf_game`; switches combine: `noupdate nodata
+  nopause clean showargs`; env `MWF_SLIM_VIEWS`, `MWF_CONVERT_FLAGS`, `MWF_ASSUME_YES`, `MWF_GAME`, `MWF_DEVKITPRO`),
+  `builder.bat` (a window over build.bat: `tools/builder-gui.ps1`, WinForms; `-SelfTest` runs in CI; keep it ASCII,
+  Windows PowerShell 5.1 reads BOM-less files as ANSI), `inventory.bat`, `report.bat`.
 
 ## Build and test
 - Host: `cargo test`, `cargo clippy --all-targets`, `cargo fmt --all --check`.

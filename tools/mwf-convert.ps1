@@ -25,7 +25,8 @@ if (Test-Path $envScript) {
     if (-not (Test-Path (Join-Path $mingw 'bin\clang.exe'))) {
         Write-Host "[rust] The converter needs llvm-mingw (a C toolchain, about 190 MB download, 900 MB unpacked)"
         Write-Host "       in $mingw. Nothing is installed system-wide."
-        $answer = Read-Host '[rust] Download it now? (y/n)'
+        # builder.bat's "Allow downloading missing tools" sets MWF_ASSUME_YES=1 (it has no console to answer in).
+        $answer = if ($env:MWF_ASSUME_YES -eq '1') { 'y' } else { Read-Host '[rust] Download it now? (y/n)' }
         if ($answer -notmatch '^[yY]') { Write-Host '[rust] Not downloading.'; exit 1 }
         New-Item -ItemType Directory -Force $tc | Out-Null
         $zip = Join-Path $tc $MingwZip
