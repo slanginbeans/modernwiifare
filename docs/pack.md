@@ -71,6 +71,7 @@ ignores the section.
 | `FXIM` | u16, 15 × 35 | IW4's impact table: by impact type, the effect per surface type then flesh |
 | `FTEX` / `FTXD` | as `TEXT` / `TXDA` | the effects' textures, top mip levels left out down to 64 texels |
 | `UIPK` | one blob (`wpk::ui::UiPack`, also: owner-draw rects such as the minimap's, and named compass icons) | the menus: fonts (glyph tables over atlas textures), screens (textured quads on 640 × 480, the button style, text labels with their kind: MW2 text, title, or a slot for live text; the back button's rect), and a plain white texture for filled bars |
+|  |  | Screens also carry image slots: items whose image MW2 chooses at run time from the class (`tablelookup` on a `loadout*` dvar), as a rect and the loadout field; the icons `img:weapon:<base>` (statsTable's picture, at most 96 texels), `img:attachment:<name>` and `img:perk:<name>` (at most 48; UI images without mips are scaled down, 32-bit colour stored as RGB5A3) fill them |
 | `TEXT` / `TXDA` | as in map packs | the menus' textures (font atlases, backgrounds, gradients, bars) |
 
 `views/<weapon>.wpk`, one per weapon a class can carry (its base name, e.g. `views/m4.wpk`):

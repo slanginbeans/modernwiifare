@@ -148,7 +148,26 @@ fn bake_screen(
     let mut quads = Vec::new();
     let mut labels = Vec::new();
     let mut owner_draws = Vec::new();
+    let mut images: Vec<wpk::ui::ImageSlot> = Vec::new();
     for item in &menu.items {
+        // An image chosen from the class (whatever its visibility: MW2 shows a perk's icon either way, Pro or not).
+        if let Some(field) = item.material_exp.as_deref().and_then(image_field) {
+            let r = place(p, &item.rect);
+            if !images
+                .iter()
+                .any(|i| i.field == field && i.x == r.x && i.y == r.y)
+            {
+                images.push(wpk::ui::ImageSlot {
+                    field,
+                    x: r.x,
+                    y: r.y,
+                    w: r.w,
+                    h: r.h,
+                    rgba: rgba(item.fore_color),
+                });
+            }
+            continue;
+        }
         if item.item_type == ITEM_TYPE_OWNERDRAW && shown(item) && item.owner_draw > 0 {
             let r = place(p, &item.rect);
             let texture = if item.background.is_empty() {
@@ -284,7 +303,36 @@ fn bake_screen(
         labels,
         back,
         owner_draws,
+        images,
     }
+}
+
+/// The loadout field an item's material expression shows: MW2's
+/// `tablelookup("<table>", <key column>, dvarString("loadout<...>"), <image column>)`, as its dump spells it
+/// (`op 16 op 74 s:<table> op 17 <n> op 17 op 81 s:<dvar> op 1 op 17 <n> op 1`). Camouflage and other lookups:
+/// `None`.
+fn image_field(dump: &str) -> Option<u8> {
+    let strings: Vec<String> = dump
+        .split_whitespace()
+        .filter_map(|t| t.strip_prefix("s:"))
+        .filter_map(|h| {
+            let bytes: Option<Vec<u8>> = (0..h.len() / 2)
+                .map(|i| u8::from_str_radix(h.get(i * 2..i * 2 + 2)?, 16).ok())
+                .collect();
+            String::from_utf8(bytes?).ok()
+        })
+        .collect();
+    let [table, dvar] = strings.as_slice() else {
+        return None;
+    };
+    let table = table.to_ascii_lowercase();
+    if !(table.ends_with("statstable.csv")
+        || table.ends_with("attachmenttable.csv")
+        || table.ends_with("perktable.csv"))
+    {
+        return None;
+    }
+    wpk::ui::image_field::from_dvar(dvar)
 }
 
 /// Bake the fonts and screens. `tex(material)` adds that material's colour texture to the pack (`TEXT` index);
@@ -407,6 +455,7 @@ mod tests {
             dvar: String::new(),
             static_flags: 0,
             visible: visible.map(str::to_owned),
+            material_exp: None,
             scripts: Vec::new(),
         }
     }

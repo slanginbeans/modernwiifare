@@ -73,6 +73,8 @@ pub struct Item {
     pub static_flags: i32,
     /// The visibility expression (IW4L text dump), when the item has one.
     pub visible: Option<String>,
+    /// Its material expression's dump, when the image is chosen at run time.
+    pub material_exp: Option<String>,
     /// Scripts by kind (action, focus ...).
     pub scripts: Vec<(MenuScriptKind, String)>,
 }
@@ -169,6 +171,7 @@ impl UiCapture {
             dvar: rec.dvar.to_owned(),
             static_flags: rec.static_flags,
             visible: None,
+            material_exp: None,
             scripts: Vec::new(),
         });
     }
@@ -186,6 +189,13 @@ impl UiCapture {
     pub fn visible(&mut self, menu: &str, item: &str, dump: &str) {
         if let Some(i) = self.item_mut(menu, item) {
             i.visible = Some(dump.to_owned());
+        }
+    }
+
+    /// An item's material expression (`exp material(...)`: an image chosen at run time).
+    pub fn material(&mut self, menu: &str, item: &str, dump: &str) {
+        if let Some(i) = self.item_mut(menu, item) {
+            i.material_exp = Some(dump.to_owned());
         }
     }
 

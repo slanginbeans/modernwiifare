@@ -262,6 +262,16 @@ impl AssetLinkSink for Collector {
         Ok(())
     }
 
+    fn capture_item_material_exp(
+        &mut self,
+        menu: &str,
+        item: &str,
+        dump: &str,
+    ) -> fastfile_iw4::Result<()> {
+        self.links.ui.material(menu, item, dump);
+        Ok(())
+    }
+
     fn capture_item_visible_exp(
         &mut self,
         menu: &str,

@@ -30,7 +30,8 @@ use std::path::{Path, PathBuf};
 /// 30: the weapons in the characters' hands (`GUNM`, `GUNI`, `GTEX`, `GTXD`).
 /// 31: effects (`FXDF`, `FXWP`, `FXIM`, `FTEX`, `FTXD`); `GUNM` models carry `tag_flash`.
 /// 32: pack reports with a texture breakdown and `common.json`; `--adpcm` sounds.
-pub const REVISION: u32 = 32;
+/// 33: the class panel's image slots and their pictures and icons (`UIPK`).
+pub const REVISION: u32 = 33;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

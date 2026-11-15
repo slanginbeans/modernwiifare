@@ -238,6 +238,40 @@ pub fn panel(cat: &Catalog, c: &Loadout, out: &mut Vec<String>) {
     out.push(value(cat, c, F::Offhand));
 }
 
+/// The item each of the class panel's images shows (`wpk::ui::image_field` order): its catalog name, empty for none.
+pub fn images(cat: &Catalog, c: &Loadout) -> [String; wpk::ui::image_field::COUNT] {
+    use Field as F;
+    let name = |list: &[wpk::classes::Item], v: u8| -> String {
+        list.get(usize::from(v))
+            .map(|i| i.name.clone())
+            .filter(|n| !n.is_empty() && n != "none" && n != "specialty_null")
+            .unwrap_or_default()
+    };
+    let field = |f: F| -> String {
+        let v = get(c, f);
+        match f {
+            F::Primary | F::Secondary => name(&cat.weapons, v),
+            F::PrimaryAttachment(_) | F::SecondaryAttachment(_) => name(&cat.attachments, v),
+            F::Offhand => name(&cat.offhands, v),
+            _ => name(&cat.perks, v),
+        }
+    };
+    [
+        field(F::Primary),
+        field(F::PrimaryAttachment(0)),
+        field(F::PrimaryAttachment(1)),
+        field(F::Secondary),
+        field(F::SecondaryAttachment(0)),
+        field(F::SecondaryAttachment(1)),
+        field(F::Perk(0)),
+        field(F::Perk(1)),
+        field(F::Perk(2)),
+        field(F::Deathstreak),
+        field(F::Equipment),
+        field(F::Offhand),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

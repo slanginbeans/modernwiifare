@@ -203,11 +203,13 @@ pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
         .unwrap_or_default();
     let s = |v: &[&str]| v.iter().map(|t| (*t).to_owned()).collect::<Vec<String>>();
     let mut slots = Vec::new();
+    let mut images: Vec<String> = Vec::new();
     let mut quads = Vec::new();
     let (title, texts, values, footer) = match screen {
         "class_select" => {
             if let (Some(c), Some(l)) = (&cat, classes.first()) {
                 loadout::panel(c, l, &mut slots);
+                images.extend(loadout::images(c, l));
             }
             let names = classes.iter().map(|c| c.name.clone()).collect();
             ("CHOOSE CLASS", names, Vec::new(), "A CHOOSE   B BACK")
@@ -232,6 +234,7 @@ pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
         "cac" => match (&cat, classes.first()) {
             (Some(c), Some(l)) => {
                 loadout::panel(c, l, &mut slots);
+                images.extend(loadout::images(c, l));
                 let texts = FIELDS
                     .iter()
                     .map(|&f| loadout::label(f).to_owned())
@@ -265,6 +268,7 @@ pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
             selected: 0,
             footer,
             slots: &slots,
+            images: &images,
         },
         &mut quads,
     );

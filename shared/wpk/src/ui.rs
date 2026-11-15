@@ -118,6 +118,71 @@ pub struct Screen {
     pub back: Option<[f32; 4]>,
     /// Items the game draws itself (IW4 owner draws: the minimap's map, player and enemies ...).
     pub owner_draws: Vec<OwnerDraw>,
+    /// Images MW2 picks at run time from the class (the Create-a-Class panel's weapon pictures and perk icons).
+    pub images: Vec<ImageSlot>,
+}
+
+/// An image the menu chooses from the class being shown: a rect (screen pixels), the loadout field it shows
+/// ([`image_field`]) and its colour. The image is the UI pack's icon for that field's item ([`image_key`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ImageSlot {
+    pub field: u8,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub rgba: u32,
+}
+
+/// The loadout fields an [`ImageSlot`] shows (MW2's `loadout*` dvars).
+pub mod image_field {
+    pub const PRIMARY: u8 = 0;
+    pub const PRIMARY_ATTACHMENT: u8 = 1;
+    pub const PRIMARY_ATTACHMENT_2: u8 = 2;
+    pub const SECONDARY: u8 = 3;
+    pub const SECONDARY_ATTACHMENT: u8 = 4;
+    pub const SECONDARY_ATTACHMENT_2: u8 = 5;
+    pub const PERK_1: u8 = 6;
+    pub const PERK_2: u8 = 7;
+    pub const PERK_3: u8 = 8;
+    pub const DEATHSTREAK: u8 = 9;
+    pub const EQUIPMENT: u8 = 10;
+    pub const OFFHAND: u8 = 11;
+    pub const COUNT: usize = 12;
+
+    /// The field MW2's dvar `loadout<...>` is.
+    pub fn from_dvar(dvar: &str) -> Option<u8> {
+        Some(match dvar.to_ascii_lowercase().as_str() {
+            "loadoutprimary" => PRIMARY,
+            "loadoutprimaryattachment" => PRIMARY_ATTACHMENT,
+            "loadoutprimaryattachment2" => PRIMARY_ATTACHMENT_2,
+            "loadoutsecondary" => SECONDARY,
+            "loadoutsecondaryattachment" => SECONDARY_ATTACHMENT,
+            "loadoutsecondaryattachment2" => SECONDARY_ATTACHMENT_2,
+            "loadoutperk1" => PERK_1,
+            "loadoutperk2" => PERK_2,
+            "loadoutperk3" => PERK_3,
+            "loadoutdeathstreak" => DEATHSTREAK,
+            "loadoutequipment" => EQUIPMENT,
+            "loadoutoffhandsecondary" => OFFHAND,
+            _ => return None,
+        })
+    }
+}
+
+/// The icon key of an item's image: `img:weapon:<base>` (weapons and special grenades, statsTable's picture),
+/// `img:attachment:<name>`, `img:perk:<name>` (perks, deathstreaks, equipment).
+pub fn image_key(field: u8, item: &str) -> alloc::string::String {
+    use image_field::*;
+    let kind = match field {
+        PRIMARY | SECONDARY | OFFHAND => "weapon",
+        PRIMARY_ATTACHMENT
+        | PRIMARY_ATTACHMENT_2
+        | SECONDARY_ATTACHMENT
+        | SECONDARY_ATTACHMENT_2 => "attachment",
+        _ => "perk",
+    };
+    alloc::format!("img:{kind}:{item}")
 }
 
 /// An owner-draw item: its IW4 owner-draw number, rect (screen pixels), material (texture or `NONE`) and colour.
@@ -340,6 +405,14 @@ impl UiPack {
                 o.u16(d.texture);
                 o.u32(d.rgba);
             }
+            o.u16(s.images.len() as u16);
+            for i in &s.images {
+                o.push(i.field);
+                for v in [i.x, i.y, i.w, i.h] {
+                    o.f32(v);
+                }
+                o.u32(i.rgba);
+            }
         }
         o.u16(self.white);
         o.u16(self.icons.len() as u16);
@@ -431,6 +504,18 @@ impl UiPack {
                     rgba: r.u32()?,
                 });
             }
+            let ni = r.u16()?;
+            let mut images = Vec::with_capacity(usize::from(ni));
+            for _ in 0..ni {
+                images.push(ImageSlot {
+                    field: r.u8()?,
+                    x: r.f32()?,
+                    y: r.f32()?,
+                    w: r.f32()?,
+                    h: r.f32()?,
+                    rgba: r.u32()?,
+                });
+            }
             screens.push(Screen {
                 name,
                 quads,
@@ -438,6 +523,7 @@ impl UiPack {
                 labels,
                 back,
                 owner_draws,
+                images,
             });
         }
         let white = r.u16()?;
@@ -557,12 +643,24 @@ mod tests {
                     texture: NONE,
                     ..OwnerDraw::default()
                 }],
+                images: vec![ImageSlot {
+                    field: image_field::PERK_2,
+                    x: 3.0,
+                    w: 36.0,
+                    rgba: 0xffff_ffff,
+                    ..ImageSlot::default()
+                }],
             }],
             white: 5,
             icons: vec![("compassping_player".into(), 7)],
         };
         let back = UiPack::decode(&p.encode()).expect("decodes");
         assert_eq!(back, p);
+        assert_eq!(
+            image_field::from_dvar("loadoutPerk2"),
+            Some(image_field::PERK_2)
+        );
+        assert_eq!(image_key(image_field::SECONDARY, "usp"), "img:weapon:usp");
         assert_eq!(back.fonts[0].glyph(65).map(|g| g.dx), Some(12));
         assert!(back.fonts[0].glyph(67).is_none());
         assert_eq!(

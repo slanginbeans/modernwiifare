@@ -29,6 +29,8 @@ pub struct Page<'a> {
     pub footer: &'a str,
     /// Live text for the screen's empty slots, in menu order.
     pub slots: &'a [String],
+    /// The items the screen's images show (`wpk::ui::image_field` order; empty: none).
+    pub images: &'a [String],
 }
 
 /// MW2's main menu has no page name: ours goes above the first button, inside the 0.85 safe area (640 × 0.075).
@@ -79,6 +81,27 @@ pub fn layout(ui: &UiPack, page: &Page<'_>, out: &mut Vec<Quad>) {
         return;
     };
     out.extend_from_slice(&screen.quads);
+    // The class's pictures and icons in MW2's places.
+    for im in &screen.images {
+        let Some(item) = page
+            .images
+            .get(usize::from(im.field))
+            .filter(|i| !i.is_empty())
+        else {
+            continue;
+        };
+        if let Some(t) = ui.icon(&wpk::ui::image_key(im.field, item)) {
+            out.push(Quad {
+                x: im.x,
+                y: im.y,
+                w: im.w,
+                h: im.h,
+                uv: [0.0, 0.0, 1.0, 1.0],
+                rgba: im.rgba,
+                texture: t,
+            });
+        }
+    }
     let mut slot = 0;
     let mut has_title = false;
     for (kind, l) in &screen.labels {
@@ -290,6 +313,7 @@ mod tests {
                 ],
                 back: Some([0.0, 400.0, 200.0, 20.0]),
                 owner_draws: Vec::new(),
+                images: Vec::new(),
             }],
             white: 1,
             icons: Vec::new(),
@@ -319,6 +343,7 @@ mod tests {
             selected: 1,
             footer: "F",
             slots: &slots,
+            images: &[],
         };
         let mut q = Vec::new();
         layout(&ui, &page, &mut q);
@@ -346,6 +371,7 @@ mod tests {
             selected: 0,
             footer: "",
             slots: &[],
+            images: &[],
         };
         let mut q = Vec::new();
         layout(&ui, &page, &mut q);
