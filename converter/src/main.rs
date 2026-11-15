@@ -956,6 +956,9 @@ fn run_common(args: &[String]) -> ExitCode {
             used_types,
             &has,
         );
+        if std::env::var_os("MWF_ANIM_DEBUG").is_some() {
+            player_anims::dump(&parsed);
+        }
         let anims = viewmodel::bake_player_anims(s, links, &parsed.anims);
         (views, failed, (anims, parsed), (held, held_tex))
     });

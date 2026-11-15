@@ -724,6 +724,9 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
         });
         let c = ch::conditions(&ps, held, shot.movetype, 0, false);
         let mut body = ch::Body::new(0);
+        // Idle first, as a player stands before anything else plays (a torso-only movement keeps the legs).
+        let idle = ch::conditions(&ps, held, anim_iw4::ANIM_MT_IDLE, 0, false);
+        body.moves(&anims, anim_iw4::ANIM_MT_IDLE, &idle, 0);
         body.moves(&anims, shot.movetype, &c, 0);
         if let Some(e) = shot.event {
             let c = if e == anim_iw4::ANIM_ET_DEATH {
