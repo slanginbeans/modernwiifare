@@ -357,8 +357,22 @@ fn clip_near(tri: [CV; 3]) -> Vec<CV> {
 }
 
 /// Parse a world display list (triangle lists and strips) into vertex-index triangles in their GX winding
-/// (relative to the batch's vertex base).
-pub fn display_list_triangles(dl: &[u8]) -> Result<Vec<u16>, String> {
+/// (relative to the batch's vertex base), in the layout its batch's `QuantRecord::flags` give
+/// (`wpk::strips::DlLayout`).
+pub fn display_list_triangles_layout(
+    dl: &[u8],
+    layout: wpk::strips::DlLayout,
+) -> Result<Vec<u16>, String> {
+    let vb = layout.vertex_bytes();
+    let index = |at: usize| -> Result<u16, String> {
+        if layout.idx8 {
+            dl.get(at).map(|&b| u16::from(b))
+        } else {
+            dl.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]))
+        }
+        .ok_or_else(|| "display list cut short".to_owned())
+    };
+    let step = if layout.idx8 { 1 } else { 2 };
     let mut out = Vec::new();
     let mut i = 0;
     while i < dl.len() {
@@ -370,11 +384,11 @@ pub fn display_list_triangles(dl: &[u8]) -> Result<Vec<u16>, String> {
                 i += 3;
                 let mut verts = Vec::with_capacity(n);
                 for v in 0..n {
-                    let at = i + v * 2 * records::WORLD_DL_ATTRS;
-                    let idx = u16::from_be_bytes([dl[at], dl[at + 1]]);
+                    let at = i + v * vb;
+                    let idx = index(at)?;
                     // Every attribute index must be the same (interleaved vertices).
-                    for a in 1..records::WORLD_DL_ATTRS {
-                        if u16::from_be_bytes([dl[at + 2 * a], dl[at + 2 * a + 1]]) != idx {
+                    for a in 1..layout.attrs {
+                        if index(at + step * a)? != idx {
                             return Err("display list attribute indices differ".into());
                         }
                     }
@@ -385,7 +399,7 @@ pub fn display_list_triangles(dl: &[u8]) -> Result<Vec<u16>, String> {
                 } else {
                     out.extend_from_slice(&verts);
                 }
-                i += n * 2 * records::WORLD_DL_ATTRS;
+                i += n * vb;
             }
             op => return Err(format!("unexpected display-list opcode {op:#04x} at {i}")),
         }
@@ -458,6 +472,7 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
     }
     let float_quant = QuantRecord {
         vtxfmt: records::WORLD_VTXFMT,
+        flags: 0,
         origin: [0.0; 3],
     };
     let wvtq = section(tag::WORLD_VERTICES_Q);
@@ -599,7 +614,8 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
         let dl = dls
             .get(b.dl_off as usize..(b.dl_off + b.dl_len) as usize)
             .ok_or("batch display list out of range")?;
-        let tris = display_list_triangles(dl)?;
+        let tris =
+            display_list_triangles_layout(dl, wpk::strips::DlLayout::from_flags(it.quant.flags))?;
         for t in tris.chunks_exact(3) {
             let mut v = [CV {
                 c: [0.0; 3],
@@ -1035,8 +1051,13 @@ mod tests {
     fn display_list_roundtrip() {
         let tris = [0u16, 1, 2, 2, 1, 3];
         let dl = records::world_display_list(&tris);
-        assert_eq!(display_list_triangles(&dl).unwrap(), tris);
-        assert!(display_list_triangles(&[0x61, 0, 0]).is_err());
+        assert_eq!(
+            display_list_triangles_layout(&dl, wpk::strips::DlLayout::WORLD).unwrap(),
+            tris
+        );
+        assert!(
+            display_list_triangles_layout(&[0x61, 0, 0], wpk::strips::DlLayout::WORLD).is_err()
+        );
     }
 
     #[test]

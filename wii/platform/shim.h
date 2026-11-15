@@ -149,6 +149,9 @@ void mwf_world_state(const mwf_draw_state *s);
 /* Load the position matrix (GX_PNMTX0) for the following world / model draws: the view, or view x placement. */
 void mwf_pos_matrix(const float m[3][4]);
 /* Call a prebuilt display list (32-byte aligned, length a multiple of 32). */
+/* How the next world display lists index their vertices (wpk::quant::dl_flags: 1 = u8 indices, 2 = no colour index,
+ * the colour then white). 0: four u16 indices, the default after any other kind of drawing. */
+void mwf_world_desc(uint8_t flags);
 void mwf_call_dl(const void *dl, uint32_t len);
 /* Draw one skybox face: 4 corners (x,y,z relative to the eye) with texcoords (s,t), textured with `tex`. */
 void mwf_sky_face(const float view_rot[3][4], const float corners[4][5], int32_t tex);

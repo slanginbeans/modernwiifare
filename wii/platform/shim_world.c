@@ -345,9 +345,15 @@ void mwf_frame_begin(const float view[3][4], float fovy_deg, float znear, float 
 
 #define WORLD_STRIDE 28
 
+/* The world display-list layout set now (wpk::quant::dl_flags; world_mode sets the default, 0). */
+#define MWF_DL_IDX8 1
+#define MWF_DL_NO_COLOR 2
+static u8 world_dl_flags = 0;
+
 static void world_mode(void) {
     if (mode == MODE_WORLD) return;
     mode = MODE_WORLD;
+    world_dl_flags = 0;
     fog_world(1);
     GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS, GX_INDEX16);
@@ -496,6 +502,27 @@ void mwf_world_state(const mwf_draw_state *s) {
     GX_SetCullMode(s->cull == MWF_CULL_BACK    ? MWF_GX_CULL_BACK
                    : s->cull == MWF_CULL_FRONT ? MWF_GX_CULL_FRONT
                                                : GX_CULL_NONE);
+}
+
+/* How the next world display lists index their vertices: u8 or u16 indices, with or without a colour index. Without
+ * one, the colour channel's material colour comes from a white register (the batch's vertices were all white), so
+ * TEV sees the same colour either way. Skipped when unchanged. */
+void mwf_world_desc(uint8_t flags) {
+    world_mode();
+    if (flags == world_dl_flags) return;
+    world_dl_flags = flags;
+    u8 idx = (flags & MWF_DL_IDX8) ? GX_INDEX8 : GX_INDEX16;
+    GX_SetVtxDesc(GX_VA_POS, idx);
+    GX_SetVtxDesc(GX_VA_CLR0, (flags & MWF_DL_NO_COLOR) ? GX_NONE : idx);
+    GX_SetVtxDesc(GX_VA_TEX0, idx);
+    GX_SetVtxDesc(GX_VA_TEX1, idx);
+    if (flags & MWF_DL_NO_COLOR) {
+        GXColor white = {255, 255, 255, 255};
+        GX_SetChanMatColor(GX_COLOR0A0, white);
+        GX_SetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_REG, GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
+    } else {
+        GX_SetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
+    }
 }
 
 void mwf_call_dl(const void *dl, uint32_t len) {

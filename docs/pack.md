@@ -32,7 +32,7 @@ Version 3 (2026-11-13): fixed-point vertices. Version 2: LOD tables in `ModelRec
 | `MODL` | `ModelRecord` (68 B) | model-space bounding sphere and up to 4 LODs: each a run of `MSRF` surfaces and IW4's switch distance (`lodDist`); past the last, the model is not drawn |
 | `SMDL` | `InstanceRecord` (56 B) | a placed static model: model, draw distance, light-grid colour (RGBA8 at half intensity), model-to-world 3x4 matrix |
 | `WVTQ` / `MVTQ` | `CompactVertex` (18 B) | fixed-point world / static model vertices: position s16 × 3 at 1/8 unit around the batch's origin, RGBA8, UV s16 × 2 (12, 10 or 8 fraction bits: GX vertex formats 3, 4, 5), lightmap UV u16 × 2 |
-| `WBQZ` / `MSQZ` | `QuantRecord` (16 B) per batch / model surface | which array and GX vertex format its vertices use, and the origin the renderer adds through the position matrix |
+| `WBQZ` / `MSQZ` | `QuantRecord` (16 B) per batch / model surface | which array and GX vertex format its vertices use, its display-list layout (`flags`, byte 1: `wpk::quant::dl_flags`), and the origin the renderer adds through the position matrix |
 | `VISD` | one blob (`wpk::vis::Vis`) | IW4 visibility: dpvs planes and node stream (point → cell), cells (bounds, portal run), portals (plane, neighbour, vertices, hull axis) |
 | `WBCL` / `SMCL` | u16 per batch / instance | the visibility cell of each `WBAT` batch and `SMDL` instance (`0xFFFF`: none, drawn when in the frustum) |
 | `NAVG` | one blob (`wpk::nav::NavGraph`), decoded at load | the bots' walk graph: floor points (feet positions) and moves (target, cost, walk or one-way drop), baked from the collision by `game_core::nav::bake` |
@@ -79,6 +79,23 @@ ignores the section.
 | `SNDA` | `AliasRecord` (4 B) | a sound alias: a run of `SNDV` variants |
 | `SNDV` | `VariantRecord` (40 B) | a clip in `SNDD` (offset, padded length, rate), volume and pitch ranges, probability weight, falloff distances (min / max) |
 | `SNDD` | – | mono 16-bit big-endian PCM, each clip 32-byte aligned and padded to 32 (ASND DMA) |
+
+### Smaller map packs (toggles, off by default)
+Two switches on `pack` (or in `builder.bat`), each folded into the map pack's stamp so turning it on or off rebuilds the
+maps:
+- **`--tiled-uv`** (`MWF_TILED_UV=1`): a batch that doesn't fit fixed-point vertices because one connected piece
+  spans 128 or more texture repeats (wide tiled floors, roads, walls) is split into UV tiles
+  (`wpk::quant::quantize_tiled`, 96 repeats, else 32, else 8). Each tile gets its own whole-number UV shift. Vertices
+  on tile borders are duplicated: the same position, with UVs that differ by whole numbers and so sample the same with
+  repeat wrapping. No seams, 18 bytes instead of 28 per vertex. The pack report counts `tiled_batches` and why any
+  batch still stays float (`float_position`, `float_triangle_uv`, `float_vertices`).
+- **`--small-dl`** (`MWF_SMALL_DL=1`): a batch with at most 256 vertices gets u8 display-list indices
+  (`dl_flags::IDX8`), and one whose vertex colours are all white drops the colour index (`dl_flags::NO_COLOR`; the
+  shim's `mwf_world_desc` then feeds the colour channel a white register). A display-list vertex costs 8 bytes in the
+  old layout, 6 without colour, 4 with u8 indices, 3 with both. The report counts `dl_idx8_batches` and
+  `dl_no_color_batches`.
+
+Older packs have `flags` 0 and draw exactly as before.
 
 ### Slim weapon files (toggle, off by default)
 `mwf-convert pack ... --slim-views` / `common ... --slim-views`, or `MWF_SLIM_VIEWS=1` in the environment (so

@@ -372,6 +372,16 @@ pub struct PackReport {
     pub world_dl_vertices: u64,
     /// Batches stored as fixed-point vertices (the rest stay float).
     pub world_compact_batches: usize,
+    /// World batches and model surfaces made fixed-point by splitting into UV tiles (`--tiled-uv`).
+    pub tiled_batches: usize,
+    /// With `--tiled-uv`, batches still in floats, by why: a vertex beyond the origin's range, one triangle's UV
+    /// span, or too many vertices after splitting.
+    pub float_position: usize,
+    pub float_triangle_uv: usize,
+    pub float_vertices: usize,
+    /// Display lists with u8 indices / without a colour index (`--small-dl`; world batches and model surfaces).
+    pub dl_idx8_batches: usize,
+    pub dl_no_color_batches: usize,
     pub batches: usize,
     pub vertex_groups: usize,
     pub sky_surfaces_dropped: usize,
@@ -577,6 +587,16 @@ impl Textures {
     }
 }
 
+/// Pack options that change the output (each folded into the pack stamp by the caller).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Options {
+    /// Batches whose UVs span too far for fixed-point vertices are split into UV tiles ([`wpk::quant::quantize_tiled`]).
+    pub tiled_uv: bool,
+    /// u8 display-list indices for batches of at most 256 vertices, no colour index where every vertex is white
+    /// ([`wpk::quant::dl_flags`]).
+    pub small_dl: bool,
+}
+
 /// Build the pack bytes for one map. `index` / `tex_dir`: the textures `convert_zone` wrote for this zone.
 #[allow(clippy::too_many_arguments)]
 pub fn build(
@@ -588,6 +608,7 @@ pub fn build(
     tex_dir: &Path,
     stamp: &crate::stamp::Stamp,
     quality: &crate::simplify::WorldQuality,
+    opts: &Options,
 ) -> Result<(Vec<u8>, PackReport), String> {
     let mut report = PackReport {
         map: map.to_owned(),
@@ -824,19 +845,22 @@ pub fn build(
             verts = used;
         }
         let centre = std::array::from_fn(|k| (d.min[k] + d.max[k]) * 0.5);
-        let (vertex_base, quant) = store_vertices(
+        let (vertex_base, quant, vertex_count) = store_vertices(
             &verts,
-            &tris,
+            &mut tris,
             wpk::quant::snap_origin(centre),
+            opts,
             &mut world_floats,
             &mut world_compact,
+            &mut report,
         );
         if quant.is_compact() {
             report.world_compact_batches += 1;
         }
-        let dl = display_list(d.blended, &tris, quant.vtxfmt);
+        let layout = wpk::strips::DlLayout::from_flags(quant.flags);
+        let dl = display_list(d.blended, &tris, quant.vtxfmt, layout);
         if !wpk::strips::same_triangles(
-            wpk::strips::dl_triangles(&dl).into_iter(),
+            wpk::strips::dl_triangles_layout(&dl, layout).into_iter(),
             tris.chunks_exact(3).map(|t| [t[0], t[1], t[2]]),
         ) {
             return Err("display list self-check: triangles changed".into());
@@ -845,7 +869,7 @@ pub fn build(
         batch_quant.push(quant);
         batches.push(BatchRecord {
             vertex_base,
-            vertex_count: verts.len() as u32,
+            vertex_count,
             material,
             lightmap,
             dl_off: dls.len() as u32,
@@ -855,7 +879,7 @@ pub fn build(
             bounds_max: d.max,
         });
         report.world_triangles += (tris.len() / 3) as u64;
-        report.world_dl_vertices += wpk::strips::dl_vertex_count(&dl) as u64;
+        report.world_dl_vertices += wpk::strips::dl_vertex_count_layout(&dl, layout) as u64;
         dls.extend_from_slice(&dl);
     }
     report.batches = batches.len();
@@ -926,32 +950,36 @@ pub fn build(
                 let mut verts = surf.vertices.clone();
                 let mut indices = surf.indices.clone();
                 r.vertices_welded += weld(&mut verts, &mut indices);
-                let (vertex_base, quant) = store_vertices(
+                let (vertex_base, quant, vertex_count) = store_vertices(
                     &verts,
-                    &indices,
+                    &mut indices,
                     model_origin,
+                    opts,
                     &mut model_vertices,
                     &mut model_compact,
+                    &mut report,
                 );
                 if quant.is_compact() {
                     r.compact_surfaces += 1;
                 }
+                let layout = wpk::strips::DlLayout::from_flags(quant.flags);
                 let dl = display_list(
                     matches!(links.material_info[mat].blend, BlendMode::Blend),
                     &indices,
                     quant.vtxfmt,
+                    layout,
                 );
                 if !wpk::strips::same_triangles(
-                    wpk::strips::dl_triangles(&dl).into_iter(),
+                    wpk::strips::dl_triangles_layout(&dl, layout).into_iter(),
                     indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]),
                 ) {
                     return Err("display list self-check: triangles changed".into());
                 }
-                r.dl_vertices += wpk::strips::dl_vertex_count(&dl) as u64;
+                r.dl_vertices += wpk::strips::dl_vertex_count_layout(&dl, layout) as u64;
                 surface_quant.push(quant);
                 model_surfaces.push(BatchRecord {
                     vertex_base,
-                    vertex_count: verts.len() as u32,
+                    vertex_count,
                     material,
                     lightmap: NONE,
                     dl_off: dls.len() as u32,
@@ -1315,15 +1343,18 @@ fn weld(verts: &mut Vec<WorldVertex>, tris: &mut [u16]) -> usize {
 /// layering order).
 /// Opaque ones get the shorter of two strippings: ours (exact triangles, no turns) and meshoptimizer's (after its
 /// vertex-cache order; it turns with repeated-vertex triangles, which cost a vertex each but keep strips going).
-fn display_list(blended: bool, tris: &[u16], vtxfmt: u8) -> Vec<u8> {
+fn display_list(blended: bool, tris: &[u16], vtxfmt: u8, layout: wpk::strips::DlLayout) -> Vec<u8> {
     if blended {
-        return records::world_display_list_fmt(tris, vtxfmt);
+        return records::world_display_list_layout(tris, vtxfmt, layout);
     }
-    let ours = wpk::strips::display_list_fmt(tris, vtxfmt);
+    let ours =
+        wpk::strips::strips_display_list_layout(&wpk::strips::stripify(tris), vtxfmt, layout);
     match meshopt_strips(tris) {
         Some(st) => {
-            let theirs = wpk::strips::strips_display_list(&st, vtxfmt);
-            if wpk::strips::dl_vertex_count(&theirs) < wpk::strips::dl_vertex_count(&ours) {
+            let theirs = wpk::strips::strips_display_list_layout(&st, vtxfmt, layout);
+            if wpk::strips::dl_vertex_count_layout(&theirs, layout)
+                < wpk::strips::dl_vertex_count_layout(&ours, layout)
+            {
                 theirs
             } else {
                 ours
@@ -1352,24 +1383,70 @@ fn meshopt_strips(tris: &[u16]) -> Option<wpk::strips::Strips> {
 }
 
 /// A batch's own vertices, fixed-point when they fit around `origin` (see `wpk::quant`), else floats. Appends them to
-/// the matching array and returns (vertex base, how they are stored).
+/// the matching array and returns (vertex base, how they are stored, vertex count). With `opts.tiled_uv`, a batch
+/// whose UVs span too far is split into UV tiles: `tris` is then re-indexed to the (partly duplicated) vertices.
+/// With `opts.small_dl`, the record's display-list flags say whether its list can use u8 indices / no colour index.
+#[allow(clippy::too_many_arguments)]
 fn store_vertices(
     verts: &[WorldVertex],
-    tris: &[u16],
+    tris: &mut Vec<u16>,
     origin: [f32; 3],
+    opts: &Options,
     floats: &mut Vec<WorldVertex>,
     compact: &mut Vec<wpk::quant::CompactVertex>,
-) -> (u32, wpk::quant::QuantRecord) {
-    let quantized = if std::env::var_os("MWF_NO_QUANT").is_some() {
+    report: &mut PackReport,
+) -> (u32, wpk::quant::QuantRecord, u32) {
+    use wpk::quant::{FloatReason, dl_flags};
+    let no_quant = std::env::var_os("MWF_NO_QUANT").is_some();
+    let mut quantized = if no_quant {
         None
     } else {
-        wpk::quant::quantize(verts, tris, origin, false)
+        wpk::quant::quantize(verts, tris, origin, false).map(|(f, q)| (f, q, None))
     };
+    if quantized.is_none() && !no_quant && opts.tiled_uv {
+        match wpk::quant::quantize_tiled(verts, tris, origin) {
+            Ok((f, q, t)) => {
+                report.tiled_batches += 1;
+                quantized = Some((f, q, Some(t)));
+            }
+            Err(FloatReason::Position) => report.float_position += 1,
+            Err(FloatReason::TriangleUv) => report.float_triangle_uv += 1,
+            Err(FloatReason::TooManyVertices) => report.float_vertices += 1,
+        }
+    }
+    let flags_for = |count: usize, white: bool, report: &mut PackReport| {
+        let mut f = 0;
+        if opts.small_dl {
+            if count <= 256 {
+                f |= dl_flags::IDX8;
+                report.dl_idx8_batches += 1;
+            }
+            if white {
+                f |= dl_flags::NO_COLOR;
+                report.dl_no_color_batches += 1;
+            }
+        }
+        f
+    };
+    let white = verts.iter().all(|v| v.rgba == 0xffff_ffff);
     match quantized {
-        Some((vtxfmt, q)) => {
+        Some((vtxfmt, q, new_tris)) => {
+            if let Some(t) = new_tris {
+                *tris = t;
+            }
             let base = compact.len() as u32;
+            let count = q.len();
             compact.extend_from_slice(&q);
-            (base, wpk::quant::QuantRecord { vtxfmt, origin })
+            let flags = flags_for(count, white, report);
+            (
+                base,
+                wpk::quant::QuantRecord {
+                    vtxfmt,
+                    flags,
+                    origin,
+                },
+                count as u32,
+            )
         }
         None => {
             let base = floats.len() as u32;
@@ -1378,12 +1455,15 @@ fn store_vertices(
                 pos: wpk::quant::snap_position(v.pos),
                 ..*v
             }));
+            let flags = flags_for(verts.len(), white, report);
             (
                 base,
                 wpk::quant::QuantRecord {
                     vtxfmt: records::WORLD_VTXFMT,
+                    flags,
                     origin: [0.0; 3],
                 },
+                verts.len() as u32,
             )
         }
     }

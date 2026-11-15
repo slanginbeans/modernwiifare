@@ -89,6 +89,9 @@ impl Gfx for Shim {
     fn pos_matrix(&mut self, m: &Mtx34) {
         unsafe { ffi::mwf_pos_matrix(m) }
     }
+    fn world_desc(&mut self, flags: u8) {
+        unsafe { ffi::mwf_world_desc(flags) }
+    }
     fn call_dl(&mut self, dl: &[u8]) {
         unsafe { ffi::mwf_call_dl(dl.as_ptr(), dl.len() as u32) }
     }
