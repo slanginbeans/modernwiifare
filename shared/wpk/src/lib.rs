@@ -22,6 +22,7 @@ pub mod anim_script;
 pub mod be;
 pub mod classes;
 pub mod clip;
+pub mod destructible;
 pub mod fx;
 pub mod held;
 pub mod nav;
@@ -157,6 +158,17 @@ pub mod tag {
     pub const STAMP: Tag = *b"STMP";
     /// Bot walk graph ([`crate::nav::NavGraph`]); decoded at load.
     pub const NAV: Tag = *b"NAVG";
+    /// Destructible objects (`destructible`): models, their textures, collision boxes, types, placed objects, and
+    /// the map's effects they play with their textures.
+    pub const DEST_MODELS: Tag = *b"DSTM";
+    pub const DEST_TEXTURES: Tag = *b"DSTX";
+    pub const DEST_TEXTURE_DATA: Tag = *b"DSTD";
+    pub const DEST_BOXES: Tag = *b"DSTB";
+    pub const DEST_TYPES: Tag = *b"DSTY";
+    pub const DEST_INSTANCES: Tag = *b"DSTE";
+    pub const DEST_FX: Tag = *b"DSFX";
+    pub const DEST_FX_TEXTURES: Tag = *b"DSFT";
+    pub const DEST_FX_TEXTURE_DATA: Tag = *b"DSFD";
 }
 
 /// FNV-1a 64-bit, the pack's content hash (also what both Wiis compare in the system-link handshake).

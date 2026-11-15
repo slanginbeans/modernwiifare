@@ -36,6 +36,11 @@ Version 3 (2026-11-13): fixed-point vertices. Version 2: LOD tables in `ModelRec
 | `VISD` | one blob (`wpk::vis::Vis`) | IW4 visibility: dpvs planes and node stream (point → cell), cells (bounds, portal run), portals (plane, neighbour, vertices, hull axis) |
 | `WBCL` / `SMCL` | u16 per batch / instance | the visibility cell of each `WBAT` batch and `SMDL` instance (`0xFFFF`: none, drawn when in the frustum) |
 | `NAVG` | one blob (`wpk::nav::NavGraph`), decoded at load | the bots' walk graph: floor points (feet positions) and moves (target, cost, walk or one-way drop), baked from the collision by `game_core::nav::bake` |
+| `DSTM` / `DSTX` / `DSTD` | `wpk::held` layout (read in place) / `TextureRecord` / texture data | destructible objects' models (every model a placed object shows in any state: its first LOD of at most 1500 vertices, bind pose, origin at the entity's) and their textures (at most 128 texels across) |
+| `DSTB` | `wpk::destructible::encode_boxes` | each `DSTM` model's collision boxes: the model's collision surfaces' bounds (model space), contents and surface flags |
+| `DSTY` | `wpk::destructible::encode_types` | the destructible types the map places, read from MW2's `_destructible_types*.gsc` (the common pass caches them under `out/cache/destructibles`): the body's states, each with its model, health, allowed attackers and causes, the tag explosions measure to, and what breaking it does (effects at points of the model, repeating effects, a health drain, an explosion's point, lift, range and damage) |
+| `DSTE` | 52 B each | the placed objects: type, origin, axes (from the entity's `angles`) |
+| `DSFX` / `DSFT` / `DSFD` | `wpk::fx` / `TextureRecord` / texture data | the map's own effects the types play, and their textures |
 | `CLIP` | one blob (`wpk::clip::Clip`) | collision, unsimplified: a table of 16 arrays (count, offset), then pooled brush planes + surface flags, brushes (contents, glass), BSP nodes, leaves, leaf brushes, mesh vertices / triangles / walkable-edge bits / triangle flags / AABB trees / partitions / borders / roots, brush models. Decoded and validated at load into the `clipmap_iw4` types IW4L traces with |
 
 ## Rebuilding only what changed

@@ -69,6 +69,12 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
     Scrambler / Ninja against radar and sound (no UAV or footstep audio yet), Last Stand (no
     explosives or last stand yet), One Man Army, deathstreaks.
 
+**Destructible objects**: the main body of each (states, damage rules, effects, repeating effects, health drain,
+explosions with chain reactions, model swaps, collision boxes) is done (`game_core::destructible`, map pack `DST*`).
+Not yet: separate parts (tires, glass, doors), physics pieces, their sounds, destroy and idle animations, glass
+windows, light-grid lighting, grenades bouncing off them. Memory: about 1 MiB (Checkpoint) to 1.7 MiB (Invasion) of
+MEM2 per map; measure the frame cost of drawing 200 objects on hardware (`wld` section).
+
 ## Next, performance (ranked by expected milliseconds; measure with the logs first)
 1. **World vertex load** (~12-25 ms on big maps): draw distance with fog and model LOD scale are in (debug menu),
    with an AUTO draw distance that follows the frame time (shrinks while GPU-bound frames miss 60 fps, grows back

@@ -722,6 +722,39 @@ pub fn build_held(
     tex_dir: &Path,
     tex: &mut Textures,
 ) -> Result<wpk::held::Model, String> {
+    let limits = RigidLimits {
+        max_vertices: HELD_MAX_VERTICES,
+        texture_max: HELD_TEXTURE_MAX,
+        role: "held",
+    };
+    build_rigid(s, links, m, hide, &limits, index, tex_dir, tex).map(|(model, _)| model)
+}
+
+/// How detailed a rigid model is built.
+pub struct RigidLimits {
+    /// The first LOD at or under this many vertices is used (else the last).
+    pub max_vertices: usize,
+    /// Textures at most this many texels across.
+    pub texture_max: u32,
+    /// The texture report's role.
+    pub role: &'static str,
+}
+
+/// A model's bones in its bind pose (model space): name, origin and x axis.
+pub type Tags = Vec<(String, [f32; 3], [f32; 3])>;
+
+/// Model `m` as a rigid model in the [`wpk::held`] layout (see [`build_held`]) within `limits`, and its tags.
+#[allow(clippy::too_many_arguments)]
+pub fn build_rigid(
+    s: &ZoneStream<'_>,
+    links: &Links,
+    m: usize,
+    hide: &[String],
+    limits: &RigidLimits,
+    index: &[IndexEntry],
+    tex_dir: &Path,
+    tex: &mut Textures,
+) -> Result<(wpk::held::Model, Tags), String> {
     let sets = surface_sets(s, links);
     let bones = read_bones(s, links, m)?;
     let mut hidden = vec![false; bones.names.len()];
@@ -739,7 +772,7 @@ pub fn build_held(
         let (surfs, _) = read_surfaces(s, links, &sets, m, 0, &hidden, lod)?;
         let n: usize = surfs.iter().map(|x| x.verts.len()).sum();
         surfaces = surfs;
-        if n <= HELD_MAX_VERTICES {
+        if n <= limits.max_vertices {
             break;
         }
     }
@@ -766,8 +799,8 @@ pub fn build_held(
             .and_then(|img| files_by_image.get(&img))
         {
             Some(e) => {
-                tex.role = "held";
-                tex.add_file_capped(tex_dir, &e.file, Wrap::Repeat, HELD_TEXTURE_MAX)?
+                tex.role = limits.role;
+                tex.add_file_capped(tex_dir, &e.file, Wrap::Repeat, limits.texture_max)?
             }
             None => NONE,
         };
@@ -795,7 +828,16 @@ pub fn build_held(
             alpha_ref,
         });
     }
-    Ok(out)
+    let tags = bones
+        .names
+        .iter()
+        .zip(&bones.bind)
+        .map(|(n, (q, t))| {
+            let r = qmat(*q);
+            (n.clone(), *t, [r[0][0], r[1][0], r[2][0]])
+        })
+        .collect();
+    Ok((out, tags))
 }
 
 /// Player animations baked by bone name (`common.wpk`): each animation of `list` becomes a clip (an empty one when

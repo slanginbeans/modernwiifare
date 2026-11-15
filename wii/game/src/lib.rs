@@ -16,6 +16,7 @@ mod devlog;
 mod effects;
 mod ffi;
 mod front;
+mod objects;
 mod rt;
 mod sound;
 mod ui;
@@ -894,6 +895,14 @@ fn run_map(
     let mut characters = character::Characters::load(bytes, common, |i| world.texture(i), gfx);
     // MW2's effects (none with an older pack: placeholder flashes then).
     let mut effects = effects::Effects::load(common, gfx);
+    // The map's destructible objects and the effects they play (none with an older pack).
+    if let Some(fx) = effects.as_mut() {
+        fx.load_map(bytes, gfx);
+    }
+    let (props, map_objects) = match objects::Props::load(bytes, gfx) {
+        Some((p, o)) => (Some(p), Some(o)),
+        None => (None, None),
+    };
     let mut poses: Vec<character::Pose> = Vec::with_capacity(bots);
     let clip: Option<MapClip<'_>> = clip_data.as_ref().map(MapClip::new);
     devlog::event(
@@ -1047,6 +1056,9 @@ fn run_map(
         _ => None,
     };
     if let Some(a) = arena.as_mut() {
+        if let Some(o) = map_objects {
+            a.objects = o;
+        }
         a.equips = equips;
         a.blockers = blockers;
         // Time the bots (telemetry `bai` / `bmv` / `bgun`).
@@ -1831,6 +1843,7 @@ fn run_map(
             );
             a.regen(now);
             a.update_grenades(c, dt, now, &mut events);
+            a.update_objects(c, now, &mut events);
             a.update_objectives(dt * 1000.0, now, &mut events);
             a.footsteps(c, &mut events);
             life = a.fighters[0].life;
@@ -1892,6 +1905,34 @@ fn run_map(
                         let e = fx.impact(impact_type, surface, flesh);
                         fx.play(e, origin, normal, now);
                     }
+                }
+                Event::ObjectFx {
+                    effect,
+                    origin,
+                    forward,
+                } => {
+                    if let Some(fx) = effects.as_mut() {
+                        fx.play_map(effect, origin, forward, now);
+                    }
+                }
+                Event::ObjectExploded { origin } => {
+                    // MW2's object sounds aren't packed yet: the frag's explosion stands in.
+                    if let (Some(w), Some((frag, _))) = (
+                        world_sounds.as_mut(),
+                        wpk::weapon::find_indexed(weapons, "frag_grenade_mp"),
+                    ) {
+                        w.play_at(
+                            equip_sound(frag, wpk::weapon::equip_sound::EXPLODE),
+                            origin,
+                            cam.eye,
+                            cam.right(),
+                        );
+                    }
+                    if effects.is_none() {
+                        blasts[next_blast] = (Some(origin), now);
+                        next_blast = (next_blast + 1) % blasts.len();
+                    }
+                    devlog::event(now, "object exploded", format_args!(""));
                 }
                 Event::BotFired { bot } => {
                     if let (Some(fx), Some(ch), Some(a)) =
@@ -1993,6 +2034,10 @@ fn run_map(
             sections[section::BOT_GUN] = a.bot_cost.gun_us;
         }
         let stats = world.draw(gfx, &cam, scratch);
+        // Destructible objects, as part of the world.
+        if let (Some(p), Some(a)) = (props.as_ref(), arena.as_ref()) {
+            p.draw(gfx, &cam.view(), cam.eye, cam.forward(), &a.objects);
+        }
         sections[section::WORLD] = lap(&mut mark);
         // The other players' bodies (timed with the placeholder boxes as `bod`).
         if let (Some(ch), Some(a), true) = (characters.as_mut(), arena.as_ref(), debug.characters) {

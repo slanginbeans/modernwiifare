@@ -5,6 +5,8 @@
 //! each pmove trace sweeps against every body with IW4L's `transformed_temp_capsule_trace`. Bullets and sight
 //! ([`MapClip::trace`]) see the world only (players have their own hit volumes).
 //!
+//! Movement also stops at destructible objects' collision boxes ([`MapClip::set_props`]).
+//!
 //! Not yet: brush models (doors and movers; the pack carries them), glass damage (glass is solid), and penetration
 //! recovery (`penetrations` reports Unsupported, so `correct_solid` uses its trace fallback).
 
@@ -35,6 +37,8 @@ pub struct MapClip<'a> {
     clip: &'a Clip,
     brushes: Vec<BrushSlice<'a>>,
     bodies: RefCell<Vec<Body>>,
+    /// Destructible objects' collision boxes (`destructible::Objects::placed`).
+    props: RefCell<Vec<crate::destructible::Placed>>,
 }
 
 impl<'a> MapClip<'a> {
@@ -43,7 +47,15 @@ impl<'a> MapClip<'a> {
             clip,
             brushes: clip.brush_slices(),
             bodies: RefCell::new(Vec::with_capacity(8)),
+            props: RefCell::new(Vec::new()),
         }
+    }
+
+    /// The destructible objects' boxes movement collides with (as they are now).
+    pub fn set_props(&self, props: impl IntoIterator<Item = crate::destructible::Placed>) {
+        let mut p = self.props.borrow_mut();
+        p.clear();
+        p.extend(props);
     }
 
     /// The bodies the next moves collide with (everyone but the mover).
@@ -64,6 +76,29 @@ impl<'a> MapClip<'a> {
         mask: u32,
     ) -> Trace {
         let mut t = self.trace(start, end, mins, maxs, mask);
+        // Destructible objects' boxes (a box the mover starts inside is passed through).
+        let lo: [f32; 3] = core::array::from_fn(|k| start[k].min(end[k]) + mins[k]);
+        let hi: [f32; 3] = core::array::from_fn(|k| start[k].max(end[k]) + maxs[k]);
+        for p in self.props.borrow().iter() {
+            if p.b.contents & mask == 0 || !p.reaches(lo, hi) {
+                continue;
+            }
+            if let Some((f, normal, false)) = p.sweep(start, end, mins, maxs)
+                && f < t.fraction
+            {
+                t = Trace {
+                    fraction: f,
+                    normal,
+                    contents: p.b.contents,
+                    surface_flags: p.b.surface_flags,
+                    startsolid: 0,
+                    allsolid: 0,
+                    walkable: u8::from(normal[2] >= 0.7),
+                    endpos: core::array::from_fn(|k| start[k] + (end[k] - start[k]) * f),
+                    ..t
+                };
+            }
+        }
         if mask & CONTENTS_BODY == 0 {
             return t;
         }

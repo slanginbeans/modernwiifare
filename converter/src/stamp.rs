@@ -31,7 +31,8 @@ use std::path::{Path, PathBuf};
 /// 31: effects (`FXDF`, `FXWP`, `FXIM`, `FTEX`, `FTXD`); `GUNM` models carry `tag_flash`.
 /// 32: pack reports with a texture breakdown and `common.json`; `--adpcm` sounds.
 /// 33: the class panel's image slots and their pictures and icons (`UIPK`).
-pub const REVISION: u32 = 33;
+/// 34: destructible objects in map packs (`DSTM`, `DSTX`, `DSTD`, `DSTB`, `DSTY`, `DSTE`, `DSFX`, `DSFT`, `DSFD`).
+pub const REVISION: u32 = 34;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

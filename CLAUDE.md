@@ -39,7 +39,7 @@ never run (supersedes 0002)
   player animations (`wpk::player_anim::slim`), off by default. `--trim-sounds` (`MWF_TRIM_SOUNDS`): quiet sound
   tails cut, off by default. Map reports also break down collision (`clip_report.rs`, measuring only). Pack reports: `<map>.json` has a texture
   breakdown (`tex_report.rs`); `common.json` covers `common.wpk` and the weapon files. `rules.rs` reads values from the
-  user's scripts (ADR 0007). `preview <pack.wpk>`: software render of a pack (also the viewmodel and characters).
+  user's scripts (ADR 0007); `destructibles.rs` reads the destructible object types the same way (map packs' `DST*`). `preview <pack.wpk>`: software render of a pack (also the viewmodel and characters).
   `menu-preview`: menus. `report <log>...`: summarises the Wii's SD-card match logs (`report.bat`).
   `textures <game folder> [--map <zone>]`: every GfxImage of a map zone (in-zone or IWI) to `.gxt` under
   `out/textures/<zone>/` with a content-free `report.json`. Role and alpha come from the materials that use each image

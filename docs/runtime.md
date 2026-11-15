@@ -225,6 +225,19 @@ feed, and hits show MW2's hitmarker.
   players blocking movement (players pass through each other).
 - **Bodies**: bots are drawn as shaded boxes, one per hit volume (skin-coloured head and neck), until the character
   models are converted.
+- **Destructible objects** (`game_core::destructible`, map pack `DST*`): MW2's cars, electric boxes, air conditioners,
+  newspaper stands, copiers, fans and the like, placed as the map places them, with MW2's own models, health, effects
+  and explosions read from its `_destructible_types*.gsc` at convert time (ADR 0007). Their main body runs MW2's chain
+  of states: bullets do the weapon's damage at that range (four times for shotguns), explosions their damage times the
+  type's splash scale or 13 and less 0.4 × the distance (only while the state names a tag, as in MW2), melee only
+  where a state allows it; damage past a state's health carries on. A broken state plays its effects, starts its
+  repeating smoke or fire and its health drain (a burning car counts down by itself), and may explode 0.1 s later:
+  radius damage like a grenade's, from the last player who damaged it (that player gets the kills; with nobody, the
+  victim's own), which also reaches other objects (chain reactions). The model then becomes the next state's (the
+  wreck). Their collision boxes block movement and stop bullets (with an impact effect for the box's surface).
+  Not yet: separate parts (tires, glass, doors, hoods), pieces flying off, their own sounds (the frag's explosion
+  stands in), the destroy and idle animations (fans, chickens), light-grid lighting (drawn ×1), grenades bouncing off
+  them, the glass windows (`glass_large` brush models).
 - Spawns: the free-for-all spawn point furthest from everyone alive.
 - Maps converted before this need converting again for the walk graph; without one, bots stand and fight.
 

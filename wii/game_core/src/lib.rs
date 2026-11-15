@@ -27,6 +27,7 @@ pub mod collision;
 pub mod controls;
 pub mod damage;
 pub mod debug;
+pub mod destructible;
 pub mod dom;
 pub mod fly;
 pub mod fx;
