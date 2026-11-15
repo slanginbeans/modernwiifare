@@ -18,6 +18,8 @@ Wi-Fi is best-effort.
    - Start with standard HID-class gamepads (generic report-descriptor parsing). Device families with their own protocols
      (for example vendor-class XInput pads, or pads needing a special init) are added per device, behind a small driver table.
    - Spike G (Phase 0, timeboxed to 2 days): enumerate a USB pad next to the LAN adapter and read input reports.
+   - Started: Xbox 360 wired pads (`wii/platform/shim_usbpad.c`, `game_core::controls`) with MW2's 360 Default and
+     Tactical layouts. Only known pad vendors are opened, so the LAN adapter is never touched. Not yet tested on hardware.
 3. Wiimote/Nunchuk/Classic (`WPAD`) is not planned. It can be added later through the same input abstraction.
 
 ## Consequences

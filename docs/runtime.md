@@ -83,7 +83,33 @@ Player characters: the other players are MW2's bodies for the map's factions (`C
 
 The match HUD (`game_core::hud_mw2`) uses MW2's fonts and HUD images from `common.wpk` (`UIPK` icons: each weapon's `hudIcon` as `weapon:<name>`, the killstreak table's icons as `streak:<name>`, MW2's hitmarker `damage_feedback`): the weapon's icon, magazine and reserve and its name bottom right, the lethal and tactical grenades with their counts above them, the killstreak ready to call in on the right, the kill feed, scores (team or yours and the leader's), Domination's flags and the clock bottom left, MW2's hitmarker and a `+points` popup at the crosshair, notices and the nuke's countdown at the top, and the respawn countdown when dead. The positions are this build's, not MW2's `hud.menu` layout. Without the UI in the pack the plain HUD is drawn. `mwf-convert menu-preview <common.wpk>` renders it with sample content (`out/preview/menu_hud.png`).
 
-Options (OPTIONS on the main and pause menus, MW2's console Controls page; saved to `<app folder>/options.dat`): look sensitivity and aim-down-sight sensitivity (1-10, MW2's scale; 3 is the default), look inversion, target assist, button layout (Default, or Tactical: stance on D-pad right, melee on B), stick layout (Default, or Southpaw: move with the C-stick). Game Setup: game type, score and time limits, bots (0-7) and bot difficulty.
+**Xbox 360 wired pad (USB):** plug it into either USB port, before or during a match. Its light shows player 1 when
+the game has found it. Both pads can be used at once, and the 360 pad also drives the menus (D-pad or left stick, **A**
+accepts, **B** / **START** / **BACK** go back). It uses MW2's own 360 layouts (`game_core::controls`):
+
+| Button | Default | Tactical |
+|---|---|---|
+| **A** | jump / stand | jump / stand |
+| **B** | crouch, hold for prone | melee |
+| **X** | reload, hold to use, double tap for C4 | the same |
+| **Y** | switch weapon | switch weapon |
+| **LB** / **RB** | tactical / lethal grenade (hold to cook) | the same |
+| **LT** / **RT** | aim down sights / fire | the same |
+| left stick click | sprint | sprint |
+| right stick click | melee | crouch, hold for prone |
+| D-pad right | killstreak reward | the same |
+| **START** | pause | pause |
+| **BACK** + D-pad up / down | free fly / performance overlay (developer) | the same |
+
+The driver (`wii/platform/shim_usbpad.c`) needs IOS58, which the Homebrew Channel starts apps on. It finds pads by the
+360 pad's USB interface (class 0xFF, subclass 0x5D, protocol 0x01), so third-party wired pads work too, but it only
+opens devices from vendors that make them (Microsoft, Mad Catz, PDP, Hori, PowerA and others). That way it never
+touches the USB LAN adapter. It reads input reports in the background, and when the pad is unplugged it looks for one
+again about once a second. Triggers count as pulled past 30 of 255 (XInput's threshold), and the sticks go through
+the same learned range and IW4L dead zone as the GameCube's. Not handled yet: the wireless receiver and rumble.
+
+Options (OPTIONS on the main and pause menus, MW2's console Controls page; saved to `<app folder>/options.dat`): look sensitivity and aim-down-sight sensitivity (1-10, MW2's scale; 3 is the default), look inversion, target assist, button layout (Default, or Tactical: on the GameCube pad stance on D-pad right and melee on B; on the 360 pad stance
+on the right stick click and melee on B), stick layout (Default, or Southpaw: move with the C-stick). Game Setup: game type, score and time limits, bots (0-7) and bot difficulty.
 
 Debug menu (DEBUG on the main menu, and on the pause menu during a match; A changes a setting; saved to `<app folder>/debug.dat`):
 - Match: bots don't attack, bots frozen, god mode (no damage, no fall or out-of-world deaths), infinite ammo (magazine, reserve and grenades every frame), all killstreaks (every reward at the start of each life), primary weapon (any catalog weapon instead of the class's, no attachments; at the next spawn).
@@ -229,5 +255,8 @@ Placeholder until the death cam / killcam flow is ported (ADR 0007): the 3 s res
   vertices are the next performance steps.
 - Trace cost on Broadway: on the host one `pmove` on `mp_rust` takes about 20 µs, so a 750CL should stay well under
   a millisecond, but this is unmeasured.
+- Xbox 360 pad over USB: written against libogc's USBv5 API and the pad's documented report format, but not yet
+  run on a Wii. Check that the light comes on, that the menus and a match respond, and that system link over the USB
+  LAN adapter still works with the pad plugged in.
 - Sound from MEM2: ASND plays the clips in place from `common.wpk` in MEM2. If the gun is silent, the DSP may not
   reach MEM2 there, and the clips need copying to MEM1.

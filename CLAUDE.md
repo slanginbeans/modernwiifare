@@ -49,7 +49,9 @@ never run (supersedes 0002)
   `build.bat` / `pack --map all` keep the old packs.
 - `wii/`: Wii runtime (stable Rust, no_std + alloc, ADR 0006), builds `.dol`s with `make -C wii`.
   - `platform/`: the C shim over libogc (`shim.h` is the whole API Rust sees; keep `spikes/src/ffi.rs` in sync).
-  - `game_core/`: the game, `no_std` and host-tested: camera, world draw order, collision, player (IW4L pmove), gun
+    `shim_usbpad.c`: Xbox 360 wired pads over USB (IOS58 USBv5, known pad vendors only, never the LAN adapter).
+  - `game_core/`: the game, `no_std` and host-tested: controls (GameCube and 360 pads to actions, MW2's Default /
+    Tactical layouts), camera, world draw order, collision, player (IW4L pmove), gun
     (IW4L weapon state machine), damage, life, bots and walk graph, match loop and modes (FFA, TDM, Domination),
     grenades, perks, killstreaks, minimap, menus and UI pages, viewmodel animation, characters, telemetry.
     Draws only through the `gfx::Gfx` trait.
