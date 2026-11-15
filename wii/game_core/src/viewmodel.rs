@@ -25,7 +25,7 @@ fn qnorm(q: Quat) -> Quat {
 }
 
 /// Normalized linear interpolation (shortest arc).
-fn nlerp(a: Quat, b: Quat, t: f32) -> Quat {
+pub fn nlerp(a: Quat, b: Quat, t: f32) -> Quat {
     let d: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
     let s = if d < 0.0 { -1.0 } else { 1.0 };
     qnorm(core::array::from_fn(|i| a[i] + (b[i] * s - a[i]) * t))
@@ -376,6 +376,7 @@ mod tests {
                     quat_to_i16([0.0, 0.0, h, h]),
                 ],
                 trans: vec![],
+                keys: alloc::vec::Vec::new(),
             }],
         });
         let c = vm.clips[0].clone();

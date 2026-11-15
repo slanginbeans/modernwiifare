@@ -319,6 +319,18 @@ impl AssetLinkSink for Collector {
                 .to_owned();
             self.links.scripts.insert(name.to_owned(), text);
         }
+        // MW2's player animation script and the weapons' player-anim types (`player_anims.rs`).
+        if crate::player_anims::SOURCES.contains(&name) {
+            let bytes = if zlib_compressed {
+                asset_transport::inflate_zlib(data).unwrap_or_default()
+            } else {
+                data.to_vec()
+            };
+            let text = String::from_utf8_lossy(&bytes)
+                .trim_end_matches(' ')
+                .to_owned();
+            self.links.scripts.insert(name.to_owned(), text);
+        }
         // The bullet penetration depths (IW4L `asset_game::penetration`: `BULLET_PEN_TABLE` then `key\value`).
         if name == "info/bullet_penetration_mp" {
             let bytes = if zlib_compressed {

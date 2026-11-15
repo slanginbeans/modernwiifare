@@ -25,7 +25,9 @@ use std::path::{Path, PathBuf};
 /// 26: map fog (`FOGD`, the art script's `setExpFog`).
 /// 27: welded vertices (world and model surfaces), strips started at the fewest-neighbour triangles.
 /// 28: opaque display lists take meshoptimizer's strips where they send fewer vertices.
-pub const REVISION: u32 = 28;
+/// 29: MW2's player animation script (`PSCR`) and every animation it plays (`PANM` read in place, key frames); clip
+/// tracks may carry key frames.
+pub const REVISION: u32 = 29;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

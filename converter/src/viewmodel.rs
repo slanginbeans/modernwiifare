@@ -427,6 +427,7 @@ fn bake(clip: &AnimClip, slot_id: u8, bone_of: &HashMap<&str, usize>, bind_rot: 
             bone: bone as u16,
             rot,
             trans,
+            keys: Vec::new(),
         });
     }
     Clip {
@@ -700,14 +701,14 @@ pub fn build_character(
     Ok((vm, names))
 }
 
-/// Player animations baked by bone name (`common.wpk`): each `(xanim, slot)` that exists becomes a clip whose
-/// tracks index the returned name list. A track with no rotation keeps the model's bind rotation (stored as the
+/// Player animations baked by bone name (`common.wpk`): each animation of `list` becomes a clip (an empty one when
+/// it can't be read, so clip numbers stay the list's) whose tracks index the returned name list. A track with no rotation keeps the model's bind rotation (stored as the
 /// zero quaternion); frames a track leaves out repeat its first. The clips ride in a [`ViewModel`] with one
 /// placeholder bone per name. Returns the clips, the names and how many animations were missing.
 pub fn bake_player_anims(
     s: &ZoneStream<'_>,
     links: &Links,
-    list: &[(&str, u8)],
+    list: &[String],
 ) -> (ViewModel, Vec<String>, usize) {
     let xanim: HashMap<String, &XAnimPartsGeometry> = links
         .xanims
@@ -717,13 +718,22 @@ pub fn bake_player_anims(
     let mut names: Vec<String> = Vec::new();
     let mut vm = ViewModel::default();
     let mut missing = 0;
-    for &(name, slot_id) in list {
-        let Some(g) = xanim.get(name) else {
+    let empty = Clip {
+        slot: 0,
+        looping: false,
+        framerate: 30.0,
+        frames: 1,
+        tracks: Vec::new(),
+    };
+    for name in list {
+        let Some(g) = xanim.get(name.as_str()) else {
             missing += 1;
+            vm.clips.push(empty.clone());
             continue;
         };
         let Ok(clip) = AnimClip::from_parts(&raw_parts(s, links, name, g)) else {
             missing += 1;
+            vm.clips.push(empty.clone());
             continue;
         };
         let frames = usize::from(clip.numframes) + 1;
@@ -769,14 +779,28 @@ pub fn bake_player_anims(
             if trans.iter().all(|v| *v == trans[0]) {
                 trans.truncate(1);
             }
+            // Translations that stay within the key error of their first sample are constant (capture noise).
+            if trans
+                .iter()
+                .all(|v| (0..3).all(|k| (v[k] - trans[0][k]).abs() <= KEY_TRANS_ERROR))
+            {
+                trans.truncate(1);
+            }
+            // Fingers can't be seen on a third-person body at 480p: they hold their first pose.
+            if FINGERS.iter().any(|f| t.name.starts_with(f)) {
+                rot.truncate(1);
+                trans.truncate(1);
+            }
+            let (rot, trans, keys) = key_frames(rot, trans);
             tracks.push(Track {
                 bone: bone as u16,
                 rot,
                 trans,
+                keys,
             });
         }
         vm.clips.push(Clip {
-            slot: slot_id,
+            slot: 0,
             looping: clip.looping,
             framerate: rate,
             frames: frames as u16,
@@ -792,9 +816,114 @@ pub fn bake_player_anims(
     ];
     (vm, names, missing)
 }
+/// Finger bones (IW4's player skeleton names).
+const FINGERS: [&str; 5] = ["j_thumb", "j_index", "j_mid", "j_ring", "j_pinky"];
+
+/// Third-person animation error allowed by [`key_frames`]: rotation (radians, about 0.9 degrees) and translation
+/// (world units).
+const KEY_ROT_ERROR: f32 = 0.015;
+const KEY_TRANS_ERROR: f32 = 0.3;
+
+/// Keep only the frames of a per-frame track that interpolation between neighbouring kept frames can't reproduce
+/// within [`KEY_ROT_ERROR`] / [`KEY_TRANS_ERROR`] (greedy, from the first frame). Single-sample (constant) parts
+/// stay single. Returns the samples at the keys and the keys (empty when every frame is kept or the track is
+/// constant).
+fn key_frames(
+    rot: Vec<[i16; 4]>,
+    trans: Vec<[f32; 3]>,
+) -> (Vec<[i16; 4]>, Vec<[f32; 3]>, Vec<u16>) {
+    let n = rot.len().max(trans.len());
+    if n <= 2 {
+        return (rot, trans, Vec::new());
+    }
+    let q = |i: usize| -> [f32; 4] {
+        let v = rot[if rot.len() == 1 { 0 } else { i }];
+        v.map(|x| f32::from(x) / 32767.0)
+    };
+    let fits = |a: usize, b: usize| -> bool {
+        (a + 1..b).all(|i| {
+            let w = (i - a) as f32 / (b - a) as f32;
+            if rot.len() > 1 {
+                let (qa, mut qb) = (q(a), q(b));
+                if (0..4).map(|k| qa[k] * qb[k]).sum::<f32>() < 0.0 {
+                    qb = qb.map(|x| -x);
+                }
+                let mut l: [f32; 4] = std::array::from_fn(|k| qa[k] + (qb[k] - qa[k]) * w);
+                let len = l.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
+                l = l.map(|x| x / len);
+                let qi = q(i);
+                let dot = (0..4).map(|k| l[k] * qi[k]).sum::<f32>().abs().min(1.0);
+                if 2.0 * dot.acos() > KEY_ROT_ERROR {
+                    return false;
+                }
+            }
+            if trans.len() > 1 {
+                let (ta, tb, ti) = (trans[a], trans[b], trans[i]);
+                let d: f32 = (0..3)
+                    .map(|k| {
+                        let e = ta[k] + (tb[k] - ta[k]) * w - ti[k];
+                        e * e
+                    })
+                    .sum();
+                if d.sqrt() > KEY_TRANS_ERROR {
+                    return false;
+                }
+            }
+            true
+        })
+    };
+    let mut keys = vec![0usize];
+    let mut a = 0;
+    let mut b = 2;
+    while b < n {
+        if !fits(a, b) {
+            a = b - 1;
+            keys.push(a);
+        }
+        b += 1;
+    }
+    keys.push(n - 1);
+    if keys.len() * 4 > n * 3 {
+        return (rot, trans, Vec::new());
+    }
+    let pick = |len: usize| -> Vec<usize> {
+        if len <= 1 {
+            (0..len).collect()
+        } else {
+            keys.clone()
+        }
+    };
+    let rot_out = pick(rot.len()).into_iter().map(|i| rot[i]).collect();
+    let trans_out = pick(trans.len()).into_iter().map(|i| trans[i]).collect();
+    (
+        rot_out,
+        trans_out,
+        keys.into_iter().map(|k| k as u16).collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_frames_keep_the_turns() {
+        // A rotation about z that turns steadily for 10 frames, then holds for 10: three keys (start, turn, end).
+        let rot: Vec<[i16; 4]> = (0..20)
+            .map(|f| {
+                let a = 0.01 * f.min(10) as f32;
+                quat_to_i16([0.0, 0.0, a.sin(), a.cos()])
+            })
+            .collect();
+        let trans: Vec<[f32; 3]> = (0..20).map(|f| [f as f32, 0.0, 0.0]).collect();
+        let (r, t, k) = key_frames(rot, trans);
+        assert_eq!(k, [0, 10, 19]);
+        assert_eq!((r.len(), t.len()), (3, 3));
+        assert_eq!(t[1], [10.0, 0.0, 0.0]);
+        // Too few frames to key: unchanged.
+        let (r, _, k) = key_frames(vec![[0, 0, 0, 32767]; 2], vec![]);
+        assert!(k.is_empty() && r.len() == 2);
+    }
 
     #[test]
     fn rigid_inverse_undoes_the_transform() {

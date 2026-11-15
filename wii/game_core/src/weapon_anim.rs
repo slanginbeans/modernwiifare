@@ -548,6 +548,7 @@ mod tests {
                     .map(|f| q(angle * f as f32 / f32::from(frames - 1).max(1.0)))
                     .collect(),
                 trans: vec![],
+                keys: alloc::vec::Vec::new(),
             }],
         }
     }

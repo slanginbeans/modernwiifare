@@ -31,9 +31,26 @@ pub struct View {
     pub hfov_deg: f32,
     /// First-person model to draw on top: the common pack, its animation slot and time in seconds.
     pub viewmodel: Option<(Vec<u8>, u8, f32)>,
-    /// A player character to draw 120 units ahead, facing the camera on the floor below the eye: the common pack
-    /// (player animations), the team (0 allies, 1 axis), the player animation slot and time in seconds.
-    pub character: Option<(Vec<u8>, usize, u8, f32)>,
+    /// A player character to draw 120 units ahead, facing the camera on the floor below the eye.
+    pub character: Option<CharacterShot>,
+}
+
+/// A player character for the preview: posed by MW2's player animation script (the common pack's) as a player with
+/// that movement type and weapon would be, `time` seconds after starting, with an event played at the start.
+#[derive(Clone, Debug, Default)]
+pub struct CharacterShot {
+    /// The common pack (player animations and script).
+    pub common: Vec<u8>,
+    /// 0 allies, 1 axis.
+    pub team: usize,
+    /// IW4 `ANIM_MT_*`, player-anim type, weapon class, `ANIM_ET_*`.
+    pub movetype: u8,
+    pub anim_type: u8,
+    pub class: u8,
+    pub event: Option<u8>,
+    /// The view pitch (degrees, down positive).
+    pub aim_pitch: f32,
+    pub time: f32,
 }
 
 /// Draw the first-person model from `common` (its first `VIEW` section) over the frame, with its own depth.
@@ -652,7 +669,8 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
         }
     }
 
-    if let Some((common, team, slot, time)) = &view.character {
+    if let Some(shot) = &view.character {
+        use game_core::character as ch;
         use game_core::viewmodel as vmod;
         let pack = Pack::parse(bytes, true).map_err(|e| format!("map pack: {e:?}"))?;
         let teams = wpk::view::decode_characters(
@@ -660,19 +678,52 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
                 .ok_or("no characters in the map pack")?
                 .data,
         );
-        let (mut vm, names) = teams.get(*team).cloned().ok_or("no such team")?;
-        let cp = Pack::parse(common, true).map_err(|e| format!("common pack: {e:?}"))?;
-        let anims = cp
+        let (vm, names) = teams.get(shot.team).cloned().ok_or("no such team")?;
+        let cp = Pack::parse(&shot.common, true).map_err(|e| format!("common pack: {e:?}"))?;
+        let clips = cp
             .section(tag::PLAYER_ANIMS)
-            .and_then(|s| wpk::view::ViewModel::decode(s.data).ok())
-            .unwrap_or_default();
+            .and_then(|s| wpk::player_anim::Anims::parse(s.data))
+            .ok_or("no player animations in the common pack")?;
+        let script = cp
+            .section(tag::PLAYER_ANIM_SCRIPT)
+            .and_then(|s| wpk::anim_script::Script::decode(s.data))
+            .ok_or("no player animation script in the common pack")?;
         let anim_names = cp
             .section(tag::PLAYER_ANIM_BONES)
             .and_then(|s| wpk::view::decode_names(s.data))
             .unwrap_or_default();
-        vm.clips = game_core::character::bind_clips(&vm, &names, &anims, &anim_names);
-        let (mut world, mut skin, mut pos) = (Vec::new(), Vec::new(), Vec::new());
-        vmod::pose(&vm, vm.clip(*slot).map(|c| (c, *time)), &mut world);
+        let anims = ch::PlayerAnims { clips, script };
+        let rig = ch::Rig::new(&names, &anim_names);
+        let ps = playerstate_iw4::PlayerState::ZERO;
+        let held = Some(ch::Held {
+            anim_type: shot.anim_type,
+            class: shot.class,
+        });
+        let c = ch::conditions(&ps, held, shot.movetype, 0, false);
+        let mut body = ch::Body::new(0);
+        body.moves(&anims, shot.movetype, &c, 0);
+        if let Some(e) = shot.event {
+            let c = if e == anim_iw4::ANIM_ET_DEATH {
+                ch::death_conditions(c, &ch::Death::default(), 0.0)
+            } else {
+                c
+            };
+            body.event(&anims, e, shot.movetype, &c, 0, true);
+        }
+        let now = (shot.time * 1000.0) as u32;
+        let (mut scratch, mut world, mut skin, mut pos) =
+            (ch::Scratch::default(), Vec::new(), Vec::new(), Vec::new());
+        body.pose(
+            &anims,
+            &rig,
+            &vm,
+            now,
+            shot.aim_pitch,
+            0.0,
+            shot.movetype == anim_iw4::ANIM_MT_IDLEPRONE,
+            &mut scratch,
+            &mut world,
+        );
         vmod::skin_matrices(&vm, &world, &mut skin);
         vmod::skin(&vm, &skin, &mut pos);
         let y = view.yaw.to_radians();

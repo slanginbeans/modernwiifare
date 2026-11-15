@@ -1917,27 +1917,14 @@ fn run_map(
         // The other players' bodies (timed with the placeholder boxes as `bod`).
         if let (Some(ch), Some(a), true) = (characters.as_mut(), arena.as_ref(), debug.characters) {
             poses.clear();
-            for (i, f) in a
-                .fighters
-                .iter()
-                .enumerate()
-                .skip(1)
-                .filter(|(_, f)| f.life.alive())
-            {
-                let (_, yaw) = f.player.view();
-                poses.push(character::Pose {
-                    team: match f.team {
-                        arena::TEAM_AXIS => 1,
-                        arena::TEAM_ALLIES => 0,
-                        _ => i % 2,
-                    },
-                    origin: f.draw_origin(now),
-                    yaw,
-                    prone: f.player.prone(),
-                    crouched: f.player.crouched(),
-                    sprinting: f.player.ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING != 0,
-                    velocity: f.player.ps.velocity,
-                });
+            // Living players, and the dead until they respawn (their death animations).
+            for (i, f) in a.fighters.iter().enumerate().skip(1) {
+                let team = match f.team {
+                    arena::TEAM_AXIS => 1,
+                    arena::TEAM_ALLIES => 0,
+                    _ => i % 2,
+                };
+                poses.push(character::Pose::of(f, i, team, now));
             }
             ch.draw(gfx, &cam.view(), &poses, now);
         }

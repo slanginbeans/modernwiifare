@@ -100,6 +100,33 @@ pub struct Track {
     pub rot: Vec<[i16; 4]>,
     /// Translation deltas: one per frame, a single one, or none (bind translation).
     pub trans: Vec<[f32; 3]>,
+    /// Key frames, ascending from 0 to the last frame: when present, `rot` and `trans` hold one sample per key
+    /// (or a single one) and the frames between keys are interpolated. Empty: a sample per frame.
+    pub keys: Vec<u16>,
+}
+
+impl Track {
+    /// The samples around frame `f` (fractional, in `0..=frames-1`) and the blend between them: indices into `rot`
+    /// (a `len` of 1 gives index 0) for a track of `len` samples.
+    pub fn at(&self, f: f32, len: usize) -> (usize, usize, f32) {
+        if len <= 1 {
+            return (0, 0, 0.0);
+        }
+        if self.keys.len() == len {
+            // The last key at or before f.
+            let k = self
+                .keys
+                .partition_point(|&x| f32::from(x) <= f)
+                .clamp(1, len - 1)
+                - 1;
+            let (a, b) = (f32::from(self.keys[k]), f32::from(self.keys[k + 1]));
+            let w = ((f - a) / (b - a).max(1.0)).clamp(0.0, 1.0);
+            return (k, k + 1, w);
+        }
+        let f = f.clamp(0.0, (len - 1) as f32);
+        let a = libm::floorf(f) as usize;
+        ((a).min(len - 1), (a + 1).min(len - 1), f - a as f32)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -196,8 +223,18 @@ impl ViewModel {
         }
         for c in &self.clips {
             for t in &c.tracks {
-                let n = usize::from(c.frames.max(1));
+                let frames = usize::from(c.frames.max(1));
+                let n = if t.keys.is_empty() {
+                    frames
+                } else {
+                    t.keys.len()
+                };
+                let keys_ok = t.keys.is_empty()
+                    || (t.keys[0] == 0
+                        && usize::from(t.keys[t.keys.len() - 1]) == frames - 1
+                        && t.keys.windows(2).all(|w| w[0] < w[1]));
                 if usize::from(t.bone) >= nb
+                    || !keys_ok
                     || !(t.rot.len() == 1 || t.rot.len() == n)
                     || !(t.trans.len() <= 1 || t.trans.len() == n)
                 {
@@ -249,8 +286,10 @@ impl ViewModel {
                 o.u16(t.bone);
                 o.u16(t.rot.len() as u16);
                 o.u16(t.trans.len() as u16);
+                o.u16(t.keys.len() as u16);
                 t.rot.iter().flatten().for_each(|&x| o.u16(x as u16));
                 t.trans.iter().flatten().for_each(|&x| o.f32(x));
+                t.keys.iter().for_each(|&k| o.u16(k));
             }
         }
         o
@@ -320,6 +359,7 @@ impl ViewModel {
                 let bone = r.u16()?;
                 let nr = usize::from(r.u16()?);
                 let ntr = usize::from(r.u16()?);
+                let nk = usize::from(r.u16()?);
                 let mut rot = Vec::with_capacity(nr);
                 for _ in 0..nr {
                     rot.push([
@@ -333,7 +373,16 @@ impl ViewModel {
                 for _ in 0..ntr {
                     trans.push([r.f32()?, r.f32()?, r.f32()?]);
                 }
-                tracks.push(Track { bone, rot, trans });
+                let mut keys = Vec::with_capacity(nk);
+                for _ in 0..nk {
+                    keys.push(r.u16()?);
+                }
+                tracks.push(Track {
+                    bone,
+                    rot,
+                    trans,
+                    keys,
+                });
             }
             clips.push(Clip {
                 slot,
@@ -416,11 +465,20 @@ mod tests {
                 looping: true,
                 framerate: 30.0,
                 frames: 2,
-                tracks: vec![Track {
-                    bone: 1,
-                    rot: vec![[0, 0, 0, 32767]; 2],
-                    trans: vec![[0.5, 0.0, 0.0]],
-                }],
+                tracks: vec![
+                    Track {
+                        bone: 1,
+                        rot: vec![[0, 0, 0, 32767]; 2],
+                        trans: vec![[0.5, 0.0, 0.0]],
+                        keys: alloc::vec::Vec::new(),
+                    },
+                    Track {
+                        bone: 0,
+                        rot: vec![[0, 0, 0, 32767]; 2],
+                        trans: vec![],
+                        keys: vec![0, 1],
+                    },
+                ],
             }],
         };
         let b = v.encode();
@@ -431,6 +489,22 @@ mod tests {
             ViewModel::decode(&bad.encode()).unwrap_err(),
             ViewError::BadIndex("bone parent after the bone")
         );
+        let mut bad = v.clone();
+        bad.clips[0].tracks[1].keys = vec![0, 3];
+        assert!(
+            ViewModel::decode(&bad.encode()).is_err(),
+            "keys past the last frame"
+        );
+        // Keyed sampling: keys 0, 4, 10; frame 7 is halfway from the second to the third.
+        let t = Track {
+            keys: vec![0, 4, 10],
+            ..Track::default()
+        };
+        assert_eq!(t.at(7.0, 3), (1, 2, 0.5));
+        assert_eq!(t.at(0.0, 3), (0, 1, 0.0));
+        assert_eq!(t.at(10.0, 3), (1, 2, 1.0));
+        assert_eq!(Track::default().at(2.25, 4), (2, 3, 0.25));
+        assert_eq!(Track::default().at(2.25, 1), (0, 0, 0.0));
         assert_eq!(
             quat_from_i16(quat_to_i16([0.0, 0.0, 0.0, 2.0])),
             [0.0, 0.0, 0.0, 1.0]

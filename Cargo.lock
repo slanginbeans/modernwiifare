@@ -448,6 +448,7 @@ dependencies = [
 name = "game_core"
 version = "0.1.0"
 dependencies = [
+ "anim_iw4",
  "clipmap_iw4",
  "dpvs_iw4",
  "fx_iw4",
@@ -770,6 +771,7 @@ dependencies = [
  "lighting_iw4",
  "meshopt",
  "movement_iw4",
+ "playerstate_iw4",
  "png",
  "serde",
  "serde_json",
@@ -782,6 +784,7 @@ dependencies = [
 name = "mwf_game"
 version = "0.1.0"
 dependencies = [
+ "anim_iw4",
  "dpvs_iw4",
  "game_core",
  "hud_iw4",

@@ -60,6 +60,8 @@ pub struct Fighter {
     pub counter_uav_until: Option<u32>,
     /// This fighter's EMP: until when its enemies are jammed (`_emp.gsc`).
     pub emp_until: Option<u32>,
+    /// How this fighter last died (for its death animation).
+    pub death: crate::character::Death,
     /// Bot stepping: when the next step is due, steps taken, the decision being carried out, and the position
     /// before the last step (with its time) for drawing in between.
     next_step_ms: Option<u32>,
@@ -90,6 +92,7 @@ impl Fighter {
             team: TEAM_NONE,
             streak: 0,
             shock: None,
+            death: crate::character::Death::default(),
             uav_until: None,
             counter_uav_until: None,
             emp_until: None,
@@ -782,6 +785,11 @@ impl Arena {
             location: loc,
         });
         if v.life.damage(d, now) {
+            v.death = crate::character::Death {
+                location: loc,
+                dir,
+                kind: 0,
+            };
             out.push(Event::Kill {
                 attacker: from,
                 victim,
@@ -942,6 +950,15 @@ impl Arena {
                         core::array::from_fn(|k| f.player.ps.origin[k] - g.origin[k]);
                     let dist = libm::sqrtf(dir.iter().map(|x| x * x).sum());
                     self.hurt(g.owner, v, d, damage::hitloc::NONE, dir, now, out);
+                    // An explosion's death animation: near (IW4 `ANIM_DAMAGE_EXPLOSION_NEAR_DIST_SQ`) or light.
+                    if !self.fighters[v].life.alive() {
+                        self.fighters[v].death.kind =
+                            if dist * dist < anim_iw4::ANIM_DAMAGE_EXPLOSION_NEAR_DIST_SQ {
+                                2
+                            } else {
+                                1
+                            };
+                    }
                     if kind == crate::grenade::Effect::Stun && self.fighters[v].life.alive() {
                         let secs = crate::grenade::stun_seconds(&self.rules, dist);
                         self.shock(v, false, secs, now);

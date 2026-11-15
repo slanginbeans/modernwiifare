@@ -35,6 +35,7 @@ mod material_links;
 mod menu_preview;
 mod pack;
 mod pixel_decode;
+mod player_anims;
 mod preview;
 mod report;
 mod rules;
@@ -59,7 +60,9 @@ const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <repor
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
      mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force]\n  \
      mwf-convert report <log file>...\n  \
-     mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n      [--viewmodel <view.wpk> --anim <slot> --time <s>] [--character <common.wpk> --team 0|1 --pslot <slot>]\n  \
+     mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n      [--viewmodel <view.wpk> --anim <slot> --time <s>] [--character <common.wpk> --team 0|1
+      [--pmove idle|run|walk|sprint|idlecr|...] [--ptype autorifle|pistol|...] [--pclass rifle|...]
+      [--pevent fireweapon|reload|death|...] [--paim <pitch>]]\n  \
      mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask|minimap] [--out <folder>]";
 
 /// IW4L's `ZoneStream` keeps the latest record of every asset type inline, so walking a zone needs far more stack than
@@ -728,9 +731,42 @@ fn run_common(args: &[String]) -> ExitCode {
                 }
             }
         }
-        // The player animations the characters play (MW2's `pb_*` body animations), by bone name.
-        let anims = viewmodel::bake_player_anims(s, links, &PLAYER_ANIMS);
-        (views, failed, anims)
+        // MW2's player animation script and the animations it plays (by bone name), for the characters.
+        // The player-anim types of what a player can hold: the classes' weapons and every offhand (grenades,
+        // equipment).
+        let used_types = links
+            .weapon_combat
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                let name = links.weapons[*i].as_str();
+                let offhand = links
+                    .weapon_equip
+                    .get(*i)
+                    .is_some_and(|e| e.offhand_class != 0);
+                offhand
+                    || bases
+                        .iter()
+                        .any(|b| name.strip_suffix("_mp") == Some(b.as_str()))
+            })
+            .filter_map(|(_, w)| u32::try_from(w.player_anim_type).ok())
+            .filter(|&t| t < 64)
+            .fold(0u64, |b, t| b | 1 << t);
+        let has = |n: &str| links.xanims.iter().any(|(x, _)| x.eq_ignore_ascii_case(n));
+        let parsed = player_anims::parse(
+            links
+                .scripts
+                .get(player_anims::SCRIPT)
+                .map_or("", String::as_str),
+            links
+                .scripts
+                .get(player_anims::TYPES)
+                .map_or("", String::as_str),
+            used_types,
+            &has,
+        );
+        let anims = viewmodel::bake_player_anims(s, links, &parsed.anims);
+        (views, failed, (anims, parsed))
     });
     let (mut collector, (views, failed, player_anims)) = match walked {
         Ok(x) => x,
@@ -945,18 +981,31 @@ fn run_common(args: &[String]) -> ExitCode {
         std::mem::take(&mut world_bank.data),
     );
     // Player animations by bone name.
-    let (panm, panb, missing_anims) = player_anims;
+    let ((panm, panb, missing_anims), parsed) = player_anims;
+    let panm_bytes = wpk::player_anim::encode(&panm.clips);
     println!(
-        "player animations: {} clips, {} bones, {} missing",
+        "player animations: {} clips ({:.2} MiB), {} bones, {} missing; script: {} items ({} dropped, {} skipped), {} unresolved",
         panm.clips.len(),
+        panm_bytes.len() as f64 / (1024.0 * 1024.0),
         panb.len(),
-        missing_anims
+        missing_anims,
+        parsed.items,
+        parsed.dropped_items,
+        parsed.skipped_items,
+        parsed.unresolved,
     );
+    if parsed.script.moves.is_empty() {
+        eprintln!(
+            "warning: no player animation script ({}): characters stand still",
+            player_anims::SCRIPT
+        );
+    }
     b.section(
-        wpk::tag::PLAYER_ANIMS,
-        panm.clips.len() as u32,
-        panm.encode(),
+        wpk::tag::PLAYER_ANIM_SCRIPT,
+        (parsed.script.moves.len() + parsed.script.events.len()) as u32,
+        parsed.script.encode(),
     );
+    b.section(wpk::tag::PLAYER_ANIMS, panm.clips.len() as u32, panm_bytes);
     b.section(
         wpk::tag::PLAYER_ANIM_BONES,
         panb.len() as u32,
@@ -1145,22 +1194,6 @@ fn stamp_of(a: &MapArgs, zones: &[&str]) -> stamp::Stamp {
 }
 
 /// The player animations `common.wpk` carries: MW2's body animation for each player animation slot.
-const PLAYER_ANIMS: [(&str, u8); 10] = {
-    use wpk::view::player_slot as p;
-    [
-        ("pb_stand_alert", p::STAND),
-        ("pb_combatrun_forward_loop", p::RUN_FORWARD),
-        ("pb_combatrun_back_loop", p::RUN_BACK),
-        ("pb_combatrun_left_loop", p::RUN_LEFT),
-        ("pb_combatrun_right_loop", p::RUN_RIGHT),
-        ("pb_crouch_alert", p::CROUCH),
-        ("pb_crouch_run_forward", p::CROUCH_RUN),
-        ("pb_sprint", p::SPRINT),
-        ("pb_prone_aim", p::PRONE),
-        ("pb_prone_crawl", p::PRONE_CRAWL),
-    ]
-};
-
 fn run_pack_one(a: MapArgs) -> ExitCode {
     let out = a
         .out
@@ -1278,7 +1311,15 @@ fn run_preview(args: &[String]) -> ExitCode {
     let (mut spawn, mut pos, mut yaw, mut pitch, mut out) = (0usize, None, None, 0.0f32, None);
     let (mut view_pack, mut anim, mut anim_time): (Option<PathBuf>, u8, f32) =
         (None, wpk::view::slot::IDLE, 0.0);
-    let (mut char_pack, mut char_team, mut char_slot): (Option<PathBuf>, usize, u8) = (None, 0, 0);
+    let (mut char_pack, mut char_team): (Option<PathBuf>, usize) = (None, 0);
+    let mut char_shot = preview::CharacterShot::default();
+    // An IW4 name's index in `names` (any case), else `default`.
+    let name_index = |n: &str, names: &[&str], default: u8| {
+        names
+            .iter()
+            .position(|x| x.eq_ignore_ascii_case(n))
+            .map_or(default, |i| i as u8)
+    };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().cloned().unwrap_or_default();
@@ -1298,7 +1339,15 @@ fn run_preview(args: &[String]) -> ExitCode {
             "--anim" => anim = value().parse().unwrap_or(wpk::view::slot::IDLE),
             "--character" => char_pack = Some(PathBuf::from(value())),
             "--team" => char_team = value().parse().unwrap_or(0),
-            "--pslot" => char_slot = value().parse().unwrap_or(0),
+            "--pmove" => char_shot.movetype = name_index(&value(), anim_iw4::ANIM_MT_NAMES, 1),
+            "--ptype" => {
+                char_shot.anim_type = name_index(&value(), anim_iw4::ANIM_PLAYERANIMTYPE_NAMES, 4)
+            }
+            "--pclass" => {
+                char_shot.class = name_index(&value(), anim_iw4::ANIM_WEAPONCLASS_NAMES, 0)
+            }
+            "--pevent" => char_shot.event = Some(name_index(&value(), anim_iw4::ANIM_ET_NAMES, 2)),
+            "--paim" => char_shot.aim_pitch = value().parse().unwrap_or(0.0),
             "--time" => anim_time = value().parse().unwrap_or(0.0),
             _ if file.is_none() => file = Some(PathBuf::from(a)),
             _ => {
@@ -1344,7 +1393,12 @@ fn run_preview(args: &[String]) -> ExitCode {
         hfov_deg: 65.0,
         character: char_pack
             .and_then(|p| std::fs::read(p).ok())
-            .map(|b| (b, char_team, char_slot, anim_time)),
+            .map(|b| preview::CharacterShot {
+                common: b,
+                team: char_team,
+                time: anim_time,
+                ..char_shot
+            }),
         viewmodel: match view_pack {
             Some(p) => match std::fs::read(&p) {
                 Ok(b) => Some((b, anim, anim_time)),
