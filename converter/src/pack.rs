@@ -530,6 +530,51 @@ impl Textures {
         let plane = gx_texture::container::parse_alpha_plane(&bytes)
             .map_err(|e| format!("{file}: {e:?}"))?;
         let (w, ht, levels) = (u32::from(h.width), u32::from(h.height), u32::from(h.levels));
+        // Without mips to drop (UI images), scale the top level down instead.
+        if levels == 1 && (w > max || ht > max) {
+            let s = (max as f32 / w.max(ht) as f32).min(1.0);
+            let (nw, nh) = (
+                ((w as f32 * s) as u32 / 8 * 8).max(8),
+                ((ht as f32 * s) as u32 / 8 * 8).max(8),
+            );
+            // Full 32-bit colour goes to RGB5A3 on the way down (half the bytes, alpha kept).
+            let format = if h.format == gx_texture::TexFormat::Rgba8 {
+                gx_texture::TexFormat::Rgb5a3
+            } else {
+                h.format
+            };
+            let shrink = |fmt: gx_texture::TexFormat, to: gx_texture::TexFormat, d: &[u8]| {
+                let img = gx_texture::decode(d, w, ht, fmt)?;
+                Some(gx_texture::encode(
+                    &gx_texture::image::resize(&img, nw, nh),
+                    to,
+                ))
+            };
+            let data =
+                shrink(h.format, format, data).ok_or_else(|| format!("{file}: undecodable"))?;
+            let alpha_plane = match plane {
+                Some((ph, p)) => Some(
+                    shrink(ph.format, ph.format, p)
+                        .ok_or_else(|| format!("{file}: undecodable"))?,
+                ),
+                None => None,
+            };
+            let c = gx_texture::Converted {
+                format,
+                width: nw,
+                height: nh,
+                levels: 1,
+                traits: gx_texture::policy::Traits {
+                    grey: false,
+                    alpha: gx_texture::policy::Alpha::Opaque,
+                },
+                data,
+                alpha_plane,
+            };
+            let i = self.add(&c, wrap);
+            self.by_file.insert(key, i);
+            return Ok(i);
+        }
         let mut k = 0;
         while k + 1 < levels && ((w >> k) > max || (ht >> k) > max) {
             k += 1;

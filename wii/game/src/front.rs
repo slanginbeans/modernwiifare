@@ -67,8 +67,9 @@ const NORMAL: u32 = 0xb0b8c0ff;
 const SELECTED: u32 = 0xffd040ff;
 const DISABLED: u32 = 0x505860ff;
 
-/// Live text for a screen's empty slots (`wpk::ui::label_kind::SLOT`, in menu order) for the focused line.
-pub type Panel<'a> = &'a dyn Fn(usize, &mut Vec<String>);
+/// Live text for a screen's empty slots (`wpk::ui::label_kind::SLOT`, in menu order) and the items its images show
+/// (`wpk::ui::image_field` order) for the focused line.
+pub type Panel<'a> = &'a dyn Fn(usize, &mut Vec<String>, &mut Vec<String>);
 
 /// Which baked MW2 screen a list is drawn on, and what fills its slots.
 pub struct Page<'a> {
@@ -108,6 +109,7 @@ pub fn list_on(
     let cam = Camera::new([0.0; 3], 0.0, 0.0);
     let mut rects: Vec<Rect> = Vec::with_capacity(4096);
     let mut slots: Vec<String> = Vec::new();
+    let mut images: Vec<String> = Vec::new();
     loop {
         let step = menu::step(selected, lines.len(), input.poll());
         match step {
@@ -118,10 +120,20 @@ pub fn list_on(
         unsafe { ffi::mwf_frame_begin(&cam.view(), cam.fovy, 4.0, 100.0, 0x1a1e24ff) };
         if let Some(u) = crate::ui::get() {
             slots.clear();
+            images.clear();
             if let Some(p) = page.panel {
-                p(*selected, &mut slots);
+                p(*selected, &mut slots, &mut images);
             }
-            draw_mw2(u, page.screen, title, lines, *selected, footer, &slots);
+            draw_mw2(
+                u,
+                page.screen,
+                title,
+                lines,
+                *selected,
+                footer,
+                &slots,
+                &images,
+            );
             gfx.frame_end();
             continue;
         }
@@ -156,6 +168,7 @@ pub fn list_on(
 }
 
 /// A list drawn on one of MW2's screens (`game_core::ui_page`).
+#[allow(clippy::too_many_arguments)]
 fn draw_mw2(
     u: &mut crate::ui::Ui,
     screen: &str,
@@ -164,6 +177,7 @@ fn draw_mw2(
     selected: usize,
     footer: &str,
     slots: &[String],
+    images: &[String],
 ) {
     let lines: Vec<PageLine<'_>> = lines
         .iter()
@@ -180,6 +194,7 @@ fn draw_mw2(
         selected,
         footer,
         slots,
+        images,
     };
     u.page(|ui, q| ui_page::layout(ui, &page, q));
 }
@@ -368,9 +383,10 @@ pub fn pick_class(
     selected: &mut usize,
 ) -> Option<usize> {
     let lines: Vec<Line> = classes.iter().map(|c| Line::new(&c.name)).collect();
-    let panel = |i: usize, out: &mut Vec<String>| {
+    let panel = |i: usize, out: &mut Vec<String>, images: &mut Vec<String>| {
         if let (Some(cat), Some(c)) = (cat, classes.get(i)) {
             loadout::panel(cat, c, out);
+            images.extend(loadout::images(cat, c));
         }
     };
     let page = Page {
@@ -405,7 +421,10 @@ pub fn edit_class(gfx: &mut Shim, input: &mut Input, cat: &Catalog, class: &mut 
             .collect();
         let title = alloc::format!("EDIT {}", class.name);
         let shown = class.clone();
-        let panel = |_: usize, out: &mut Vec<String>| loadout::panel(cat, &shown, out);
+        let panel = |_: usize, out: &mut Vec<String>, images: &mut Vec<String>| {
+            loadout::panel(cat, &shown, out);
+            images.extend(loadout::images(cat, &shown));
+        };
         let page = Page {
             screen: "cac",
             panel: Some(&panel),
@@ -445,12 +464,13 @@ pub fn edit_class(gfx: &mut Shim, input: &mut Input, cat: &Catalog, class: &mut 
         let mut pick = current;
         // The panel previews the focused choice.
         let base = class.clone();
-        let preview = |i: usize, out: &mut Vec<String>| {
+        let preview = |i: usize, out: &mut Vec<String>, images: &mut Vec<String>| {
             let mut probe = base.clone();
             if let Some(&v) = options.get(i) {
                 loadout::set(cat, &mut probe, f, v);
             }
             loadout::panel(cat, &probe, out);
+            images.extend(loadout::images(cat, &probe));
         };
         let page = Page {
             screen: "cac",
@@ -520,7 +540,7 @@ pub fn pause(
     class_cursor: &mut usize,
 ) -> Pause {
     // MW2's pause screen names the map and the mode in its right-hand slots.
-    let info = |_: usize, out: &mut Vec<String>| {
+    let info = |_: usize, out: &mut Vec<String>, _: &mut Vec<String>| {
         out.push(map.trim_start_matches("mp_").to_ascii_uppercase());
         out.push(String::from(mode));
     };
@@ -578,7 +598,7 @@ pub fn scoreboard(gfx: &mut Shim, input: &mut Input, title: &str, rows: &[ScoreR
         }
         unsafe { ffi::mwf_frame_begin(&cam.view(), cam.fovy, 4.0, 100.0, 0x1a1e24ff) };
         if let Some(u) = crate::ui::get() {
-            draw_mw2(u, "scoreboard", title, &[], 0, "", &footer);
+            draw_mw2(u, "scoreboard", title, &[], 0, "", &footer, &[]);
             u.page(|ui, q| ui_page::score_rows(ui, rows, q));
         }
         gfx.frame_end();

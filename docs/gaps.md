@@ -100,7 +100,7 @@ Then each screen's own layout: class select (`changeclass`), pause (`class`), Cr
 the scoreboard (`page_scoreboard`), with MW2's localized title / header text, filled bars, the back button's place
 for the footer hint, and empty text slots filled live (the class panel: weapons, perks, equipment; the pause
 screen's map and mode). The layout code is shared by the Wii and the PC preview (`game_core::ui_page`).
-Not yet: weapon / perk icons in the class panel, the `popup_cac_*` choosers' own look (choices use the
+The class panel's pictures and icons: done (MW2's own image slots from the menus' material expressions: weapon pictures, attachment, perk, deathstreak, equipment and special grenade icons). Not yet: Pro perk icons, camouflage, the `popup_cac_*` choosers' own look (choices use the
 Create-a-Class screen), MW2's Create-a-Class grouping (attachments inside the weapon choice, killstreaks on their
 own page; ours lists every field), the scrolling cloud layers (left out: they are moved by scripts and are the
 costliest fills), animations, 16:9 layouts.

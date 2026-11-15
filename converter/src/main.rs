@@ -675,11 +675,66 @@ fn build_ui(
     if ui.menus.is_empty() && ui.fonts.is_empty() {
         return None;
     }
-    // A material's colour texture, from the first zone that has the material.
+    // The class panel's pictures and icons (`wpk::ui::image_key`), from MW2's tables: a weapon's picture
+    // (statsTable column 6 by base name, column 4), an attachment's icon (attachmentTable 6 by 4), a perk's,
+    // deathstreak's or equipment's icon (perkTable 3 by 1). Pictures are drawn about 200 × 100, icons 36 × 36 on the
+    // 640 × 480 screen: capped at these many texels across.
+    const CLASS_PICTURE_MAX: u32 = 96;
+    const CLASS_ICON_MAX: u32 = 48;
+    let mut class_images: Vec<(String, String)> = Vec::new();
+    for z in &zones {
+        // Only what Create-a-Class offers: the class weapons (and special grenades), every attachment, and the
+        // perkTable rows a class can take.
+        let bases = ui_tables::weapon_bases(&z.links.tables);
+        let offered = |table: &str, t: &ui_tables::Table, r: usize| match table {
+            "mp/statstable.csv" => {
+                t.cell(r, 2) == "weapon_grenade" || bases.iter().any(|b| b == t.cell(r, 4))
+            }
+            "mp/perktable.csv" => matches!(
+                t.cell(r, 5),
+                "perk1" | "perk2" | "perk3" | "perk4" | "equipment"
+            ),
+            _ => true,
+        };
+        for (table, kind, key, image) in [
+            ("mp/statstable.csv", "weapon", 4, 6),
+            ("mp/attachmenttable.csv", "attachment", 4, 6),
+            ("mp/perktable.csv", "perk", 1, 3),
+        ] {
+            let Some(t) = z.links.tables.get(table) else {
+                continue;
+            };
+            for r in 1..t.rows() {
+                let (name, material) = (t.cell(r, key), t.cell(r, image));
+                let k = format!("img:{kind}:{name}");
+                if offered(table, t, r)
+                    && !name.is_empty()
+                    && !material.is_empty()
+                    && !material.eq_ignore_ascii_case("specialty_null")
+                    && !class_images.iter().any(|(x, _)| *x == k)
+                {
+                    class_images.push((k, material.to_owned()));
+                }
+            }
+        }
+    }
+    let capped: HashMap<String, u32> = class_images
+        .iter()
+        .map(|(k, m)| {
+            let max = if k.starts_with("img:weapon:") {
+                CLASS_PICTURE_MAX
+            } else {
+                CLASS_ICON_MAX
+            };
+            (m.to_ascii_lowercase(), max)
+        })
+        .collect();
+    // A material's colour texture, from the first zone that has the material (class pictures capped).
     let lookup = |name: &str, tex: &mut pack::Textures| -> Option<u16> {
         if name.eq_ignore_ascii_case("white") {
             return Some(tex.add_white());
         }
+        let cap = capped.get(&name.to_ascii_lowercase()).copied();
         zones.iter().find_map(|z| {
             let m = z.links.material_info.iter().position(|m| {
                 m.name
@@ -688,7 +743,12 @@ fn build_ui(
             })?;
             let img = z.links.colour_image(m)?;
             let file = z.files_by_image.get(&img)?;
-            tex.add_file(&z.dir, file, wpk::records::Wrap::Clamp).ok()
+            if let Some(max) = cap {
+                tex.add_file_capped(&z.dir, file, wpk::records::Wrap::Clamp, max)
+                    .ok()
+            } else {
+                tex.add_file(&z.dir, file, wpk::records::Wrap::Clamp).ok()
+            }
         })
     };
     // The HUD's images: MW2's hitmarker (`damage_feedback`), each weapon's HUD icon (`weapon:<name>`) and each
@@ -728,6 +788,7 @@ fn build_ui(
             }
         }
     }
+    extra.extend(class_images);
     Some(ui_bake::bake(&ui, &localize, &extra, |name| {
         lookup(name, tex)
     }))
