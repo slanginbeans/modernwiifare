@@ -34,7 +34,10 @@ use std::path::{Path, PathBuf};
 /// 34: destructible objects in map packs (`DSTM`, `DSTX`, `DSTD`, `DSTB`, `DSTY`, `DSTE`, `DSFX`, `DSFT`, `DSFD`).
 /// 35: characters' heads unbound with their own bind poses (faces); destructible sections before the
 ///     decoded-at-load tail.
-pub const REVISION: u32 = 35;
+/// 36: the private match's screens (lobby, Game Setup popup, map, mode and rules pages, yes / no popup), MW2's SD
+///     HUD layouts (`weaponbar_sd`, `scorebar_sd`, `dpad_sd`), the ammo counter's rounds and map / mode strings
+///     (`UIPK`).
+pub const REVISION: u32 = 36;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

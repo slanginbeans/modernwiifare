@@ -26,13 +26,48 @@ pub const FONTS: [&str; 8] = [
 
 /// Screens baked from MW2 menus: (our name, MW2 menu, x offset in virtual pixels). The scoreboard page is drawn
 /// inside MW2's centred 544-wide scoreboard frame, so its centre-aligned items move left by half of that.
-pub const SCREENS: [(&str, &str, f32); 6] = [
+/// The console's private match: its lobby, the Game Setup popup over it, the map, game mode and rules pages, and
+/// the yes / no popup (MW2's End Game question).
+pub const SCREENS: [(&str, &str, f32); 12] = [
     ("minimap", "minimap_fullscreen", 0.0),
     ("main", "main_text", 0.0),
     ("class_select", "changeclass", 0.0),
     ("pause", "class", 0.0),
     ("cac", "menu_cac_assault", 0.0),
     ("scoreboard", "page_scoreboard", -272.0),
+    ("lobby", "menu_xboxlive_privatelobby", 0.0),
+    ("setup", "popup_gamesetup", 0.0),
+    ("maps", "settings_map", 0.0),
+    ("modes", "settings_gametype", 0.0),
+    ("rules", "settings_quick_dm", 0.0),
+    ("yesno", "popup_endgame", 0.0),
+];
+
+/// MW2's popups size their frame from the number of buttons in a script (their rects have no height): the Game
+/// Setup popup's frame covers its title bar and three buttons.
+const POPUP_HEIGHT: f32 = 86.0;
+
+/// The SD (480-line) HUD menus, laid out at run time inside the safe area: (our name, MW2 menu).
+pub const HUDS: [(&str, &str); 3] = [
+    ("weaponbar", "weaponbar_sd"),
+    ("scorebar", "scorebar_sd"),
+    ("dpad", "dpad_sd"),
+];
+
+/// Localized strings the front end shows by key (map names and descriptions are added by prefix).
+const STRINGS: [&str; 12] = [
+    "MPUI_DEATHMATCH",
+    "MPUI_WAR",
+    "MPUI_DOMINATION",
+    "MENU_KILL_EVERYONE_FIRST_PLAYER",
+    "MENU_KILL_PLAYERS_ON_THE_OPPOSING",
+    "MENU_CAPTURE_AND_HOLD_THE",
+    "MPUI_WINNING_CAPS",
+    "MPUI_LOSING_CAPS",
+    "MPUI_TIED_CAPS",
+    "MPUI_END_GAME2",
+    "MENU_YES",
+    "MENU_NO",
 ];
 
 /// Items wider than this (virtual pixels) are layers the menu's scripts scroll across the screen (MW2's cloud
@@ -44,13 +79,16 @@ const SCROLLING_LAYER_W: f32 = 960.0;
 const WINDOW_STYLE_EMPTY: i32 = 0;
 const WINDOW_STYLE_FILLED: i32 = 1;
 const WINDOW_STYLE_SHADER: i32 = 3;
+/// The image of a lobby's player row.
+const LOBBY_ROW_MATERIAL: &str = "playercard_short_bg";
 /// The back button's text (its rect is kept; the front end draws its own hint there).
 const BACK_TEXT: &str = "@PLATFORM_BACK_CAPS";
 /// IW4 item types "button" and "owner draw".
 const ITEM_TYPE_BUTTON: i32 = 1;
 const ITEM_TYPE_OWNERDRAW: i32 = 8;
-/// HUD images the game draws by name (`hud_iw4` compass pings and the radar sweep).
-pub const ICONS: [&str; 7] = [
+/// HUD images the game draws by name (`hud_iw4` compass pings and the radar sweep, the magazine's rounds), and the
+/// lobby's player rows.
+pub const ICONS: [&str; 13] = [
     "compassping_player",
     "compassping_friendly_mp",
     "compassping_grenade",
@@ -58,6 +96,12 @@ pub const ICONS: [&str; 7] = [
     "compassping_enemy",
     "compassping_enemyfiring",
     "compass_radarline",
+    "ammo_counter_bullet_mp",
+    "ammo_counter_riflebullet_mp",
+    "ammo_counter_shotgunshell_mp",
+    "ammo_counter_rocket_mp",
+    "ammo_counter_beltbullet_mp",
+    "playercard_short_bg",
 ];
 
 #[derive(Debug, Default)]
@@ -168,6 +212,20 @@ fn bake_screen(
             }
             continue;
         }
+        // The lobby's player rows (shown per player by script): their rects for the front end's list.
+        if material(&item.background) == LOBBY_ROW_MATERIAL && item.style == WINDOW_STYLE_SHADER {
+            let r = place(p, &item.rect);
+            owner_draws.push(OwnerDraw {
+                od: wpk::ui::od::LOBBY_ROW,
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+                texture: tex(LOBBY_ROW_MATERIAL).unwrap_or(NONE),
+                rgba: rgba(item.fore_color),
+            });
+            continue;
+        }
         if item.item_type == ITEM_TYPE_OWNERDRAW && shown(item) && item.owner_draw > 0 {
             let r = place(p, &item.rect);
             let texture = if item.background.is_empty() {
@@ -226,6 +284,12 @@ fn bake_screen(
         if colour[3] <= 0.0 {
             continue;
         }
+        // MW2's "black" panels: the white image in black.
+        let (material_name, colour) = if material_name == "black" {
+            ("white", [0.0, 0.0, 0.0, colour[3]])
+        } else {
+            (material_name, colour)
+        };
         let Some(texture) = tex(material_name) else {
             report.missing_textures += 1;
             continue;
@@ -387,6 +451,9 @@ pub fn bake(
             let mut menu = menu.clone();
             for item in &mut menu.items {
                 item.rect.x += dx;
+                if ours == "setup" && item.rect.h == 0.0 && item.rect.w != 0.0 {
+                    item.rect.h = POPUP_HEIGHT;
+                }
             }
             let menu = &menu;
             screens.push(bake_screen(
@@ -412,15 +479,94 @@ pub fn bake(
             icons.push((key.clone(), t));
         }
     }
+    let hud = HUDS
+        .iter()
+        .filter_map(|(ours, theirs)| {
+            ui.menus
+                .get(*theirs)
+                .map(|m| bake_hud(ours, m, &p, &fonts, localize, &mut tex))
+        })
+        .collect();
+    let mut strings: Vec<(String, String)> = localize
+        .iter()
+        .filter(|(k, _)| {
+            STRINGS.contains(&k.as_str())
+                || k.starts_with("MPUI_DESC_MAP_")
+                || k.strip_prefix("MPUI_")
+                    .is_some_and(|m| localize.contains_key(&format!("MPUI_DESC_MAP_{m}")))
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    strings.sort();
     (
         UiPack {
             fonts,
             screens,
             white,
             icons,
+            hud,
+            strings,
         },
         report,
     )
+}
+
+/// A HUD menu's items in MW2's virtual space with their alignment (placed at run time): images, owner draws and
+/// text, whatever their visibility test (the game decides what shows).
+fn bake_hud(
+    name: &str,
+    menu: &Menu,
+    p: &hud_iw4::ScreenPlacement,
+    fonts: &[Font],
+    localize: &HashMap<String, String>,
+    tex: &mut impl FnMut(&str) -> Option<u16>,
+) -> wpk::ui::HudLayout {
+    let mut items = Vec::new();
+    for i in &menu.items {
+        let material = material(&i.background);
+        let texture = if i.style == WINDOW_STYLE_SHADER && !material.is_empty() {
+            tex(material).unwrap_or(NONE)
+        } else {
+            NONE
+        };
+        let od = if i.item_type == ITEM_TYPE_OWNERDRAW {
+            i.owner_draw.max(0) as u16
+        } else {
+            0
+        };
+        if texture == NONE && od == 0 && i.text.is_empty() {
+            continue;
+        }
+        items.push(wpk::ui::HudItem {
+            od,
+            x: i.rect.x,
+            y: i.rect.y,
+            w: i.rect.w,
+            h: i.rect.h,
+            halign: i.rect.horz_align,
+            valign: i.rect.vert_align,
+            font: font_index(p, fonts, i.font, i.text_scale),
+            text_scale: i.text_scale,
+            align: (i.text_align_mode & 0xf) as u8,
+            rgba: rgba(i.fore_color),
+            texture,
+            // The item's own name (MW2's "Pass1" compass passes are told apart by it), else its image's.
+            name: if i.name.is_empty() {
+                material.to_owned()
+            } else {
+                i.name.clone()
+            },
+            text: if i.text.is_empty() {
+                String::new()
+            } else {
+                text_of(&i.text, localize)
+            },
+        });
+    }
+    wpk::ui::HudLayout {
+        name: name.to_owned(),
+        items,
+    }
 }
 
 #[cfg(test)]

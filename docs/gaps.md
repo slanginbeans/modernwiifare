@@ -110,6 +110,13 @@ The class panel's pictures and icons: done (MW2's own image slots from the menus
 Create-a-Class screen), MW2's Create-a-Class grouping (attachments inside the weapon choice, killstreaks on their
 own page; ours lists every field), the scrolling cloud layers (left out: they are moved by scripts and are the
 costliest fills), animations, 16:9 layouts.
+Done (2026-11-15): the Xbox 360's private match flow on MW2's console screens (lobby with the players, the Game Setup
+popup, map / game mode / rules pages, the in-game START menu over the frozen game, MW2's End Game question), held
+directions repeat, left / right change values, and MW2's SD HUD layout (`weaponbar_sd`, `scorebar_sd`, `dpad_sd`)
+placed inside a safe area set in Options. Checked in Dolphin with `tools/dolphin-test.ps1`; not yet on a Wii. Not
+yet: map preview pictures (they live in the map zones), menu sounds (`mouse_over`, `mouse_click`), the Barracks and
+Playercard pages, MW2's button glyphs in the footer hints, the 360's in-match class menu at the first spawn (the
+match starts with the class last chosen).
 
 ### Plan
 IW4L reads the real menu assets (`fastfile_iw4` hooks: `capture_menu_def`, `capture_menu_item_layout`, `capture_font`

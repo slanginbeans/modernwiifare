@@ -36,6 +36,29 @@ pub fn width(font: &Font, text: &str, text_scale: f32) -> f32 {
         .sum()
 }
 
+/// `text` broken into lines no wider than `max_w` at its spaces (a word wider than that gets a line of its own).
+pub fn wrap<'a>(font: &Font, text: &'a str, text_scale: f32, max_w: f32) -> Vec<&'a str> {
+    let mut lines = Vec::new();
+    for para in text.split('\n') {
+        let mut start = 0;
+        let mut end = 0;
+        for (i, _) in para
+            .match_indices(' ')
+            .chain(core::iter::once((para.len(), "")))
+        {
+            let candidate = para[start..i].trim();
+            if end > start && width(font, candidate, text_scale) > max_w {
+                lines.push(para[start..end].trim());
+                start = end;
+            }
+            end = i;
+        }
+        lines.push(para[start..].trim());
+    }
+    lines.retain(|l| !l.is_empty());
+    lines
+}
+
 /// Where IW4 puts a menu item's text: the pen x and baseline y (IW4L `hud_iw4::font::item_text_origin`).
 pub fn label_origin(font: &Font, l: &Label, text: &str) -> (f32, f32) {
     let w = width(font, text, l.text_scale);
@@ -124,5 +147,14 @@ mod tests {
         assert_eq!((q[0].x, q[0].y, q[0].w, q[0].h), (101.0, 180.0, 10.0, 20.0));
         assert_eq!(q[2].x, 101.0 + 12.0 + 6.0);
         assert_eq!(q[0].texture, 7);
+    }
+
+    #[test]
+    fn wraps_at_spaces() {
+        let f = font();
+        // "AA" is 24 wide, a space 6.
+        assert_eq!(wrap(&f, "AA AA AA", 0.5, 60.0), ["AA AA", "AA"]);
+        assert_eq!(wrap(&f, "AAAAAAAA B", 0.5, 30.0), ["AAAAAAAA", "B"]);
+        assert_eq!(wrap(&f, "A", 0.5, 100.0), ["A"]);
     }
 }

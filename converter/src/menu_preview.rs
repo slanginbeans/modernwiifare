@@ -10,7 +10,18 @@ use wpk::records::{self, TextureRecord};
 use wpk::ui::{Quad, UiPack};
 
 /// The screens rendered (the names `ui_bake::SCREENS` gives them).
-pub const SCREENS: [&str; 5] = ["main", "class_select", "pause", "cac", "scoreboard"];
+pub const SCREENS: [&str; 10] = [
+    "main",
+    "class_select",
+    "pause",
+    "cac",
+    "scoreboard",
+    "lobby",
+    "setup",
+    "maps",
+    "modes",
+    "rules",
+];
 
 /// Draw `q` over `img` (nearest texel, texture × colour, alpha blended).
 fn draw(img: &mut Image, textures: &[Option<Image>], q: &Quad) {
@@ -251,6 +262,48 @@ pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
             slots.push("A CONTINUE".to_owned());
             ("YOU WIN", Vec::new(), Vec::new(), "")
         }
+        "lobby" => {
+            slots.extend([
+                "6 PLAYERS".to_owned(),
+                "Rust".to_owned(),
+                "Free-for-all".to_owned(),
+            ]);
+            (
+                "PRIVATE MATCH",
+                s(&["START GAME", "GAME SETUP", "CREATE A CLASS"]),
+                Vec::new(),
+                "A SELECT   B BACK",
+            )
+        }
+        "setup" => (
+            "GAME SETUP",
+            s(&["CHANGE MAP", "CHANGE GAME MODE", "GAME RULES"]),
+            Vec::new(),
+            "",
+        ),
+        "maps" | "modes" => {
+            slots.extend([
+                "Rust".to_owned(),
+                ui.string("MPUI_DESC_MAP_RUST").unwrap_or("").to_owned(),
+            ]);
+            let names = if screen == "maps" {
+                s(&["Afghan", "Derail", "Rust", "Terminal"])
+            } else {
+                s(&["Free-for-all", "Team Deathmatch", "Domination"])
+            };
+            ("CHOOSE", names, Vec::new(), "A SELECT   B BACK")
+        }
+        "rules" => (
+            "GAME RULES",
+            s(&["TIME LIMIT", "SCORE LIMIT", "BOTS", "BOT DIFFICULTY"]),
+            vec![
+                Some("10 MINUTES".to_owned()),
+                Some("1500".to_owned()),
+                Some("5".to_owned()),
+                Some("REGULAR".to_owned()),
+            ],
+            "A / LEFT / RIGHT CHANGE   B BACK",
+        ),
         _ => (
             "MODERN WIIFARE",
             s(&["PLAY", "CREATE A CLASS", "OPTIONS", "DEBUG", "QUIT"]),
@@ -269,6 +322,8 @@ pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
             footer,
             slots: &slots,
             images: &images,
+            inline_values: screen == "rules",
+            backdrop: true,
         },
         &mut quads,
     );
@@ -312,11 +367,22 @@ pub fn render_hud(common: &[u8]) -> Result<Image, String> {
     let feed = [("BOT 2 KILLED BOT 4", false), ("YOU KILLED BOT 1", true)];
     let state = game_core::hud_mw2::State {
         now: 1000,
-        weapon: Some(("m4_mp", "M4A1", 24, 120)),
+        match_ms: 9000,
+        safe_area: game_core::hud_mw2::SAFE_AREA_DEFAULT,
+        weapon: Some(game_core::hud_mw2::Weapon {
+            name: "m4_mp",
+            display: "M4A1",
+            clip: 24,
+            stock: 120,
+            clip_size: 30,
+            weap_class: 0,
+        }),
         grenades: [Some(("frag_grenade_mp", 1)), Some(("flash_grenade_mp", 2))],
-        score: "US 1250   THEM 900 / 7500",
+        score: (1250, 900, 7500),
+        teams: true,
+        mode_name: "TEAM DEATHMATCH",
         objectives: "A OURS  B NEUTRAL  C THEIRS  SECURING 40%",
-        clock: "7:42",
+        clock_ms: Some(462_000),
         feed: &feed,
         hitmarker: true,
         popup: Some((100, 900)),

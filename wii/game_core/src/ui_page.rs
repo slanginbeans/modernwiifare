@@ -31,10 +31,35 @@ pub struct Page<'a> {
     pub slots: &'a [String],
     /// The items the screen's images show (`wpk::ui::image_field` order; empty: none).
     pub images: &'a [String],
+    /// Values drawn inside their line, right-aligned (MW2's rules and settings rows), not beside it.
+    pub inline_values: bool,
+    /// The screen's full-screen background (false over the frozen game).
+    pub backdrop: bool,
 }
 
-/// MW2's main menu has no page name: ours goes above the first button, inside the 0.85 safe area (640 × 0.075).
+/// MW2's main menu has no page name: ours goes above the first button, inside the 0.85 safe area (640 Ã— 0.075).
 const TITLE_X: f32 = 48.0;
+
+/// Inside a rules row: the value ends this far left of the row's right edge.
+const VALUE_INSET: f32 = 8.0;
+/// Slot text longer than this many bytes is a description and wraps.
+const WRAP_FROM: usize = 32;
+
+/// A quad's texture: the frame the Wii kept to show behind the in-game menus (not a pack texture).
+pub const GRAB: u16 = 0xFFFE;
+
+/// The whole screen as a quad of texture `t` in colour `rgba`.
+pub fn fullscreen(t: u16, rgba: u32) -> Quad {
+    Quad {
+        x: 0.0,
+        y: 0.0,
+        w: 640.0,
+        h: 480.0,
+        uv: [0.0, 0.0, 1.0, 1.0],
+        rgba,
+        texture: t,
+    }
+}
 
 /// `text` in `font` with its pen at `x` on baseline `y`.
 #[allow(clippy::too_many_arguments)]
@@ -62,6 +87,20 @@ pub fn label(ui: &UiPack, l: &Label, s: &str, out: &mut Vec<Quad>) {
     }
 }
 
+/// `s` in a label's rect, broken into lines that fit its width (MW2's wrapped description items); lines go down
+/// from where the first would be.
+pub fn wrapped_label(ui: &UiPack, l: &Label, s: &str, out: &mut Vec<Quad>) {
+    let Some(f) = ui.fonts.get(usize::from(l.font)) else {
+        return;
+    };
+    let width = (l.w - l.text_x.abs()).max(16.0);
+    let step = l.text_scale * TEXT_EM * 1.15;
+    for (n, line) in ui_text::wrap(f, s, l.text_scale, width).iter().enumerate() {
+        let (x, y) = ui_text::label_origin(f, l, line);
+        ui_text::quads(f, line, x, y + n as f32 * step, l.text_scale, l.rgba, out);
+    }
+}
+
 /// A button's text x inside a rect (IW4 `item_text_origin`: aligned in the rect, then `text_x` along).
 fn button_x(ui: &UiPack, b: &ButtonStyle, s: &str, x: f32, w: f32) -> f32 {
     let tw = ui
@@ -80,7 +119,22 @@ pub fn layout(ui: &UiPack, page: &Page<'_>, out: &mut Vec<Quad>) {
     let Some(screen) = ui.screen(page.screen).or_else(|| ui.screen("main")) else {
         return;
     };
-    out.extend_from_slice(&screen.quads);
+    if page.backdrop {
+        out.extend_from_slice(&screen.quads);
+    } else {
+        // Over the frozen game: the screen's own opaque full-screen background becomes a dark veil (its translucent
+        // layers, like the pause menu's dimming, stay).
+        for q in &screen.quads {
+            let full = q.w.abs() >= 600.0 && q.h.abs() >= 440.0;
+            if full && q.rgba & 0xff >= 0xc0 {
+                if ui.white != NONE {
+                    out.push(fullscreen(ui.white, 0x0000_00a0));
+                }
+            } else {
+                out.push(*q);
+            }
+        }
+    }
     // The class's pictures and icons in MW2's places.
     for im in &screen.images {
         let Some(item) = page
@@ -117,7 +171,12 @@ pub fn layout(ui: &UiPack, page: &Page<'_>, out: &mut Vec<Quad>) {
             _ => l.text.as_str(),
         };
         if !s.is_empty() {
-            label(ui, l, s, out);
+            // Long live text (a map's or mode's description) wraps in its rect; names stay on their line.
+            if *kind == label_kind::SLOT && s.len() > WRAP_FROM {
+                wrapped_label(ui, l, s, out);
+            } else {
+                label(ui, l, s, out);
+            }
         }
     }
     let Some(b) = screen.buttons else {
@@ -165,13 +224,34 @@ pub fn layout(ui: &UiPack, page: &Page<'_>, out: &mut Vec<Quad>) {
         };
         let x = button_x(ui, &b, l.text, b.x, b.w);
         text(ui, font, l.text, x, y + text_h, b.text_scale, colour, out);
-        if values && let Some(v) = l.value {
-            text(ui, small, v, b.x + b.w + 12.0, y + text_h, 0.3, colour, out);
+        match l.value {
+            // MW2's rules rows: the value at the right of the row, in the button's own font.
+            Some(v) if page.inline_values => {
+                let w = ui
+                    .fonts
+                    .get(font)
+                    .map_or(0.0, |f| ui_text::width(f, v, b.text_scale));
+                text(
+                    ui,
+                    font,
+                    v,
+                    b.x + b.w - VALUE_INSET - w,
+                    y + text_h,
+                    b.text_scale,
+                    colour,
+                    out,
+                );
+            }
+            Some(v) if values => {
+                text(ui, small, v, b.x + b.w + 12.0, y + text_h, 0.3, colour, out);
+            }
+            _ => {}
         }
     }
     match screen.back {
         Some(r) => {
-            let x = button_x(ui, &b, page.footer, r[0], r[2]);
+            // Inside the title-safe area even when the hint is longer than MW2's own.
+            let x = button_x(ui, &b, page.footer, r[0], r[2]).max(TITLE_X);
             text(
                 ui,
                 font,
@@ -193,6 +273,60 @@ pub fn layout(ui: &UiPack, page: &Page<'_>, out: &mut Vec<Quad>) {
             0xc0c8_d0ff,
             out,
         ),
+    }
+}
+
+/// One player of the lobby list: name, what is shown right of it (team, "BOT"), and its text colour.
+#[derive(Clone, Debug)]
+pub struct LobbyRow {
+    pub name: String,
+    pub info: String,
+    pub rgba: u32,
+}
+
+/// The lobby's players in MW2's player rows (the lobby screen's `od::LOBBY_ROW` rects, top down).
+pub fn lobby_rows(ui: &UiPack, rows: &[LobbyRow], out: &mut Vec<Quad>) {
+    let Some(screen) = ui.screen("lobby") else {
+        return;
+    };
+    let Some(b) = screen.buttons else {
+        return;
+    };
+    let mut rects: Vec<&wpk::ui::OwnerDraw> = screen
+        .owner_draws
+        .iter()
+        .filter(|o| o.od == wpk::ui::od::LOBBY_ROW && o.y >= b.y - 1.0)
+        .collect();
+    rects.sort_by(|a, c| a.y.total_cmp(&c.y));
+    let font = usize::from(b.font);
+    let Some(f) = ui.fonts.get(font) else {
+        return;
+    };
+    let scale = b.text_scale;
+    for (r, row) in rects.iter().zip(rows) {
+        if r.texture != NONE {
+            out.push(Quad {
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+                uv: [0.0, 0.0, 1.0, 1.0],
+                rgba: r.rgba,
+                texture: r.texture,
+            });
+        }
+        let base = r.y + (r.h + scale * TEXT_EM * 0.75) * 0.5;
+        ui_text::quads(f, &row.name, r.x + 8.0, base, scale, row.rgba, out);
+        let w = ui_text::width(f, &row.info, scale);
+        ui_text::quads(
+            f,
+            &row.info,
+            r.x + r.w - 8.0 - w,
+            base,
+            scale,
+            row.rgba,
+            out,
+        );
     }
 }
 
@@ -317,6 +451,8 @@ mod tests {
             }],
             white: 1,
             icons: Vec::new(),
+            hud: Vec::new(),
+            strings: Vec::new(),
         }
     }
 
@@ -344,6 +480,8 @@ mod tests {
             footer: "F",
             slots: &slots,
             images: &[],
+            inline_values: false,
+            backdrop: true,
         };
         let mut q = Vec::new();
         layout(&ui, &page, &mut q);
@@ -372,6 +510,8 @@ mod tests {
             footer: "",
             slots: &[],
             images: &[],
+            inline_values: false,
+            backdrop: true,
         };
         let mut q = Vec::new();
         layout(&ui, &page, &mut q);

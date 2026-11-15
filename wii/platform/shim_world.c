@@ -823,10 +823,78 @@ static void ui_mode(void) {
     GX_SetCullMode(GX_CULL_NONE);
 }
 
+/* The last frame shown, at half size (RGB565), for the in-game menus to draw behind them (`MWF_TEX_GRAB`). */
+#define GRAB_W 320
+#define GRAB_H 240
+static u16 *grab_texels = NULL;
+static GXTexObj grab_obj;
+static int grab_ok = 0;
+
+static u16 rgb565(int y, int cb, int cr) {
+    int c = 298 * (y - 16);
+    int r = (c + 409 * cr + 128) >> 8, g = (c - 100 * cb - 208 * cr + 128) >> 8, b = (c + 516 * cb + 128) >> 8;
+    r = r < 0 ? 0 : (r > 255 ? 255 : r);
+    g = g < 0 ? 0 : (g > 255 ? 255 : g);
+    b = b < 0 ? 0 : (b > 255 ? 255 : b);
+    return (u16)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+}
+
+int32_t mwf_grab_screen(void) {
+    const u8 *src = (const u8 *)mwf_last_frame();
+    if (!src) return 0;
+    if (!grab_texels) {
+        grab_texels = memalign(32, GRAB_W * GRAB_H * 2);
+        if (!grab_texels) return 0;
+    }
+    const u32 fw = mwf_rmode->fbWidth, fh = mwf_rmode->xfbHeight;
+    /* GX RGB565 is 4 x 4 texel tiles, row by row. Each texel samples one pixel pair of the YUYV frame. */
+    for (u32 ty = 0; ty < GRAB_H; ty += 4) {
+        for (u32 tx = 0; tx < GRAB_W; tx += 4) {
+            u16 *tile = grab_texels + (ty * GRAB_W + tx * 4);
+            for (u32 y = 0; y < 4; y++) {
+                const u32 sy = (ty + y) * fh / GRAB_H;
+                for (u32 x = 0; x < 4; x++) {
+                    const u32 sx = ((tx + x) * fw / GRAB_W) & ~1u;
+                    const u8 *p = src + (sy * fw + sx) * 2;
+                    tile[y * 4 + x] = rgb565(p[0], p[1] - 128, p[3] - 128);
+                }
+            }
+        }
+    }
+    DCFlushRange(grab_texels, GRAB_W * GRAB_H * 2);
+    GX_InitTexObj(&grab_obj, grab_texels, GRAB_W, GRAB_H, GX_TF_RGB565, GX_CLAMP, GX_CLAMP, GX_FALSE);
+    GX_InvalidateTexAll();
+    grab_ok = 1;
+    return 1;
+}
+
+/* Bind a UI texture: colour times the vertex colour, and when the texture keeps its smooth alpha in a separate I4
+ * plane (`.gxt` flag bit 0), a second stage takes the alpha from that plane. */
+static void ui_bind(const GXTexObj *colour, const GXTexObj *alpha) {
+    GX_LoadTexObj((GXTexObj *)colour, GX_TEXMAP0);
+    if (alpha) {
+        GX_LoadTexObj((GXTexObj *)alpha, GX_TEXMAP1);
+        GX_SetTevOrder(GX_TEVSTAGE1, GX_TEXCOORD0, GX_TEXMAP1, GX_COLOR0A0);
+        GX_SetTevColorIn(GX_TEVSTAGE1, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_CPREV);
+        GX_SetTevAlphaIn(GX_TEVSTAGE1, GX_CA_ZERO, GX_CA_TEXA, GX_CA_RASA, GX_CA_ZERO);
+        stage_ops(GX_TEVSTAGE1, GX_CS_SCALE_1);
+        GX_SetNumTevStages(2);
+    } else {
+        GX_SetNumTevStages(1);
+    }
+}
+
 void mwf_ui_quads(int32_t tex, const mwf_ui_quad *q, uint32_t count) {
-    if (count == 0 || tex < 0 || tex >= tex_count) return;
-    ui_mode();
-    GX_LoadTexObj(&tex_obj[tex], GX_TEXMAP0);
+    if (count == 0) return;
+    if (tex == MWF_TEX_GRAB) {
+        if (!grab_ok) return;
+        ui_mode();
+        ui_bind(&grab_obj, NULL);
+    } else {
+        if (tex < 0 || tex >= tex_count) return;
+        ui_mode();
+        ui_bind(&tex_obj[tex], tex_has_alpha[tex] ? &tex_alpha[tex] : NULL);
+    }
     while (count > 0) {
         uint32_t n = count > 16383 ? 16383 : count;
         GX_Begin(GX_QUADS, GX_VTXFMT2, (u16)(n * 4));
@@ -855,7 +923,7 @@ void mwf_ui_quads(int32_t tex, const mwf_ui_quad *q, uint32_t count) {
 void mwf_ui_verts(int32_t tex, const mwf_ui_vert *v, uint32_t quads) {
     if (quads == 0 || tex < 0 || tex >= tex_count) return;
     ui_mode();
-    GX_LoadTexObj(&tex_obj[tex], GX_TEXMAP0);
+    ui_bind(&tex_obj[tex], tex_has_alpha[tex] ? &tex_alpha[tex] : NULL);
     while (quads > 0) {
         uint32_t n = quads > 16383 ? 16383 : quads;
         GX_Begin(GX_QUADS, GX_VTXFMT2, (u16)(n * 4));

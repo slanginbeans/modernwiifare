@@ -3,9 +3,7 @@
 use core::ffi::c_char;
 
 // The shim's `MWF_BTN_*` GameCube bits (one definition, in `game_core::controls::gc`).
-pub use game_core::controls::gc::{
-    A as BTN_A, B as BTN_B, DOWN as BTN_DOWN, START as BTN_START, UP as BTN_UP,
-};
+pub use game_core::controls::gc::START as BTN_START;
 
 /// `mwf_ui_quad` (shim.h).
 #[repr(C)]
@@ -83,6 +81,9 @@ const _: () = assert!(core::mem::size_of::<DrawState>() == 16);
 
 type Mtx34 = [[f32; 4]; 3];
 
+/// `MWF_TEX_GRAB`: the frame `mwf_grab_screen` kept.
+pub const TEX_GRAB: i32 = -2;
+
 unsafe extern "C" {
     pub fn mwf_should_exit() -> i32;
     pub fn mwf_ms() -> u32;
@@ -93,6 +94,8 @@ unsafe extern "C" {
     pub fn mwf_x360_read(out: *mut X360);
     pub fn mwf_panic(msg: *const u8, len: usize) -> !;
     pub fn mwf_widescreen() -> i32;
+    pub fn mwf_poweroff();
+    pub fn mwf_screenshot(path: *const c_char) -> i32;
 
     pub fn mwf_gx_init(clear_rgba: u32);
 
@@ -108,6 +111,8 @@ unsafe extern "C" {
     pub fn mwf_mem2_alloc(size: u32, align: u32) -> *mut u8;
     pub fn mwf_flush(p: *const u8, len: u32);
     pub fn mwf_ui_quads(tex: i32, q: *const UiQuad, count: u32);
+    /// Keep the last frame shown for the in-game menus (drawn with texture [`TEX_GRAB`]); 0 when there is none.
+    pub fn mwf_grab_screen() -> i32;
     /// Quads with a texture coordinate per corner (4 vertices each).
     pub fn mwf_ui_verts(tex: i32, v: *const game_core::minimap::Vert, quads: u32);
     pub fn mwf_draw_boxes(
@@ -181,6 +186,23 @@ pub fn pads() -> (game_core::controls::GcPad, game_core::controls::X360Pad) {
         mwf_pad_read(0, &mut p);
         mwf_x360_scan();
         mwf_x360_read(&mut x);
+    }
+    // A test script (`autoplay.txt`) plays the GameCube pad instead.
+    if let Some(f) = crate::autoplay::frame() {
+        let down = f.held & !crate::autoplay::last_held();
+        p = Pad {
+            held: f.held,
+            down,
+            sx: f.sx,
+            sy: f.sy,
+            cx: f.cx,
+            cy: f.cy,
+            l: f.l,
+            r: f.r,
+            connected: 1,
+            _pad: 0,
+        };
+        crate::autoplay::set_last_held(f.held);
     }
     (
         game_core::controls::GcPad {

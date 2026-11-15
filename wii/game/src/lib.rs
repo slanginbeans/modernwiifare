@@ -11,6 +11,7 @@
 extern crate alloc;
 
 mod arsenal;
+mod autoplay;
 mod character;
 mod devlog;
 mod effects;
@@ -125,6 +126,7 @@ impl Gfx for Shim {
     }
     fn frame_end(&mut self) {
         self.gpu_wait_us = unsafe { ffi::mwf_frame_end() };
+        autoplay::after_frame();
     }
 }
 
@@ -586,6 +588,7 @@ fn draw_minimap(
     cam: &Camera,
     blasts: &[(Option<[f32; 3]>, u32)],
     now: u32,
+    safe_area: f32,
 ) {
     use game_core::minimap::{FIRING_PING_MS, Frame, RADAR_PING_MS, ping_alpha};
     use wpk::ui::od;
@@ -595,9 +598,11 @@ fn draw_minimap(
     let Some(screen) = u.pack.screen("minimap") else {
         return;
     };
+    // MW2's minimap sits top left in the safe area (baked at the full screen's corner): moved in by the margin.
+    let (ox, oy) = (320.0 * (1.0 - safe_area), 240.0 * (1.0 - safe_area));
     let Some(rect) = screen
         .owner_draw(od::MINIMAP_MAP)
-        .map(|o| [o.x, o.y, o.w, o.h])
+        .map(|o| [o.x + ox, o.y + oy, o.w, o.h])
     else {
         return;
     };
@@ -617,8 +622,13 @@ fn draw_minimap(
     u.page(|ui, q| {
         // MW2's own images over the map (the scan lines, the frame).
         if let Some(s) = ui.screen("minimap") {
-            q.extend_from_slice(&s.quads);
+            q.extend(s.quads.iter().map(|q| wpk::ui::Quad {
+                x: q.x + ox,
+                y: q.y + oy,
+                ..*q
+            }));
         }
+        let first = q.len();
         let alpha = |a: f32| 0xffff_ff00 | (a.clamp(0.0, 1.0) * 255.0) as u32;
         if let Some(a) = arena.filter(|_| !jammed) {
             for (i, fi) in a.fighters.iter().enumerate().skip(1) {
@@ -676,6 +686,19 @@ fn draw_minimap(
                 q.push(Frame::icon(f.to_screen(o), Frame::ENEMY_SIZE, t, alpha(al)));
             }
         }
+        // Pings beyond the map's frame aren't shown (MW2 clips them to the compass).
+        let inside = |p: &wpk::ui::Quad| {
+            let (cx, cy) = (p.x + p.w * 0.5, p.y + p.h * 0.5);
+            cx >= rect[0] && cx <= rect[0] + rect[2] && cy >= rect[1] && cy <= rect[1] + rect[3]
+        };
+        let mut k = first;
+        while k < q.len() {
+            if inside(&q[k]) {
+                k += 1;
+            } else {
+                q.swap_remove(k);
+            }
+        }
         if let Some(t) = me {
             q.push(f.player_icon(t));
         }
@@ -731,7 +754,15 @@ fn scoreboard(gfx: &mut Shim, input: &mut front::Input, a: &Arena) {
         })
         .collect();
     let mut sel = order.iter().position(|&i| i == 0).unwrap_or(0);
-    front::list(gfx, input, title, &lines, &mut sel, "A CONTINUE");
+    front::list(
+        gfx,
+        input,
+        &front::Page::on("main"),
+        title,
+        &lines,
+        &mut sel,
+        "A CONTINUE",
+    );
 }
 
 struct Loadouts<'a> {
@@ -1262,15 +1293,30 @@ fn run_map(
             } else {
                 alloc::string::String::from(kind)
             };
-            match front::pause(
-                gfx,
-                input,
-                name,
-                &mode,
-                loadouts.catalog,
-                (!loadouts.classes.is_empty()).then_some(loadouts.classes),
-                loadouts.cursor,
-            ) {
+            // The frozen game behind the menu.
+            front::grab_screen();
+            // Options go back to the START menu, as in MW2; the other choices close it.
+            let mut pause_sel = 0usize;
+            let choice = loop {
+                let c = front::pause(
+                    gfx,
+                    input,
+                    name,
+                    &mode,
+                    loadouts.catalog,
+                    (!loadouts.classes.is_empty()).then_some(loadouts.classes),
+                    loadouts.cursor,
+                    &mut pause_sel,
+                );
+                if let front::Pause::Options = c {
+                    front::options_menu(gfx, input, options, true);
+                    front::save_options(options);
+                    look_settings = options.look();
+                    continue;
+                }
+                break c;
+            };
+            match choice {
                 front::Pause::EndGame => {
                     devlog::event(ffi::ms(), "end_game", format_args!(""));
                     devlog::end(ffi::ms());
@@ -1280,11 +1326,7 @@ fn run_map(
                     devlog::event(now, "class_change", format_args!("class={c}"));
                     class = Some(c);
                 }
-                front::Pause::Options => {
-                    front::options_menu(gfx, input, options);
-                    front::save_options(options);
-                    look_settings = options.look();
-                }
+                front::Pause::Options => {}
                 front::Pause::Debug => {
                     use game_core::debug::Action;
                     let cat = loadouts.catalog;
@@ -2309,14 +2351,20 @@ fn run_map(
                 }
             }
             if let (true, Some(u), Some(a)) = (mw2, ui::get(), arena.as_ref()) {
-                let mut score_line = Str::default();
                 let mut objective_line = Str::default();
+                // The score bar: yours (your team's) and the best other player's (the enemy team's).
+                let score_pair = if a.mode.teams() {
+                    let mine = usize::from(a.fighters[0].team);
+                    (a.team_score[mine] as i32, a.team_score[3 - mine] as i32)
+                } else {
+                    let others: Vec<i32> = a.fighters[1..].iter().map(|f| f.score as i32).collect();
+                    (
+                        a.fighters[0].score as i32,
+                        hud_iw4::ffa_scorebar_lead(&others),
+                    )
+                };
                 if a.mode.teams() {
                     let mine = usize::from(a.fighters[0].team);
-                    score_line.push_str("US ");
-                    score_line.num(a.team_score[mine]);
-                    score_line.push_str("   THEM ");
-                    score_line.num(a.team_score[3 - mine]);
                     if let Some(d) = a.dom.as_ref() {
                         for f in &d.flags {
                             let mut l = [0u8; 4];
@@ -2340,27 +2388,8 @@ fn run_map(
                             objective_line.push('%');
                         }
                     }
-                } else {
-                    score_line.push_str("SCORE ");
-                    score_line.num(a.fighters[0].score);
-                    let (who, k) = a.leader();
-                    score_line.push_str("   ");
-                    score_line.push_str(fighter_name(who).as_str());
-                    score_line.push(' ');
-                    score_line.num(k);
                 }
-                if a.limits.score_limit > 0 {
-                    score_line.push_str(" / ");
-                    score_line.num(a.limits.score_limit);
-                }
-                let mut clock_line = Str::default();
-                let left = clock.remaining_ms(now) / 1000;
-                clock_line.num(left / 60);
-                clock_line.push(':');
-                if left % 60 < 10 {
-                    clock_line.push('0');
-                }
-                clock_line.num(left % 60);
+                let mode_name = front::mode_name(a.mode).to_ascii_uppercase();
                 let mut feed_lines: [Str; 4] = Default::default();
                 let mut feed_mine = [false; 4];
                 let mut n_feed = 0;
@@ -2396,7 +2425,13 @@ fn run_map(
                         None => display.push_str(&base.to_ascii_uppercase()),
                     }
                     let (clip, stock) = g.ammo();
-                    (g.name(), clip, stock)
+                    (
+                        g.name(),
+                        clip,
+                        stock,
+                        g.facts().clip_size,
+                        g.facts().weap_class,
+                    )
                 });
                 let mut grenades: [Option<(&str, i32)>; 2] = [None; 2];
                 if let Some(g) = gun {
@@ -2406,11 +2441,24 @@ fn run_map(
                 }
                 let state = game_core::hud_mw2::State {
                     now,
-                    weapon: weapon.map(|(n, c, s)| (n, display.as_str(), c, s)),
+                    match_ms: clock.elapsed_ms(now),
+                    safe_area: options.safe_area(),
+                    weapon: weapon.map(|(name, clip, stock, clip_size, weap_class)| {
+                        game_core::hud_mw2::Weapon {
+                            name,
+                            display: display.as_str(),
+                            clip,
+                            stock,
+                            clip_size,
+                            weap_class,
+                        }
+                    }),
                     grenades,
-                    score: score_line.as_str(),
+                    score: (score_pair.0, score_pair.1, a.limits.score_limit),
+                    teams: a.mode.teams(),
+                    mode_name: &mode_name,
                     objectives: objective_line.as_str(),
-                    clock: clock_line.as_str(),
+                    clock_ms: clock.left_ms(now),
                     feed: &feed_refs,
                     hitmarker: hitmarker_ms.is_some_and(|t| now.wrapping_sub(t) < 150),
                     popup,
@@ -2436,7 +2484,15 @@ fn run_map(
                 radar.sweep(m, radar_at, now, &enemies);
             }
             radar_at = now;
-            draw_minimap(&world, arena.as_ref(), &radar, &cam, &blasts, now);
+            draw_minimap(
+                &world,
+                arena.as_ref(),
+                &radar,
+                &cam,
+                &blasts,
+                now,
+                options.safe_area(),
+            );
             // A flashbang's or stun's white-out (IW4L `shellshock_flash_blend` with the shock's fade times).
             if let Some(a) = arena.as_ref()
                 && let Some(s) = a.fighters[0].shock
@@ -2537,6 +2593,8 @@ pub extern "C" fn mwf_game_main() -> i32 {
     let scratch: &'static mut WalkScratch = unsafe { &mut *core::ptr::addr_of_mut!(WALK_SCRATCH) };
     // Weapons, classes and other shared data (optional): <app folder>/common.wpk, in MEM2 for the whole run.
     let common = load_common();
+    // A test script, when `autoplay.txt` is in the app folder.
+    autoplay::init();
     // MW2's menu fonts and screens (from common.wpk), when the pack has them.
     ui::init(common, &mut gfx);
     let catalog = wpk::Pack::parse(common, false)
@@ -2567,7 +2625,7 @@ pub extern "C" fn mwf_game_main() -> i32 {
         match front::main_menu(&mut gfx, &mut input, &mut main_sel, catalog.is_some()) {
             front::Main::Quit => return 0,
             front::Main::Options => {
-                front::options_menu(&mut gfx, &mut input, &mut options);
+                front::options_menu(&mut gfx, &mut input, &mut options, false);
                 front::save_options(&options);
             }
             front::Main::Debug => {
@@ -2591,60 +2649,74 @@ pub extern "C" fn mwf_game_main() -> i32 {
                 sound::MUTED.store(!debug.sound, core::sync::atomic::Ordering::Relaxed);
             }
             front::Main::CreateAClass => {
-                let Some(cat) = catalog.as_ref() else {
-                    continue;
-                };
-                while let Some(i) = front::pick_class(
-                    &mut gfx,
-                    &mut input,
-                    Some(cat),
-                    "CREATE A CLASS",
-                    &custom,
-                    &mut edit_sel,
-                ) {
-                    front::edit_class(&mut gfx, &mut input, cat, &mut custom[i]);
-                    front::save_classes(cat, &custom);
+                if let Some(cat) = catalog.as_ref() {
+                    front::create_a_class(&mut gfx, &mut input, cat, &mut custom, &mut edit_sel);
                 }
             }
-            front::Main::Play => {
+            // The Xbox 360's private match: the lobby (start, game setup, Create-a-Class), the match with the class
+            // last chosen, then back to the lobby.
+            front::Main::PrivateMatch => {
                 let mut names = [0u8; 2048];
                 let maps = list_maps(&mut names);
-                while let Some(i) = front::pick_map(&mut gfx, &mut input, &maps, &mut map_sel) {
-                    // MW2's private-match setup: game type and limits.
-                    if !front::game_setup(
-                        &mut gfx,
-                        &mut input,
-                        &rules,
-                        &mut mode,
-                        &mut limits,
-                        &mut debug,
-                    ) {
-                        continue;
+                let mut lobby_sel = 0usize;
+                loop {
+                    let players = |m: arena::Mode, bots: usize| -> Vec<front::LobbyRow> {
+                        (0..=bots)
+                            .map(|i| {
+                                let ally = i == 0 || i % 2 == 0;
+                                let (info, rgba) = match m {
+                                    arena::Mode::Ffa if i == 0 => ("", 0xffd8_40ff),
+                                    arena::Mode::Ffa => ("BOT", 0xffff_ffff),
+                                    _ if ally => ("ALLIES", 0x9cc8_ffff),
+                                    _ => ("OPFOR", 0xff9c_8cff),
+                                };
+                                front::LobbyRow {
+                                    name: alloc::string::String::from(fighter_name(i).as_str()),
+                                    info: alloc::string::String::from(info),
+                                    rgba,
+                                }
+                            })
+                            .collect()
+                    };
+                    let mut setup = front::Setup {
+                        maps: &maps,
+                        map: &mut map_sel,
+                        mode: &mut mode,
+                        limits: &mut limits,
+                        rules: &rules,
+                        debug: &mut debug,
+                    };
+                    match front::lobby(&mut gfx, &mut input, &mut setup, &players, &mut lobby_sel) {
+                        front::Lobby::Back => break,
+                        front::Lobby::CreateAClass => {
+                            if let Some(cat) = catalog.as_ref() {
+                                front::create_a_class(
+                                    &mut gfx,
+                                    &mut input,
+                                    cat,
+                                    &mut custom,
+                                    &mut edit_sel,
+                                );
+                            }
+                            continue;
+                        }
+                        front::Lobby::Start => {}
                     }
-                    // Custom classes first, then MW2's defaults.
+                    // The bots' count and skill are set in Game Rules.
+                    front::save_debug(&debug);
+                    // Custom classes first, then MW2's defaults; the match starts with the class last chosen.
                     let classes: Vec<wpk::classes::Loadout> = catalog
                         .as_ref()
                         .map(|c| custom.iter().chain(&c.defaults).cloned().collect())
                         .unwrap_or_default();
-                    let class = if classes.is_empty() {
-                        None
-                    } else {
-                        match front::pick_class(
-                            &mut gfx,
-                            &mut input,
-                            catalog.as_ref(),
-                            "CHOOSE CLASS",
-                            &classes,
-                            &mut class_sel,
-                        ) {
-                            Some(c) => Some(c),
-                            None => continue,
-                        }
+                    let class = (!classes.is_empty()).then(|| class_sel.min(classes.len() - 1));
+                    let Some(&map) = maps.get(map_sel) else {
+                        continue;
                     };
                     let mark = unsafe { ffi::mwf_mem2_mark() };
                     let exit = run_map(
                         &mut gfx,
-                        maps[i],
+                        map,
                         scratch,
                         common,
                         Loadouts {
@@ -2663,7 +2735,7 @@ pub extern "C" fn mwf_game_main() -> i32 {
                     if let Exit::Quit = exit {
                         return 0;
                     }
-                    break;
+                    input.settle();
                 }
             }
         }

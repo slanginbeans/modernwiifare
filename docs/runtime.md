@@ -26,22 +26,35 @@ By hand:
 
 ## Menus
 The menus use MW2's own look, converted from your copy into `common.wpk` (`converter/src/ui_bake.rs`): its fonts
-(glyph tables over their atlases) and five of its screens, each with its images, gradients, title and header text,
+(glyph tables over their atlases) and its console screens, each with its images, gradients, title and header text,
 button column (position, font, text placement, selection bar) and the back button's place:
-- main menu (`main_text`): also the map choice;
+- main menu (`main_text`);
+- the private match lobby (`menu_xboxlive_privatelobby`): the players in MW2's rows on the right (team-coloured in team
+  modes), the player count, the map and the game mode in its slots;
+- the Game Setup popup (`popup_gamesetup`, its frame sized for its three buttons) over the dimmed lobby;
+- the map page (`settings_map`) and the game mode page (`settings_gametype`): the focused map's or mode's name and
+  MW2's description (`MPUI_DESC_MAP_*`, the game type table's strings) in the right-hand panel;
+- the rules rows (`settings_quick_dm`): Game Rules, Options and Debug, each value drawn in its row;
 - class select (`changeclass`): the class panel on the right shows the focused class's weapons, perks and equipment;
 - Create-a-Class (`menu_cac_assault`): the panel shows the class being edited, or previews the focused choice;
-- pause (`class`): with the map and the mode on the right;
+- the in-game START menu (`class`): with the map and the mode on the right;
+- the yes / no popup (`popup_endgame`): MW2's End Game question;
 - scoreboard (`page_scoreboard`): MW2's columns (score, kills, assists, deaths); free-for-all scores 50 a kill.
+In a match the menus draw over the last frame of the game (`mwf_grab_screen` keeps it at half size), dimmed as
+MW2 does, instead of a blank screen.
 
 The layout is `game_core::ui_page`, shared with `mwf-convert menu-preview <common.wpk>`, which renders every screen
 with sample content to `out/preview/menu_<screen>.png` to check them on the PC. Without menu data in `common.wpk`
 the menus fall back to the block font.
-Every menu is a list: D-pad or main stick up / down, **A** chooses, **B** goes back.
-- **Main menu**: Play, Create a Class, Quit.
-- **Play** → choose a map → **Game Setup** (as MW2's private match: game type free-for-all or team deathmatch, score
-  limit, time limit; each starts at your scripts' value for the mode, A cycles the choices) → choose a class (your
-  five custom classes, then MW2's five default classes) → the match.
+Every menu is a list: D-pad or main stick up / down (held, it repeats after 0.4 s, then every 90 ms), **A** chooses,
+**B** goes back; on a line with a value, left / right change it (A steps it forward). The menus ignore A, B and START
+until they are let go when they open from a press (START opening the in-game menu doesn't also close it, on either
+pad). The flow is the Xbox 360's private match:
+- **Main menu**: Private Match, Create a Class, Options, Debug, Quit.
+- **Private Match** → the lobby: **Start Game**, **Game Setup** (the popup: Change Map, Change Game Mode, Game Rules:
+  time limit and score limit, each starting at your scripts' value for the mode, the bots (0-7) and their difficulty),
+  **Create a Class**. Start Game loads the map with the class last chosen (your five custom classes, then MW2's five
+  default classes); the match ends back in the lobby.
 - **Team deathmatch** (`war.gsc`): you and two bots against three (allies tinted blue); team-mode points (100 a kill
   from `_rank.gsc`) go to the team's score; no friendly fire (MW2's default); bots and aim assist ignore teammates;
   spawns follow MW2's `getSpawnpoint_NearTeam` (far from enemies, near allies, out of enemy sight); teammates always
@@ -55,7 +68,9 @@ Every menu is a list: D-pad or main stick up / down, **A** chooses, **B** goes b
   class saves all five to `classes.dat` in the app folder, by item name (a re-converted `common.wpk` still reads it).
   The classes start as MW2's own starting custom classes. Names, weapons and perks come from your copy's tables
   (statsTable, attachmentTable, perkTable, killstreakTable, classTable) and their localized names.
-- In a match, **START** pauses: Resume, Change Class (applies at your next spawn, as in MW2) or End Game.
+- In a match, **START** opens MW2's in-game menu over the frozen game: Choose Class (applies at your next spawn, as in
+  MW2), Options (back to this menu after), End Game (MW2's yes / no question first, No focused), Debug; B or START
+  resumes.
 
 Look and aim are IW4L's gamepad model (`game_core::look`): a 12% radial dead zone, its look curve, turn rates of
 260 / 90 °/s at the hip and 90 / 55 °/s in ADS (slower when zoomed), turn acceleration, and aim assist with each
@@ -81,7 +96,7 @@ EMP: jams the enemies' radar as a Counter-UAV does, for `_emp.gsc`'s jam time (6
 
 Player characters: the other players are MW2's bodies for the map's factions (`CHAR`: each team's assault body and head, a low LOD so the Wii can skin several; the head's vertices are in its own model space, so its bones, those it shares with the body too, unbind with the head's own bind poses and follow the body's), animated by MW2's player animation script (`PSCR`, the user's `mp/playeranim.script` baked at convert time; clips `PANM` read in place from MEM2, bound by bone name at load). Each frame a player's movement type (IW4L's `footsteps_anim_move_type`), weapon (player-anim type and class), ADS, strafing and firing pick the script's first matching item; its animation plays on the legs, the torso or both, cross-fading over IW4's blend time. Firing, reload, melee and grenade throws play their event's torso animation for its duration; a death plays the death item matching the hit location, the direction the damage came from and whether an explosion did it, and the body lies there until the respawn. IW4's controller tags bend the spine to the aim pitch and turn the torso from the legs, which follow the view once it is 20 degrees away. Skinned on the CPU and drawn at the player's position, turned with the legs; the weapon it holds (the common pack's `GUNM`: its world model, read in place) is drawn on its `tag_weapon_right` while it lives. Players behind you aren't posed or skinned (their animation state still runs). Without characters in the pack, the placeholder boxes are drawn. Hit detection still uses the boxes.
 
-The match HUD (`game_core::hud_mw2`) uses MW2's fonts and HUD images from `common.wpk` (`UIPK` icons: each weapon's `hudIcon` as `weapon:<name>`, the killstreak table's icons as `streak:<name>`, MW2's hitmarker `damage_feedback`): the weapon's icon, magazine and reserve and its name bottom right, the lethal and tactical grenades with their counts above them, the killstreak ready to call in on the right, the kill feed, scores (team or yours and the leader's), Domination's flags and the clock bottom left, MW2's hitmarker and a `+points` popup at the crosshair, notices and the nuke's countdown at the top, and the respawn countdown when dead. The positions are this build's, not MW2's `hud.menu` layout. Without the UI in the pack the plain HUD is drawn. `mwf-convert menu-preview <common.wpk>` renders it with sample content (`out/preview/menu_hud.png`).
+The match HUD (`game_core::hud_mw2`) uses MW2's fonts and HUD images from `common.wpk` (`UIPK` icons: each weapon's `hudIcon` as `weapon:<name>`, the killstreak table's icons as `streak:<name>`, MW2's hitmarker `damage_feedback`), the ammo counter's rounds `ammo_counter_*`), laid out by MW2's own SD-TV HUD menus (`UIPK` HUD layouts: `weaponbar_sd`, `scorebar_sd`, `dpad_sd`, kept in MW2's virtual coordinates with their alignment) and placed at run time with IW4L's `hud_iw4::ScreenPlacement` inside the safe area from Options (MW2's `safeArea_adjusted`; 90% by default), so nothing sits in a TV's overscan. Bottom right, the weapon bar: its backdrop, the magazine as rounds (`hud_iw4` clip pips by weapon class: bullets, rifle rounds, shells, rockets, belt), spent rounds dimmed, the reserve, the weapon's name, the lethal and tactical grenades stacked one icon a grenade, MW2's pulsing Reload / Low ammo / No ammo at the centre, and the d-pad's killstreak ready to call in. Bottom left, the score bar (`hud_iw4` scorebar): the clock in its dial (amber under a minute, red under 30 s), your score's bar and the leader's (or the enemy team's) filling towards the score limit with the scores beside them, and Winning / Losing / Tied in turn with the game mode; Domination's flags and the kill feed above it. The minimap sits top left inside the safe area (pings past its frame are left out). MW2's hitmarker and a `+points` popup at the crosshair, notices and the nuke's countdown at the top, and the respawn countdown when dead. HUD text is shadowed as MW2's is. Without the UI in the pack the plain HUD is drawn. `mwf-convert menu-preview <common.wpk>` renders it with sample content (`out/preview/menu_hud.png`).
 
 **Xbox 360 wired pad (USB):** plug it into either USB port, before or during a match. Its light shows player 1 when
 the game has found it. Both pads can be used at once, and the 360 pad also drives the menus (D-pad or left stick, **A**
@@ -109,9 +124,9 @@ again about once a second. Triggers count as pulled past 30 of 255 (XInput's thr
 the same learned range and IW4L dead zone as the GameCube's. Not handled yet: the wireless receiver and rumble.
 
 Options (OPTIONS on the main and pause menus, MW2's console Controls page; saved to `<app folder>/options.dat`): look sensitivity and aim-down-sight sensitivity (1-10, MW2's scale; 3 is the default), look inversion, target assist, button layout (Default, or Tactical: on the GameCube pad stance on D-pad right and melee on B; on the 360 pad stance
-on the right stick click and melee on B), stick layout (Default, or Southpaw: move with the C-stick). Game Setup: game type, score and time limits, bots (0-7) and bot difficulty.
+on the right stick click and melee on B), stick layout (Default, or Southpaw: move with the C-stick), safe area (80-100%, 90% by default: MW2's console safe-area adjustment, so the HUD stays inside a TV's overscan).
 
-Debug menu (DEBUG on the main menu, and on the pause menu during a match; A changes a setting; saved to `<app folder>/debug.dat`):
+Debug menu (DEBUG on the main menu, and on the in-game menu during a match; A or left / right changes a setting; saved to `<app folder>/debug.dat`):
 - Match: bots don't attack, bots frozen, god mode (no damage, no fall or out-of-world deaths), infinite ammo (magazine, reserve and grenades every frame), all killstreaks (every reward at the start of each life), primary weapon (any catalog weapon instead of the class's, no attachments; at the next spawn).
 - Overlays (see-through boxes): hit boxes (head and neck red, body blue), bot goals (yellow posts where each bot is walking), objectives (Domination flag triggers, coloured by holder), bullet paths (your last six shots for 3 s, through walls).
 - Performance: perf overlay at match start, character models (off: the placeholder boxes), world models, sound.

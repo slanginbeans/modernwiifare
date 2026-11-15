@@ -1,5 +1,7 @@
 #include <gccore.h>
 #include <malloc.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "shim.h"
@@ -82,6 +84,62 @@ void mwf_gpu_idle(void) {
 
 uint32_t mwf_gpu_wait_us(void) {
     return gpu_wait;
+}
+
+const void *mwf_last_frame(void) {
+    if (queued_xfb < 0) return NULL;
+    mwf_gpu_idle();
+    return mwf_xfb[queued_xfb];
+}
+
+static u8 clamp_u8(int v) {
+    return (u8)(v < 0 ? 0 : (v > 255 ? 255 : v));
+}
+
+int mwf_screenshot(const char *path) {
+    if (queued_xfb < 0 || mwf_rmode == NULL) return -1;
+    mwf_gpu_idle();
+    const u32 w = mwf_rmode->fbWidth, h = mwf_rmode->xfbHeight;
+    const u8 *src = (const u8 *)mwf_xfb[queued_xfb];
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    u8 hdr[54] = {'B', 'M'};
+    const u32 row = w * 3, size = 54 + row * h;
+    const u32 vals[] = {size, 0, 54, 40, w, h};
+    for (int i = 0; i < 6; i++) {
+        u8 *p = hdr + 2 + i * 4;
+        p[0] = (u8)vals[i];
+        p[1] = (u8)(vals[i] >> 8);
+        p[2] = (u8)(vals[i] >> 16);
+        p[3] = (u8)(vals[i] >> 24);
+    }
+    hdr[26] = 1;  /* planes */
+    hdr[28] = 24; /* bits */
+    fwrite(hdr, 1, sizeof hdr, f);
+    u8 *line = malloc(row);
+    if (!line) {
+        fclose(f);
+        return -1;
+    }
+    /* BMP rows go bottom-up; the XFB is Y Cb Y Cr per pixel pair. */
+    for (int y = (int)h - 1; y >= 0; y--) {
+        const u8 *s = src + (u32)y * w * 2;
+        for (u32 x = 0; x < w; x += 2) {
+            int y0 = s[x * 2] - 16, cb = s[x * 2 + 1] - 128, y1 = s[x * 2 + 2] - 16, cr = s[x * 2 + 3] - 128;
+            int ys[2] = {y0, y1};
+            for (int k = 0; k < 2; k++) {
+                int c = 298 * ys[k];
+                u8 *d = line + (x + (u32)k) * 3;
+                d[0] = clamp_u8((c + 516 * cb + 128) >> 8);
+                d[1] = clamp_u8((c - 100 * cb - 208 * cr + 128) >> 8);
+                d[2] = clamp_u8((c + 409 * cr + 128) >> 8);
+            }
+        }
+        fwrite(line, 1, row, f);
+    }
+    free(line);
+    fclose(f);
+    return 0;
 }
 
 void mwf_gx_end_frame(void) {

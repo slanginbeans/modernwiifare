@@ -27,6 +27,10 @@ int mwf_should_exit(void) {
     return SYS_ResetButtonDown() ? 1 : 0;
 }
 
+void mwf_poweroff(void) {
+    SYS_ResetSystem(SYS_POWEROFF, 0, 0);
+}
+
 uint32_t mwf_us(void) {
     return (uint32_t)ticks_to_microsecs(gettime());
 }

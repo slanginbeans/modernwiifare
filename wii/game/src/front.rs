@@ -1,6 +1,9 @@
-//! Front-end menus on the HUD font: main menu, map choice, class choice, Create-a-Class and the in-game pause menu.
-//! Every screen is a list (D-pad or main stick up / down, A choose, B back). Custom classes are saved to
-//! `<app folder>/classes.dat` by item name.
+//! Front-end menus in the Xbox 360 MW2's flow: the main menu, the private match lobby (start, game setup, Create-a-
+//! Class, the players), the Game Setup popup (map, game mode, game rules), and in a match the START menu over the
+//! frozen game (choose class, options, end game with MW2's yes / no question). Every screen is drawn on one of
+//! MW2's own baked screens (`game_core::ui_page`) and driven as a list: D-pad or stick up / down (held, it repeats),
+//! left / right change a value, A chooses, B goes back. Custom classes are saved to `<app folder>/classes.dat` by
+//! item name.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -10,63 +13,103 @@ use game_core::camera::Camera;
 use game_core::gfx::Gfx;
 use game_core::hud::{self, Rect};
 use game_core::loadout::{self, FIELDS};
-use game_core::menu::{self, Nav, Step};
-pub use game_core::ui_page::ScoreRow;
+use game_core::menu::{self, Nav, Repeat, Step};
 use game_core::ui_page::{self, PageLine};
+pub use game_core::ui_page::{LobbyRow, ScoreRow};
 use wpk::classes::{Catalog, Loadout};
+use wpk::ui::{Quad, UiPack};
 
 use crate::{AppPath, Shim, ffi};
 
-/// Edge-triggered pad input for menus (the stick acts like the D-pad, one line per push).
-/// Either pad drives the menus: the GameCube pad, or the USB Xbox 360 pad (D-pad or left stick, A accepts, B /
-/// START / BACK go back).
+/// Pad input for menus: edges, with a held direction repeating (`game_core::menu::Repeat`). Either pad drives the
+/// menus: the GameCube pad, or the USB Xbox 360 pad (D-pad or left stick, A accepts, B / START / BACK go back).
 #[derive(Default)]
 pub struct Input {
-    held_y: i8,
     prev_x360: u16,
+    rep_y: Repeat,
+    rep_x: Repeat,
+    /// Ignore A and B until both are let go (a menu opened by a press doesn't take that press).
+    settle: bool,
 }
 
-impl Input {
-    pub fn poll(&mut self) -> Nav {
-        use game_core::controls::{x360, x360_axis};
-        let (pad, x) = ffi::pads();
-        let xy = if x.connected { x360_axis(x.ly) } else { 0 };
-        let sy = if pad.sy.saturating_abs() >= xy.saturating_abs() {
-            pad.sy
-        } else {
-            xy
-        };
-        let stick = if sy > 60 {
-            1
-        } else if sy < -60 {
-            -1
-        } else {
-            0
-        };
-        let xd = if x.connected {
-            x.buttons & !self.prev_x360
-        } else {
-            0
-        };
-        self.prev_x360 = if x.connected { x.buttons } else { 0 };
-        let nav = Nav {
-            up: pad.down & ffi::BTN_UP != 0
-                || xd & x360::UP != 0
-                || (stick == 1 && self.held_y != 1),
-            down: pad.down & ffi::BTN_DOWN != 0
-                || xd & x360::DOWN != 0
-                || (stick == -1 && self.held_y != -1),
-            accept: pad.down & ffi::BTN_A != 0 || xd & x360::A != 0,
-            back: pad.down & (ffi::BTN_B | ffi::BTN_START) != 0
-                || xd & (x360::B | x360::START | x360::BACK) != 0
-                || ffi::should_exit(),
-        };
-        self.held_y = stick;
-        nav
+/// A stick axis as a direction: past 60 of 127 (the GameCube stick's gate is about 100).
+fn stick_dir(v: i32, threshold: i32) -> i8 {
+    if v > threshold {
+        1
+    } else if v < -threshold {
+        -1
+    } else {
+        0
     }
 }
 
-/// One line of a list: text, an optional right-hand value, and whether it can be chosen.
+impl Input {
+    /// Ignore A, B and START until they are let go (after a press opened this menu, or a match ended).
+    pub fn settle(&mut self) {
+        self.settle = true;
+    }
+
+    pub fn poll(&mut self) -> Nav {
+        use game_core::controls::{gc, x360, x360_axis};
+        let (pad, x) = ffi::pads();
+        let xb = if x.connected { x.buttons } else { 0 };
+        let xd = xb & !self.prev_x360;
+        self.prev_x360 = xb;
+        let (xx, xy) = if x.connected {
+            (i32::from(x360_axis(x.lx)), i32::from(x360_axis(x.ly)))
+        } else {
+            (0, 0)
+        };
+        let held = |g: u16, b: u16| pad.held & g != 0 || xb & b != 0;
+        let mut dy = stick_dir(i32::from(pad.sy), 60);
+        if dy == 0 {
+            dy = stick_dir(xy, 60);
+        }
+        if held(gc::UP, x360::UP) {
+            dy = 1;
+        } else if held(gc::DOWN, x360::DOWN) {
+            dy = -1;
+        }
+        let mut dx = stick_dir(i32::from(pad.sx), 60);
+        if dx == 0 {
+            dx = stick_dir(xx, 60);
+        }
+        if held(gc::RIGHT, x360::RIGHT) {
+            dx = 1;
+        } else if held(gc::LEFT, x360::LEFT) {
+            dx = -1;
+        }
+        let now = ffi::ms();
+        let fy = self.rep_y.update(dy, now);
+        let fx = self.rep_x.update(dx, now);
+        let buttons = pad.held & (gc::A | gc::B | gc::START) != 0
+            || xb & (x360::A | x360::B | x360::START | x360::BACK) != 0;
+        if self.settle {
+            if buttons {
+                return Nav {
+                    up: fy && dy > 0,
+                    down: fy && dy < 0,
+                    left: fx && dx < 0,
+                    right: fx && dx > 0,
+                    ..Nav::default()
+                };
+            }
+            self.settle = false;
+        }
+        Nav {
+            up: fy && dy > 0,
+            down: fy && dy < 0,
+            left: fx && dx < 0,
+            right: fx && dx > 0,
+            accept: pad.down & gc::A != 0 || xd & x360::A != 0,
+            back: pad.down & (gc::B | gc::START) != 0
+                || xd & (x360::B | x360::START | x360::BACK) != 0
+                || ffi::should_exit(),
+        }
+    }
+}
+
+/// One line of a list: text, an optional value, and whether it can be chosen.
 pub struct Line {
     pub text: String,
     pub value: Option<String>,
@@ -81,6 +124,14 @@ impl Line {
             enabled: true,
         }
     }
+
+    pub fn value(text: &str, value: String) -> Line {
+        Line {
+            text: String::from(text),
+            value: Some(value),
+            enabled: true,
+        }
+    }
 }
 
 const ROWS: usize = 15;
@@ -88,38 +139,49 @@ const TITLE: u32 = 0xf0e8d0ff;
 const NORMAL: u32 = 0xb0b8c0ff;
 const SELECTED: u32 = 0xffd040ff;
 const DISABLED: u32 = 0x505860ff;
+/// Footer hints (MW2's console prompts name the buttons the same way).
+pub const FOOTER_SELECT: &str = "A SELECT   B BACK";
+const FOOTER_CHANGE: &str = "A / LEFT / RIGHT CHANGE   B BACK";
 
 /// Live text for a screen's empty slots (`wpk::ui::label_kind::SLOT`, in menu order) and the items its images show
 /// (`wpk::ui::image_field` order) for the focused line.
 pub type Panel<'a> = &'a dyn Fn(usize, &mut Vec<String>, &mut Vec<String>);
+/// Quads drawn under or over a page (the frozen game, the lobby under a popup, the lobby's players).
+pub type Layer<'a> = &'a dyn Fn(&UiPack, &mut Vec<Quad>);
 
-/// Which baked MW2 screen a list is drawn on, and what fills its slots.
+/// Which baked MW2 screen a list is drawn on, and what goes with it.
+#[derive(Default)]
 pub struct Page<'a> {
     pub screen: &'a str,
     pub panel: Option<Panel<'a>>,
+    /// Values inside their rows (MW2's rules rows); left / right change them.
+    pub values: bool,
+    pub under: Option<Layer<'a>>,
+    pub over: Option<Layer<'a>>,
 }
 
-impl Page<'_> {
-    pub const MAIN: Page<'static> = Page {
-        screen: "main",
-        panel: None,
-    };
+impl<'a> Page<'a> {
+    pub fn on(screen: &'a str) -> Page<'a> {
+        Page {
+            screen,
+            ..Page::default()
+        }
+    }
 }
 
-/// Show a list until a line is chosen (`Accept`) or B (`Back`). `selected` keeps the cursor between calls.
+/// The frozen game (kept when the menu opened), as the in-game menus' background.
+pub fn grabbed(_: &UiPack, q: &mut Vec<Quad>) {
+    q.push(ui_page::fullscreen(ui_page::GRAB, 0xffff_ffff));
+}
+
+/// Keep the frame on screen for the in-game menus.
+pub fn grab_screen() -> bool {
+    unsafe { ffi::mwf_grab_screen() != 0 }
+}
+
+/// Show a list until a line is chosen (`Accept`), changed (`Adjust`, on pages with values) or B (`Back`).
+/// `selected` keeps the cursor between calls.
 pub fn list(
-    gfx: &mut Shim,
-    input: &mut Input,
-    title: &str,
-    lines: &[Line],
-    selected: &mut usize,
-    footer: &str,
-) -> Step {
-    list_on(gfx, input, &Page::MAIN, title, lines, selected, footer)
-}
-
-/// `list` on a given MW2 screen.
-pub fn list_on(
     gfx: &mut Shim,
     input: &mut Input,
     page: &Page<'_>,
@@ -136,6 +198,8 @@ pub fn list_on(
         let step = menu::step(selected, lines.len(), input.poll());
         match step {
             Step::Accept(i) if !lines[i].enabled => {}
+            Step::Adjust(i, _) if !page.values || !lines[i].enabled || lines[i].value.is_none() => {
+            }
             Step::Stay => {}
             other => return other,
         }
@@ -146,16 +210,35 @@ pub fn list_on(
             if let Some(p) = page.panel {
                 p(*selected, &mut slots, &mut images);
             }
-            draw_mw2(
-                u,
-                page.screen,
+            let page_lines: Vec<PageLine<'_>> = lines
+                .iter()
+                .map(|l| PageLine {
+                    text: &l.text,
+                    value: l.value.as_deref(),
+                    enabled: l.enabled,
+                })
+                .collect();
+            let p = ui_page::Page {
+                screen: page.screen,
                 title,
-                lines,
-                *selected,
+                lines: &page_lines,
+                selected: *selected,
                 footer,
-                &slots,
-                &images,
-            );
+                slots: &slots,
+                images: &images,
+                inline_values: page.values,
+                // Over something (the frozen game, the lobby) the screen's opaque background is left out.
+                backdrop: page.under.is_none(),
+            };
+            u.page(|ui, q| {
+                if let Some(f) = page.under {
+                    f(ui, q);
+                }
+                ui_page::layout(ui, &p, q);
+                if let Some(f) = page.over {
+                    f(ui, q);
+                }
+            });
             gfx.frame_end();
             continue;
         }
@@ -189,39 +272,15 @@ pub fn list_on(
     }
 }
 
-/// A list drawn on one of MW2's screens (`game_core::ui_page`).
-#[allow(clippy::too_many_arguments)]
-fn draw_mw2(
-    u: &mut crate::ui::Ui,
-    screen: &str,
-    title: &str,
-    lines: &[Line],
-    selected: usize,
-    footer: &str,
-    slots: &[String],
-    images: &[String],
-) {
-    let lines: Vec<PageLine<'_>> = lines
-        .iter()
-        .map(|l| PageLine {
-            text: &l.text,
-            value: l.value.as_deref(),
-            enabled: l.enabled,
-        })
-        .collect();
-    let page = ui_page::Page {
-        screen,
-        title,
-        lines: &lines,
-        selected,
-        footer,
-        slots,
-        images,
-    };
-    u.page(|ui, q| ui_page::layout(ui, &page, q));
+/// A page's string from MW2's localized text, else ours.
+fn mw2(key: &str, ours: &str) -> String {
+    crate::ui::get()
+        .and_then(|u| u.pack.string(key).map(String::from))
+        .unwrap_or_else(|| String::from(ours))
 }
+
 pub enum Main {
-    Play,
+    PrivateMatch,
     CreateAClass,
     Options,
     Debug,
@@ -235,7 +294,7 @@ pub fn main_menu(
     has_classes: bool,
 ) -> Main {
     let mut lines = [
-        Line::new("PLAY"),
+        Line::new("PRIVATE MATCH"),
         Line::new("CREATE A CLASS"),
         Line::new("OPTIONS"),
         Line::new("DEBUG"),
@@ -246,8 +305,16 @@ pub fn main_menu(
         lines[1].enabled = false;
     }
     loop {
-        match list(gfx, input, "MODERN WIIFARE", &lines, selected, "A SELECT") {
-            Step::Accept(0) => return Main::Play,
+        match list(
+            gfx,
+            input,
+            &Page::on("main"),
+            "MODERN WIIFARE",
+            &lines,
+            selected,
+            "A SELECT",
+        ) {
+            Step::Accept(0) => return Main::PrivateMatch,
             Step::Accept(1) => return Main::CreateAClass,
             Step::Accept(2) => return Main::Options,
             Step::Accept(3) => return Main::Debug,
@@ -259,143 +326,355 @@ pub fn main_menu(
     }
 }
 
-/// Pick a map from `maps`; None = back.
-pub fn pick_map(
+/// The match being set up: map, mode, limits, bots.
+pub struct Setup<'a> {
+    pub maps: &'a [&'a str],
+    pub map: &'a mut usize,
+    pub mode: &'a mut Mode,
+    pub limits: &'a mut Limits,
+    pub rules: &'a wpk::rules::Rules,
+    pub debug: &'a mut game_core::debug::DebugSettings,
+}
+
+/// A map's name as MW2 shows it (`MPUI_<MAP>`), else the file name without `mp_`.
+pub fn map_name(file: &str) -> String {
+    let short = file.trim_start_matches("mp_").to_ascii_uppercase();
+    mw2(&alloc::format!("MPUI_{short}"), &short)
+}
+
+fn map_description(file: &str) -> String {
+    let short = file.trim_start_matches("mp_").to_ascii_uppercase();
+    mw2(&alloc::format!("MPUI_DESC_MAP_{short}"), "")
+}
+
+/// A game mode's name and description (MW2's game type table's strings).
+pub fn mode_name(m: Mode) -> String {
+    match m {
+        Mode::Ffa => mw2("MPUI_DEATHMATCH", "Free-for-all"),
+        Mode::Tdm => mw2("MPUI_WAR", "Team Deathmatch"),
+        Mode::Dom => mw2("MPUI_DOMINATION", "Domination"),
+    }
+}
+
+fn mode_description(m: Mode) -> String {
+    match m {
+        Mode::Ffa => mw2("MENU_KILL_EVERYONE_FIRST_PLAYER", ""),
+        Mode::Tdm => mw2("MENU_KILL_PLAYERS_ON_THE_OPPOSING", ""),
+        Mode::Dom => mw2("MENU_CAPTURE_AND_HOLD_THE", ""),
+    }
+}
+
+const MODES: [Mode; 3] = [Mode::Ffa, Mode::Tdm, Mode::Dom];
+
+pub enum Lobby {
+    Start,
+    CreateAClass,
+    Back,
+}
+
+/// The private match lobby: START GAME, GAME SETUP (the popup with the map, the mode and the rules), CREATE A CLASS,
+/// with the players on the right and the map and mode in the lobby's slots.
+pub fn lobby(
     gfx: &mut Shim,
     input: &mut Input,
-    maps: &[&str],
+    setup: &mut Setup<'_>,
+    players: &dyn Fn(Mode, usize) -> Vec<LobbyRow>,
     selected: &mut usize,
-) -> Option<usize> {
-    let mut lines: Vec<Line> = maps.iter().map(|m| Line::new(m)).collect();
+) -> Lobby {
+    let lines = [
+        Line::new("START GAME"),
+        Line::new("GAME SETUP"),
+        Line::new("CREATE A CLASS"),
+    ];
+    loop {
+        let rows = players(*setup.mode, usize::from(setup.debug.bots));
+        let map = setup.maps.get(*setup.map).copied().unwrap_or("");
+        // The lobby's slots: the player count (bottom right), the map and the game mode (bottom left).
+        let info = [
+            alloc::format!("{} PLAYERS", rows.len()),
+            map_name(map),
+            mode_name(*setup.mode),
+        ];
+        let panel = |_: usize, out: &mut Vec<String>, _: &mut Vec<String>| {
+            out.extend(info.iter().cloned());
+        };
+        let over = |ui: &UiPack, q: &mut Vec<Quad>| ui_page::lobby_rows(ui, &rows, q);
+        let page = Page {
+            screen: "lobby",
+            panel: Some(&panel),
+            over: Some(&over),
+            ..Page::default()
+        };
+        match list(
+            gfx,
+            input,
+            &page,
+            "PRIVATE MATCH",
+            &lines,
+            selected,
+            FOOTER_SELECT,
+        ) {
+            Step::Accept(0) if !setup.maps.is_empty() => return Lobby::Start,
+            Step::Accept(1) => game_setup(gfx, input, setup, &rows, &info),
+            Step::Accept(2) => return Lobby::CreateAClass,
+            Step::Back => return Lobby::Back,
+            _ => {}
+        }
+    }
+}
+
+/// MW2's Game Setup popup over the lobby: CHANGE MAP, CHANGE GAME MODE, GAME RULES, until B.
+fn game_setup(
+    gfx: &mut Shim,
+    input: &mut Input,
+    setup: &mut Setup<'_>,
+    rows: &[LobbyRow],
+    info: &[String; 3],
+) {
+    let lines = [
+        Line::new("CHANGE MAP"),
+        Line::new("CHANGE GAME MODE"),
+        Line::new("GAME RULES"),
+    ];
+    let mut sel = 0usize;
+    loop {
+        // The lobby, dimmed, under the popup.
+        let lobby_lines = [
+            PageLine {
+                text: "START GAME",
+                value: None,
+                enabled: true,
+            },
+            PageLine {
+                text: "GAME SETUP",
+                value: None,
+                enabled: true,
+            },
+            PageLine {
+                text: "CREATE A CLASS",
+                value: None,
+                enabled: true,
+            },
+        ];
+        let under = |ui: &UiPack, q: &mut Vec<Quad>| {
+            ui_page::layout(
+                ui,
+                &ui_page::Page {
+                    screen: "lobby",
+                    title: "PRIVATE MATCH",
+                    lines: &lobby_lines,
+                    selected: 1,
+                    footer: "",
+                    slots: info,
+                    images: &[],
+                    inline_values: false,
+                    backdrop: true,
+                },
+                q,
+            );
+            ui_page::lobby_rows(ui, rows, q);
+            q.push(ui_page::fullscreen(ui.white, 0x0000_0099));
+        };
+        let page = Page {
+            screen: "setup",
+            under: Some(&under),
+            ..Page::default()
+        };
+        match list(gfx, input, &page, "GAME SETUP", &lines, &mut sel, "") {
+            Step::Accept(0) => pick_map(gfx, input, setup.maps, setup.map),
+            Step::Accept(1) => {
+                if pick_mode(gfx, input, setup.mode) {
+                    *setup.limits = Limits::of(setup.rules, *setup.mode);
+                }
+            }
+            Step::Accept(2) => game_rules(gfx, input, setup),
+            Step::Back => return,
+            _ => {}
+        }
+    }
+}
+
+/// MW2's map page: the maps by name, the focused one's name and description on the right.
+pub fn pick_map(gfx: &mut Shim, input: &mut Input, maps: &[&str], selected: &mut usize) {
+    let mut lines: Vec<Line> = maps.iter().map(|m| Line::new(&map_name(m))).collect();
     if lines.is_empty() {
         let mut l = Line::new("NO MAPS IN THE APP FOLDER'S MAPS/");
         l.enabled = false;
         lines.push(l);
     }
-    match list(
+    let panel = |i: usize, out: &mut Vec<String>, _: &mut Vec<String>| {
+        if let Some(m) = maps.get(i) {
+            out.push(map_name(m));
+            out.push(map_description(m));
+        }
+    };
+    let page = Page {
+        screen: "maps",
+        panel: Some(&panel),
+        ..Page::default()
+    };
+    let mut cursor = *selected;
+    if let Step::Accept(i) = list(
         gfx,
         input,
-        "CHOOSE A MAP",
+        &page,
+        "CHOOSE MAP",
         &lines,
-        selected,
-        "A PLAY   B BACK",
-    ) {
-        Step::Accept(i) if !maps.is_empty() => Some(i),
-        _ => None,
+        &mut cursor,
+        FOOTER_SELECT,
+    ) && i < maps.len()
+    {
+        *selected = i;
     }
 }
 
-/// MW2's private-match game setup: the game type, score limit and time limit (each starts at the user's scripts'
-/// value for the mode; A cycles through the choices), the bots and their difficulty, then START. False on B.
-pub fn game_setup(
-    gfx: &mut Shim,
-    input: &mut Input,
-    rules: &wpk::rules::Rules,
-    mode: &mut Mode,
-    limits: &mut Limits,
-    match_settings: &mut game_core::debug::DebugSettings,
-) -> bool {
+/// MW2's game mode page. True when the mode changed.
+fn pick_mode(gfx: &mut Shim, input: &mut Input, mode: &mut Mode) -> bool {
+    let lines: Vec<Line> = MODES.iter().map(|&m| Line::new(&mode_name(m))).collect();
+    let panel = |i: usize, out: &mut Vec<String>, _: &mut Vec<String>| {
+        if let Some(&m) = MODES.get(i) {
+            out.push(mode_name(m));
+            out.push(mode_description(m));
+        }
+    };
+    let page = Page {
+        screen: "modes",
+        panel: Some(&panel),
+        ..Page::default()
+    };
+    let mut cursor = MODES.iter().position(|m| m == mode).unwrap_or(0);
+    match list(
+        gfx,
+        input,
+        &page,
+        "CHOOSE GAME MODE",
+        &lines,
+        &mut cursor,
+        FOOTER_SELECT,
+    ) {
+        Step::Accept(i) if MODES[i] != *mode => {
+            *mode = MODES[i];
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The choices of a limit: the scripts' value for the mode first, then MW2's usual steps, then none (0).
+fn limit_choices(default: u32, steps: &[u32]) -> Vec<u32> {
+    let mut v = alloc::vec![default];
+    for &s in steps {
+        if !v.contains(&s) {
+            v.push(s);
+        }
+    }
+    v.sort_unstable();
+    v.retain(|&x| x != 0);
+    v.push(0);
+    v
+}
+
+fn step_choice(options: &[u32], current: u32, dir: i8) -> u32 {
+    let at = options.iter().position(|&v| v == current).unwrap_or(0);
+    let n = options.len();
+    options[if dir > 0 {
+        (at + 1) % n
+    } else {
+        (at + n - 1) % n
+    }]
+}
+
+/// MW2's Game Rules page (its rules rows): time limit, score limit, the bots and their difficulty.
+fn game_rules(gfx: &mut Shim, input: &mut Input, s: &mut Setup<'_>) {
     use game_core::debug::Item;
-    let mut sel = 5usize;
+    let mut sel = 0usize;
     loop {
-        let score = if limits.score_limit == 0 {
+        let score = if s.limits.score_limit == 0 {
             String::from("UNLIMITED")
         } else {
-            alloc::format!("{}", limits.score_limit)
+            alloc::format!("{}", s.limits.score_limit)
         };
-        let time = if limits.time_limit_ms == 0 {
+        let time = if s.limits.time_limit_ms == 0 {
             String::from("UNLIMITED")
         } else {
-            alloc::format!("{} MIN", limits.time_limit_ms / 60_000)
-        };
-        let value = |text: &str, v: String| Line {
-            text: String::from(text),
-            value: Some(v),
-            enabled: true,
+            alloc::format!("{} MINUTES", s.limits.time_limit_ms / 60_000)
         };
         let lines = [
-            value(
-                "GAME TYPE",
-                String::from(match mode {
-                    Mode::Ffa => "FREE-FOR-ALL",
-                    Mode::Tdm => "TEAM DEATHMATCH",
-                    Mode::Dom => "DOMINATION",
-                }),
-            ),
-            value("SCORE LIMIT", score),
-            value("TIME LIMIT", time),
-            value(
+            Line::value("TIME LIMIT", time),
+            Line::value("SCORE LIMIT", score),
+            Line::value(
                 "BOTS",
-                match_settings
-                    .value(Item::Bots, |_| None)
-                    .unwrap_or_default(),
+                s.debug.value(Item::Bots, |_| None).unwrap_or_default(),
             ),
-            value(
+            Line::value(
                 "BOT DIFFICULTY",
-                match_settings
-                    .value(Item::BotSkill, |_| None)
-                    .unwrap_or_default(),
+                s.debug.value(Item::BotSkill, |_| None).unwrap_or_default(),
             ),
-            Line::new("START MATCH"),
         ];
-        match list(
+        let page = Page {
+            screen: "rules",
+            values: true,
+            ..Page::default()
+        };
+        let (i, dir) = match list(
             gfx,
             input,
-            "GAME SETUP",
+            &page,
+            &mode_name(*s.mode).to_ascii_uppercase(),
             &lines,
             &mut sel,
-            "A CHANGE / START   B BACK",
+            FOOTER_CHANGE,
         ) {
-            Step::Accept(0) => {
-                *mode = match mode {
-                    Mode::Ffa => Mode::Tdm,
-                    Mode::Tdm => Mode::Dom,
-                    Mode::Dom => Mode::Ffa,
-                };
-                *limits = Limits::of(rules, *mode);
+            Step::Accept(i) => (i, 1),
+            Step::Adjust(i, d) => (i, d),
+            _ => return,
+        };
+        let defaults = Limits::of(s.rules, *s.mode);
+        match i {
+            0 => {
+                let options = limit_choices(
+                    defaults.time_limit_ms,
+                    &[5, 10, 15, 20, 30].map(|m| m * 60_000),
+                );
+                s.limits.time_limit_ms = step_choice(&options, s.limits.time_limit_ms, dir);
             }
-            Step::Accept(1) => {
-                // The scripts' limit, then whole numbers of kills, then none.
-                let default = Limits::of(rules, *mode).score_limit;
-                let mut options: Vec<u32> = alloc::vec![default];
-                for kills in [10, 20, 30, 50, 75, 100, 150] {
-                    let v = kills * limits.kill_score.max(1);
-                    if !options.contains(&v) {
-                        options.push(v);
-                    }
-                }
-                options.push(0);
-                let at = options
-                    .iter()
-                    .position(|&v| v == limits.score_limit)
-                    .unwrap_or(0);
-                limits.score_limit = options[(at + 1) % options.len()];
+            1 => {
+                let k = s.limits.kill_score.max(1);
+                let options = limit_choices(
+                    defaults.score_limit,
+                    &[10, 20, 30, 50, 75, 100, 150].map(|n| n * k),
+                );
+                s.limits.score_limit = step_choice(&options, s.limits.score_limit, dir);
             }
-            Step::Accept(2) => {
-                let default = Limits::of(rules, *mode).time_limit_ms;
-                let mut options: Vec<u32> = alloc::vec![default];
-                for min in [5, 10, 15, 20, 30] {
-                    let v = min * 60_000;
-                    if !options.contains(&v) {
-                        options.push(v);
-                    }
-                }
-                options.push(0);
-                let at = options
-                    .iter()
-                    .position(|&v| v == limits.time_limit_ms)
-                    .unwrap_or(0);
-                limits.time_limit_ms = options[(at + 1) % options.len()];
-            }
-            Step::Accept(3) => match_settings.cycle(Item::Bots, 0),
-            Step::Accept(4) => match_settings.cycle(Item::BotSkill, 0),
-            Step::Accept(_) => return true,
-            _ => return false,
+            2 => cycle_debug(s.debug, Item::Bots, dir),
+            _ => cycle_debug(s.debug, Item::BotSkill, dir),
         }
     }
 }
+
+/// A debug setting one step forward, or back (its cycle wraps: back is all the way round less one).
+fn cycle_debug(d: &mut game_core::debug::DebugSettings, item: game_core::debug::Item, dir: i8) {
+    if dir > 0 {
+        d.cycle(item, 0);
+        return;
+    }
+    let start = d.encode();
+    let mut prev = start.clone();
+    for _ in 0..64 {
+        d.cycle(item, 0);
+        if d.encode() == start {
+            if let Some(p) = game_core::debug::DebugSettings::decode(&prev) {
+                *d = p;
+            }
+            return;
+        }
+        prev = d.encode();
+    }
+}
+
 /// Pick one of `classes` (custom first, then MW2's defaults) on MW2's class screen, the focused class shown in its
-/// panel; None = back.
+/// panel; None = back. `under`: the frozen game, in a match.
+#[allow(clippy::too_many_arguments)]
 pub fn pick_class(
     gfx: &mut Shim,
     input: &mut Input,
@@ -403,6 +682,7 @@ pub fn pick_class(
     title: &str,
     classes: &[Loadout],
     selected: &mut usize,
+    under: Option<Layer<'_>>,
 ) -> Option<usize> {
     let lines: Vec<Line> = classes.iter().map(|c| Line::new(&c.name)).collect();
     let panel = |i: usize, out: &mut Vec<String>, images: &mut Vec<String>| {
@@ -414,18 +694,34 @@ pub fn pick_class(
     let page = Page {
         screen: "class_select",
         panel: Some(&panel),
+        under,
+        ..Page::default()
     };
-    match list_on(
-        gfx,
-        input,
-        &page,
-        title,
-        &lines,
-        selected,
-        "A CHOOSE   B BACK",
-    ) {
+    match list(gfx, input, &page, title, &lines, selected, FOOTER_SELECT) {
         Step::Accept(i) => Some(i),
         _ => None,
+    }
+}
+
+/// Create-a-Class: pick a custom class, edit it field by field, saved when leaving it.
+pub fn create_a_class(
+    gfx: &mut Shim,
+    input: &mut Input,
+    cat: &Catalog,
+    custom: &mut [Loadout],
+    selected: &mut usize,
+) {
+    while let Some(i) = pick_class(
+        gfx,
+        input,
+        Some(cat),
+        "CREATE A CLASS",
+        custom,
+        selected,
+        None,
+    ) {
+        edit_class(gfx, input, cat, &mut custom[i]);
+        save_classes(cat, custom);
     }
 }
 
@@ -441,7 +737,7 @@ pub fn edit_class(gfx: &mut Shim, input: &mut Input, cat: &Catalog, class: &mut 
                 enabled: loadout::enabled(cat, class, f),
             })
             .collect();
-        let title = alloc::format!("EDIT {}", class.name);
+        let title = class.name.to_ascii_uppercase();
         let shown = class.clone();
         let panel = |_: usize, out: &mut Vec<String>, images: &mut Vec<String>| {
             loadout::panel(cat, &shown, out);
@@ -450,16 +746,10 @@ pub fn edit_class(gfx: &mut Shim, input: &mut Input, cat: &Catalog, class: &mut 
         let page = Page {
             screen: "cac",
             panel: Some(&panel),
+            ..Page::default()
         };
-        let Step::Accept(i) = list_on(
-            gfx,
-            input,
-            &page,
-            &title,
-            &lines,
-            &mut field,
-            "A CHANGE   B DONE",
-        ) else {
+        let Step::Accept(i) = list(gfx, input, &page, &title, &lines, &mut field, FOOTER_SELECT)
+        else {
             return;
         };
         let f = FIELDS[i];
@@ -497,15 +787,16 @@ pub fn edit_class(gfx: &mut Shim, input: &mut Input, cat: &Catalog, class: &mut 
         let page = Page {
             screen: "cac",
             panel: Some(&preview),
+            ..Page::default()
         };
-        if let Step::Accept(k) = list_on(
+        if let Step::Accept(k) = list(
             gfx,
             input,
             &page,
             loadout::label(f).trim_start(),
             &names,
             &mut pick,
-            "A CHOOSE   B BACK",
+            FOOTER_SELECT,
         ) {
             loadout::set(cat, class, f, options[k]);
         }
@@ -551,7 +842,33 @@ pub enum Pause {
     EndGame,
 }
 
-/// The in-game pause menu (the match stops while it is open: there is no one else to play on).
+/// MW2's yes / no popup (its End Game question) over `under`. True for YES.
+pub fn confirm(gfx: &mut Shim, input: &mut Input, title: &str, under: Layer<'_>) -> bool {
+    let lines = [
+        Line::new(&mw2("MENU_YES", "Yes")),
+        Line::new(&mw2("MENU_NO", "No")),
+    ];
+    let dim = |ui: &UiPack, q: &mut Vec<Quad>| {
+        under(ui, q);
+        q.push(ui_page::fullscreen(ui.white, 0x0000_0099));
+    };
+    let page = Page {
+        screen: "yesno",
+        under: Some(&dim),
+        ..Page::default()
+    };
+    // NO is focused first, as in MW2.
+    let mut sel = 1usize;
+    matches!(
+        list(gfx, input, &page, title, &lines, &mut sel, ""),
+        Step::Accept(0)
+    )
+}
+
+/// The in-game START menu over the frozen game (the match stops while it is open: there is no one else to play on):
+/// CHOOSE CLASS, OPTIONS, END GAME (asked first), DEBUG; B or START resumes. `sel` keeps the cursor (the caller
+/// reopens the menu after Options).
+#[allow(clippy::too_many_arguments)]
 pub fn pause(
     gfx: &mut Shim,
     input: &mut Input,
@@ -560,57 +877,75 @@ pub fn pause(
     cat: Option<&Catalog>,
     classes: Option<&[Loadout]>,
     class_cursor: &mut usize,
+    sel: &mut usize,
 ) -> Pause {
     // MW2's pause screen names the map and the mode in its right-hand slots.
     let info = |_: usize, out: &mut Vec<String>, _: &mut Vec<String>| {
-        out.push(map.trim_start_matches("mp_").to_ascii_uppercase());
+        out.push(map_name(map).to_ascii_uppercase());
         out.push(String::from(mode));
     };
     let page = Page {
         screen: "pause",
         panel: Some(&info),
+        under: Some(&grabbed),
+        ..Page::default()
     };
-    let mut sel = 0usize;
+    // START opened this menu: it doesn't also close it.
+    input.settle();
     loop {
         let mut lines = [
-            Line::new("RESUME"),
-            Line::new("CHANGE CLASS"),
+            Line::new("CHOOSE CLASS"),
             Line::new("OPTIONS"),
-            Line::new("DEBUG"),
             Line::new("END GAME"),
+            Line::new("DEBUG"),
         ];
-        lines[1].enabled = classes.is_some();
-        match list_on(
+        lines[0].enabled = classes.is_some();
+        match list(
             gfx,
             input,
             &page,
-            "PAUSED",
+            "OPTIONS",
             &lines,
-            &mut sel,
+            sel,
             "A SELECT   B RESUME",
         ) {
-            Step::Accept(1) => {
+            Step::Accept(0) => {
                 if let Some(c) = classes
-                    && let Some(i) = pick_class(gfx, input, cat, "CHANGE CLASS", c, class_cursor)
+                    && let Some(i) = pick_class(
+                        gfx,
+                        input,
+                        cat,
+                        "CHOOSE CLASS",
+                        c,
+                        class_cursor,
+                        Some(&grabbed),
+                    )
                 {
                     return Pause::ChangeClass(i);
                 }
             }
-            Step::Accept(2) => return Pause::Options,
+            Step::Accept(1) => return Pause::Options,
+            Step::Accept(2) => {
+                if confirm(gfx, input, &mw2("MPUI_END_GAME2", "End game?"), &grabbed) {
+                    return Pause::EndGame;
+                }
+            }
             Step::Accept(3) => return Pause::Debug,
-            Step::Accept(4) => return Pause::EndGame,
-            _ => return Pause::Resume,
+            Step::Back => return Pause::Resume,
+            _ => {}
         }
     }
 }
 
-/// The end-of-match scoreboard on MW2's scoreboard page (its frame and column headers), until A or B. False when
-/// the pack has no scoreboard page (the caller shows a plain list).
+/// The end-of-match scoreboard on MW2's scoreboard page (its frame and column headers) over the last frame of the
+/// match, until A or B. False when the pack has no scoreboard page (the caller shows a plain list).
 pub fn scoreboard(gfx: &mut Shim, input: &mut Input, title: &str, rows: &[ScoreRow]) -> bool {
     let has_page = crate::ui::get().is_some_and(|u| u.pack.screen("scoreboard").is_some());
     if !has_page {
         return false;
     }
+    let grabbed_ok = grab_screen();
+    input.settle();
     let cam = Camera::new([0.0; 3], 0.0, 0.0);
     let footer = [String::from("A CONTINUE")];
     loop {
@@ -620,16 +955,33 @@ pub fn scoreboard(gfx: &mut Shim, input: &mut Input, title: &str, rows: &[ScoreR
         }
         unsafe { ffi::mwf_frame_begin(&cam.view(), cam.fovy, 4.0, 100.0, 0x1a1e24ff) };
         if let Some(u) = crate::ui::get() {
-            draw_mw2(u, "scoreboard", title, &[], 0, "", &footer, &[]);
-            u.page(|ui, q| ui_page::score_rows(ui, rows, q));
+            let p = ui_page::Page {
+                screen: "scoreboard",
+                title,
+                lines: &[],
+                selected: 0,
+                footer: "",
+                slots: &footer,
+                images: &[],
+                inline_values: false,
+                backdrop: true,
+            };
+            u.page(|ui, q| {
+                if grabbed_ok {
+                    grabbed(ui, q);
+                    q.push(ui_page::fullscreen(ui.white, 0x0000_0080));
+                }
+                ui_page::layout(ui, &p, q);
+                ui_page::score_rows(ui, rows, q);
+            });
         }
         gfx.frame_end();
     }
 }
 
-/// The debug menu: every setting (A cycles its value) and, in a match, the sandbox actions. Returns an action to
-/// carry out (the menu closes for it), or None on B. Settings that only apply when a match starts are greyed out in
-/// a match. `weapon_name` names catalog weapon `i` of `weapons`.
+/// The debug menu: every setting (A or left / right changes it) and, in a match, the sandbox actions. Returns an
+/// action to carry out (the menu closes for it), or None on B. Settings that only apply when a match starts are
+/// greyed out in a match. `weapon_name` names catalog weapon `i` of `weapons`.
 pub fn debug_menu(
     gfx: &mut Shim,
     input: &mut Input,
@@ -640,6 +992,12 @@ pub fn debug_menu(
     sel: &mut usize,
 ) -> Option<game_core::debug::Action> {
     use game_core::debug::{ACTIONS, ITEMS};
+    let page = Page {
+        screen: "rules",
+        values: true,
+        under: in_match.then_some(&grabbed as Layer<'_>),
+        ..Page::default()
+    };
     loop {
         let mut lines: Vec<Line> = ITEMS
             .iter()
@@ -652,9 +1010,10 @@ pub fn debug_menu(
         if in_match {
             lines.extend(ACTIONS.iter().map(|a| Line::new(a.label())));
         }
-        match list(gfx, input, "DEBUG", &lines, sel, "A CHANGE / DO   B BACK") {
-            Step::Accept(i) if i < ITEMS.len() => s.cycle(ITEMS[i], weapons),
+        match list(gfx, input, &page, "DEBUG", &lines, sel, FOOTER_CHANGE) {
+            Step::Accept(i) | Step::Adjust(i, _) if i < ITEMS.len() => s.cycle(ITEMS[i], weapons),
             Step::Accept(i) => return ACTIONS.get(i - ITEMS.len()).copied(),
+            Step::Adjust(..) => {}
             _ => return None,
         }
     }
@@ -684,10 +1043,21 @@ pub fn save_debug(s: &game_core::debug::DebugSettings) -> bool {
     }
 }
 
-/// MW2's Options > Controls: sensitivity, inversion, target assist, button and stick layouts (A changes a line),
-/// until B. The caller saves them.
-pub fn options_menu(gfx: &mut Shim, input: &mut Input, o: &mut game_core::options::Options) {
-    use game_core::options::ITEMS;
+/// MW2's Options > Controls (and the HUD's safe area) on its rules rows: A or left / right changes a line, until
+/// B. The caller saves them. `in_match`: over the frozen game.
+pub fn options_menu(
+    gfx: &mut Shim,
+    input: &mut Input,
+    o: &mut game_core::options::Options,
+    in_match: bool,
+) {
+    use game_core::options::{ITEMS, Item};
+    let page = Page {
+        screen: "rules",
+        values: true,
+        under: in_match.then_some(&grabbed as Layer<'_>),
+        ..Page::default()
+    };
     let mut sel = 0usize;
     loop {
         let lines: Vec<Line> = ITEMS
@@ -701,12 +1071,15 @@ pub fn options_menu(gfx: &mut Shim, input: &mut Input, o: &mut game_core::option
         match list(
             gfx,
             input,
-            "CONTROLS",
+            &page,
+            "OPTIONS",
             &lines,
             &mut sel,
-            "A CHANGE   B BACK",
+            FOOTER_CHANGE,
         ) {
             Step::Accept(i) => o.cycle(ITEMS[i]),
+            Step::Adjust(i, d) if ITEMS[i] != Item::Defaults => o.adjust(ITEMS[i], d, false),
+            Step::Adjust(..) => {}
             _ => return,
         }
     }

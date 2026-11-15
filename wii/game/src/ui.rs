@@ -113,6 +113,8 @@ impl Ui {
             }
             let handle = if tex == NONE {
                 -1
+            } else if tex == game_core::ui_page::GRAB {
+                ffi::TEX_GRAB
             } else {
                 self.handles.get(usize::from(tex)).copied().unwrap_or(-1)
             };

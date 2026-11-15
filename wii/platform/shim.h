@@ -77,8 +77,13 @@ void mwf_input_scan(void);
 void mwf_pad_read(int chan, mwf_pad *out);
 double mwf_ffi_echo(float a, double b, int32_t c); /* returns a + b + c; float-ABI self-test */
 void mwf_panic(const char *msg, size_t len) __attribute__((noreturn));
+void mwf_poweroff(void); /* switch the console off (Dolphin stops) */
 
 /* ---- GX (shim_gx.c) ---- */
+/* The last queued frame (waits for the GPU) as a 24-bit BMP at `path`; 0 when written. */
+int mwf_screenshot(const char *path);
+/* The last queued frame's framebuffer (YUYV, fbWidth x xfbHeight), after waiting for the GPU; NULL before one. */
+const void *mwf_last_frame(void);
 void mwf_gx_init(uint32_t clear_rgba);
 void mwf_gx_draw(const float mtx[3][4], const mwf_vtx *v, uint32_t n);
 /* End a frame, pipelined: waits for the previous frame's GPU work (not this one's), shows it at the next retrace,
@@ -189,7 +194,11 @@ typedef struct {
     float s0, t0, s1, t1;
     uint32_t rgba;
 } mwf_ui_quad;
+/* `tex`: a texture handle, or MWF_TEX_GRAB for the frame `mwf_grab_screen` kept. */
+#define MWF_TEX_GRAB (-2)
 void mwf_ui_quads(int32_t tex, const mwf_ui_quad *q, uint32_t count);
+/* Keep the last frame shown (half size) for menus to draw behind them; 0 when there is none yet. */
+int32_t mwf_grab_screen(void);
 
 /* 2D quads with a texture coordinate per corner (the turned minimap): 4 vertices a quad, clockwise from top left. */
 typedef struct { float x, y, s, t; uint32_t rgba; } mwf_ui_vert;

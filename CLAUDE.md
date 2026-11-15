@@ -77,6 +77,9 @@ never run (supersedes 0002)
   - `wpk/`: the `.wpk` pack format (zero-copy, big-endian, 32-byte aligned sections), written by the converter and read
     in place on the Wii. See `docs/pack.md`.
 - `tools/`: asset guard, Windows/Docker build helpers (`winbuild.sh`, `docker-build.sh`, `mwf-convert.ps1`).
+  `dolphin-test.ps1`: runs the built game in Dolphin from a pad script (`<app folder>/autoplay.txt`,
+  `game_core::autoplay`; `tools/autoplay/menu_tour.txt` walks every menu and the HUD) and collects its screenshots
+  (`out/dolphin/shots`). The same script runs on a Wii. See `docs/testing.md`.
 - `docs/`: ADRs, `runtime.md`, `pack.md`, `textures.md`, `perf.md`, `gaps.md`, `testing.md`, references, upstream patches.
 - Root: `build.bat` (update, build, convert, package `dist\apps\mwf_game`; switches combine: `noupdate nodata
   nopause clean showargs`; env `MWF_SLIM_VIEWS`, `MWF_CONVERT_FLAGS`, `MWF_ASSUME_YES`, `MWF_GAME`, `MWF_DEVKITPRO`),

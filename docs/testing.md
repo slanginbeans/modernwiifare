@@ -35,5 +35,23 @@ Also say per round: did it crash (the log then has no summary line), did sound p
 
 `mwf-convert report <log>...` prints the same summary for any log files (`report.bat X:\path\0007.log`).
 
+## Scripted runs (menus and HUD)
+`<app folder>/autoplay.txt`, when it is on the card, plays the GameCube pad from a script and saves screenshots
+(`game_core::autoplay`; the Wii side is `wii/game/src/autoplay.rs`): one command a line, `wait N`,
+`press A+UP [N]`, `hold` / `release`, `stick X Y`, `cstick X Y`, `triggers L R`, `times N <command>`,
+`shot NAME` (the next frame as `<app folder>/shots/NAME.bmp`), `log TEXT` (a line in the match log), `quit`
+(switches the console off). Frames are pad reads: one a frame in the menus and the match, none while a map loads,
+so a script runs the same on every machine. Delete `autoplay.txt` afterwards, or the game plays it on every start.
+
+`tools/autoplay/menu_tour.txt` walks every menu and the HUD: the lobby, Game Setup, the map, mode and rules pages,
+a Team Deathmatch, the START menu over the game, Choose Class, Options (the safe area at 80% and back), End Game and
+its question, back to the lobby and the main menu.
+
+On the PC, `tools/dolphin-test.ps1 -Dolphin <Dolphin.exe>` (or `MWF_DOLPHIN`) runs a script in Dolphin on the
+built game (`dist\apps\mwf_game`, `out\packs`): it sets up its own Dolphin profile and an SD card folder under
+`out\dolphin` (your Dolphin settings are untouched), boots the game, waits for `quit` and converts the screenshots
+to `out\dolphin\shots\*.png`. Options: `-Script <file>`, `-Maps mp_rust,mp_terminal`. Dolphin shows the whole
+frame; a TV crops its edges (overscan), which is what the safe area is for.
+
 ## Debug menu
-DEBUG on the main menu (and in the pause menu) sets up test conditions: bot count and skill, passive or frozen bots, god mode, infinite ammo, every killstreak, any primary weapon, overlays (hit boxes, bot goals, objectives, bullet paths), and switches to isolate costs in the log (character models, world models, sound). The settings are saved to `<app folder>/debug.dat`; delete it to go back to the defaults. Say which debug settings were on when you send a log.
+DEBUG on the main menu (and in the in-game menu) sets up test conditions: bot count and skill, passive or frozen bots, god mode, infinite ammo, every killstreak, any primary weapon, overlays (hit boxes, bot goals, objectives, bullet paths), and switches to isolate costs in the log (character models, world models, sound). The settings are saved to `<app folder>/debug.dat`; delete it to go back to the defaults. Say which debug settings were on when you send a log.

@@ -1,0 +1,94 @@
+# The menus and HUD, end to end (game_core::autoplay syntax). Copy to <app folder>/autoplay.txt on the SD card, or run
+# tools/dolphin-test.ps1. Screenshots land in <app folder>/shots/. Needs common.wpk and at least one map.
+wait 90
+shot 01_main
+# Private match lobby.
+press A
+wait 10
+shot 02_lobby
+# Game Setup popup: map, game mode, game rules.
+press DOWN
+press A
+wait 10
+shot 03_setup
+press A
+wait 10
+shot 04_maps
+press B
+press DOWN
+press A
+wait 10
+shot 05_modes
+# Team Deathmatch.
+press DOWN
+press A
+wait 10
+press DOWN
+press A
+wait 10
+shot 06_rules
+# Time limit up one, bots up one.
+press RIGHT
+press DOWN
+press DOWN
+press RIGHT
+wait 5
+shot 07_rules_changed
+press B
+press B
+wait 10
+shot 08_lobby_tdm
+# Start the game.
+press UP
+press A
+wait 700
+shot 09_hud
+hold R
+wait 40
+release R
+wait 20
+shot 10_hud_fired
+# START menu over the frozen game.
+press START
+wait 20
+shot 11_pause
+press A
+wait 10
+shot 12_choose_class
+press B
+press DOWN
+press A
+wait 10
+shot 13_options
+# Safe area down to 80%.
+times 6 press DOWN
+times 5 press LEFT
+wait 5
+shot 14_safe_area
+press B
+press B
+wait 60
+shot 15_hud_safe80
+# Put the safe area back (90%).
+press START
+wait 10
+press DOWN
+press A
+wait 10
+times 6 press DOWN
+times 5 press RIGHT
+# Back on the START menu (at OPTIONS). End game: MW2's question, then the lobby.
+press B
+wait 10
+press DOWN
+press A
+wait 10
+shot 16_endgame
+press UP
+press A
+wait 200
+shot 17_after_match
+press B
+wait 10
+shot 18_main_again
+quit

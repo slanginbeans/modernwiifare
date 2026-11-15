@@ -695,6 +695,62 @@ fn build_ui(
     if ui.menus.is_empty() && ui.fonts.is_empty() {
         return None;
     }
+    // `MWF_MENU_DUMP=1`: every captured menu and item to `out/menus.txt` (git-ignored; it holds MW2's menu text),
+    // for working out a screen's layout.
+    if std::env::var_os("MWF_MENU_DUMP").is_some() {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        for m in ui.menus.values() {
+            let _ = writeln!(
+                s,
+                "== {} fullscreen={} rect={:?}",
+                m.name, m.fullscreen, m.rect
+            );
+            for (k, sc) in &m.scripts {
+                let _ = writeln!(s, "   menu-script {k:?}: {sc}");
+            }
+            for i in &m.items {
+                let _ = writeln!(
+                    s,
+                    "  - {:?} type={} style={} od={} text={:?} rect=({},{},{},{} a{}/{}) font={} scale={} align={} ax={} ay={} fore={:?} back={:?} bg={:?} dvar={:?} vis={:?} mat={:?}",
+                    i.name,
+                    i.item_type,
+                    i.style,
+                    i.owner_draw,
+                    i.text,
+                    i.rect.x,
+                    i.rect.y,
+                    i.rect.w,
+                    i.rect.h,
+                    i.rect.horz_align,
+                    i.rect.vert_align,
+                    i.font,
+                    i.text_scale,
+                    i.text_align_mode,
+                    i.text_align_x,
+                    i.text_align_y,
+                    i.fore_color,
+                    i.back_color,
+                    i.background,
+                    i.dvar,
+                    i.visible,
+                    i.material_exp
+                );
+                for (k, sc) in &i.scripts {
+                    let _ = writeln!(s, "      {k:?}: {sc}");
+                }
+            }
+        }
+        let _ = std::fs::write("out/menus.txt", s);
+        let mut l: Vec<_> = localize.iter().collect();
+        l.sort();
+        let _ = std::fs::write(
+            "out/localize.txt",
+            l.iter()
+                .map(|(k, v)| format!("{k}={v}\n"))
+                .collect::<String>(),
+        );
+    }
     // The class panel's pictures and icons (`wpk::ui::image_key`), from MW2's tables: a weapon's picture
     // (statsTable column 6 by base name, column 4), an attachment's icon (attachmentTable 6 by 4), a perk's,
     // deathstreak's or equipment's icon (perkTable 3 by 1). Pictures are drawn about 200 × 100, icons 36 × 36 on the

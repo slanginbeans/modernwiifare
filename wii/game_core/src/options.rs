@@ -1,5 +1,6 @@
 //! The player's options (MW2's Options > Controls on the console): look sensitivity, inverted look, aim assist,
-//! the button layout and the stick layout, kept in the app folder (`options.dat`).
+//! the button layout and the stick layout, and the HUD's safe area (MW2's console safe-area adjustment, so the HUD
+//! stays inside a TV's overscan), kept in the app folder (`options.dat`).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -11,6 +12,11 @@ const VERSION: u8 = 1;
 /// MW2's console sensitivity runs from 1 (low) to 10 (insane); 3 is its default and our IW4L look curve's 1.0.
 pub const SENSITIVITY_DEFAULT: u8 = 3;
 pub const SENSITIVITY_MAX: u8 = 10;
+
+/// The HUD's safe area in percent of the screen (MW2's `safeArea_adjusted`): 80 .. 100 in steps of 2.
+pub const SAFE_AREA_MIN: u8 = 80;
+pub const SAFE_AREA_MAX: u8 = 100;
+pub const SAFE_AREA_STEP: u8 = 2;
 
 /// Button layouts (MW2 console "Default" and "Tactical": Tactical swaps the stance and melee buttons).
 pub mod layout {
@@ -29,6 +35,8 @@ pub struct Options {
     pub layout: u8,
     /// Southpaw: move with the C-stick, look with the main stick.
     pub southpaw: bool,
+    /// The HUD's safe area, percent.
+    pub safe_area: u8,
 }
 
 impl Default for Options {
@@ -40,6 +48,7 @@ impl Default for Options {
             aim_assist: true,
             layout: layout::DEFAULT,
             southpaw: false,
+            safe_area: (crate::hud_mw2::SAFE_AREA_DEFAULT * 100.0 + 0.5) as u8,
         }
     }
 }
@@ -52,16 +61,18 @@ pub enum Item {
     AimAssist,
     Layout,
     Southpaw,
+    SafeArea,
     Defaults,
 }
 
-pub const ITEMS: [Item; 7] = [
+pub const ITEMS: [Item; 8] = [
     Item::Sensitivity,
     Item::AdsSensitivity,
     Item::Invert,
     Item::AimAssist,
     Item::Layout,
     Item::Southpaw,
+    Item::SafeArea,
     Item::Defaults,
 ];
 
@@ -74,6 +85,7 @@ impl Item {
             Item::AimAssist => "TARGET ASSIST",
             Item::Layout => "BUTTON LAYOUT",
             Item::Southpaw => "STICK LAYOUT",
+            Item::SafeArea => "SAFE AREA",
             Item::Defaults => "RESTORE DEFAULTS",
         }
     }
@@ -93,21 +105,56 @@ impl Options {
                 "DEFAULT"
             }),
             Item::Southpaw => String::from(if self.southpaw { "SOUTHPAW" } else { "DEFAULT" }),
+            Item::SafeArea => alloc::format!("{}%", self.safe_area),
             Item::Defaults => return None,
         })
     }
 
+    /// A: the next value (wrapping), or restore the defaults.
     pub fn cycle(&mut self, item: Item) {
-        let step = |v: u8| if v >= SENSITIVITY_MAX { 1 } else { v + 1 };
+        self.adjust(item, 1, true);
+    }
+
+    /// Left / right: the previous or next value (`dir` -1 or 1); `wrap` goes round at the ends.
+    pub fn adjust(&mut self, item: Item, dir: i8, wrap: bool) {
+        let step = |v: u8, lo: u8, hi: u8, by: u8| {
+            if dir > 0 {
+                match v.checked_add(by).filter(|&n| n <= hi) {
+                    Some(n) => n,
+                    None if wrap => lo,
+                    None => hi,
+                }
+            } else {
+                match v.checked_sub(by).filter(|&n| n >= lo) {
+                    Some(n) => n,
+                    None if wrap => hi,
+                    None => lo,
+                }
+            }
+        };
         match item {
-            Item::Sensitivity => self.sensitivity = step(self.sensitivity),
-            Item::AdsSensitivity => self.ads_sensitivity = step(self.ads_sensitivity),
+            Item::Sensitivity => self.sensitivity = step(self.sensitivity, 1, SENSITIVITY_MAX, 1),
+            Item::AdsSensitivity => {
+                self.ads_sensitivity = step(self.ads_sensitivity, 1, SENSITIVITY_MAX, 1)
+            }
             Item::Invert => self.invert = !self.invert,
             Item::AimAssist => self.aim_assist = !self.aim_assist,
             Item::Layout => self.layout = (self.layout + 1) % 2,
             Item::Southpaw => self.southpaw = !self.southpaw,
-            Item::Defaults => *self = Options::default(),
+            Item::SafeArea => {
+                self.safe_area = step(self.safe_area, SAFE_AREA_MIN, SAFE_AREA_MAX, SAFE_AREA_STEP)
+            }
+            Item::Defaults => {
+                if dir > 0 && wrap {
+                    *self = Options::default()
+                }
+            }
         }
+    }
+
+    /// The HUD's safe area as a share of the screen.
+    pub fn safe_area(&self) -> f32 {
+        f32::from(self.safe_area.clamp(SAFE_AREA_MIN, SAFE_AREA_MAX)) / 100.0
     }
 
     /// The look settings these options give (sensitivity relative to MW2's default of 3).
@@ -131,6 +178,7 @@ impl Options {
             u8::from(self.aim_assist),
             self.layout,
             u8::from(self.southpaw),
+            self.safe_area,
         ]
     }
 
@@ -146,6 +194,10 @@ impl Options {
             aim_assist: b[4] != 0,
             layout: b[5] % 2,
             southpaw: b[6] != 0,
+            // Files from before the safe area option keep the default.
+            safe_area: b.get(7).map_or(Options::default().safe_area, |&v| {
+                v.clamp(SAFE_AREA_MIN, SAFE_AREA_MAX)
+            }),
         })
     }
 }
@@ -172,5 +224,30 @@ mod tests {
         assert_eq!(o.sensitivity, 1);
         o.cycle(Item::Defaults);
         assert_eq!(o, Options::default());
+    }
+
+    #[test]
+    fn left_and_right_stop_at_the_ends() {
+        let mut o = Options::default();
+        assert_eq!(o.safe_area, 90);
+        o.adjust(Item::SafeArea, 1, false);
+        assert_eq!(o.value(Item::SafeArea).as_deref(), Some("92%"));
+        for _ in 0..10 {
+            o.adjust(Item::SafeArea, 1, false);
+        }
+        assert_eq!(o.safe_area, SAFE_AREA_MAX);
+        o.adjust(Item::Sensitivity, -1, false);
+        assert_eq!(o.sensitivity, 2);
+        o.sensitivity = 1;
+        o.adjust(Item::Sensitivity, -1, false);
+        assert_eq!(o.sensitivity, 1);
+        // Left / right never restore the defaults.
+        o.adjust(Item::Defaults, 1, false);
+        assert_eq!(o.sensitivity, 1);
+        // Old files (no safe area byte) still read.
+        assert_eq!(
+            Options::decode(&o.encode()[..7]).map(|d| d.safe_area),
+            Some(90)
+        );
     }
 }

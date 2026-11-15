@@ -197,11 +197,56 @@ pub struct OwnerDraw {
     pub rgba: u32,
 }
 
-/// IW4 owner-draw numbers of the HUD minimap (`minimap_fullscreen`).
+/// IW4 owner-draw numbers: the HUD minimap (`minimap_fullscreen`) and the weapon bar's (`weaponbar_sd`).
 pub mod od {
     pub const MINIMAP_PLAYER: u16 = 150;
     pub const MINIMAP_MAP: u16 = 159;
     pub const MINIMAP_ENEMIES: u16 = 175;
+    /// The weapon's name.
+    pub const WEAPON_NAME: u16 = 81;
+    /// The lethal and tactical grenade icons.
+    pub const OFFHAND_FRAG_ICON: u16 = 103;
+    pub const OFFHAND_SMOKE_ICON: u16 = 104;
+    /// The magazine as rounds (pips), and the second (akimbo) one.
+    pub const AMMO_CLIP_GRAPHIC: u16 = 117;
+    pub const AMMO_CLIP_GRAPHIC_LEFT: u16 = 121;
+    /// The reserve rounds.
+    pub const AMMO_STOCK: u16 = 119;
+    pub const LOW_AMMO_WARNING: u16 = 120;
+    /// The d-pad's killstreak slot.
+    pub const DPAD_KILLSTREAK: u16 = 173;
+    pub const DPAD_KILLSTREAK_NEXT: u16 = 174;
+    /// Ours, not IW4's: a lobby player row (MW2 shows its rows by script).
+    pub const LOBBY_ROW: u16 = 0xF000;
+}
+
+/// One item of a HUD layout (an MW2 `*_sd` HUD menu) in MW2's virtual 640 × 480 space with its IW4 alignment
+/// (`halign` / `valign`: `hud_iw4::scrplace` codes), placed on the screen at run time so it follows the safe area.
+/// An image (`texture`), or an owner draw (`od` != 0) the game fills in, or MW2's own `text`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HudItem {
+    pub od: u16,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub halign: u8,
+    pub valign: u8,
+    pub font: u8,
+    pub text_scale: f32,
+    /// IW4 text alignment (as [`Label::align`]).
+    pub align: u8,
+    pub rgba: u32,
+    pub texture: u16,
+    /// The image's material name (to tell the scorebar's parts apart), or MW2's text.
+    pub name: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HudLayout {
+    pub name: String,
+    pub items: Vec<HudItem>,
 }
 
 impl Screen {
@@ -234,6 +279,10 @@ pub struct UiPack {
     pub white: u16,
     /// Named HUD images (the compass pings), by material name.
     pub icons: Vec<(String, u16)>,
+    /// MW2's HUD layouts (`weaponbar`, `scorebar`, `dpad`).
+    pub hud: Vec<HudLayout>,
+    /// MW2's localized strings the front end shows (map and game mode names and descriptions), by key.
+    pub strings: Vec<(String, String)>,
 }
 
 struct Reader<'a> {
@@ -420,6 +469,31 @@ impl UiPack {
             put_str(&mut o, n);
             o.u16(*t);
         }
+        o.u16(self.hud.len() as u16);
+        for l in &self.hud {
+            put_str(&mut o, &l.name);
+            o.u16(l.items.len() as u16);
+            for i in &l.items {
+                o.u16(i.od);
+                for v in [i.x, i.y, i.w, i.h] {
+                    o.f32(v);
+                }
+                o.push(i.halign);
+                o.push(i.valign);
+                o.push(i.font);
+                o.f32(i.text_scale);
+                o.push(i.align);
+                o.u32(i.rgba);
+                o.u16(i.texture);
+                put_str(&mut o, &i.name);
+                put_str(&mut o, &i.text);
+            }
+        }
+        o.u16(self.strings.len() as u16);
+        for (k, v) in &self.strings {
+            put_str(&mut o, k);
+            put_str(&mut o, v);
+        }
         o
     }
 
@@ -532,12 +606,58 @@ impl UiPack {
         for _ in 0..ni {
             icons.push((r.str()?, r.u16()?));
         }
+        let nh = r.u16()?;
+        let mut hud = Vec::with_capacity(usize::from(nh));
+        for _ in 0..nh {
+            let name = r.str()?;
+            let n = r.u16()?;
+            let mut items = Vec::with_capacity(usize::from(n));
+            for _ in 0..n {
+                items.push(HudItem {
+                    od: r.u16()?,
+                    x: r.f32()?,
+                    y: r.f32()?,
+                    w: r.f32()?,
+                    h: r.f32()?,
+                    halign: r.u8()?,
+                    valign: r.u8()?,
+                    font: r.u8()?,
+                    text_scale: r.f32()?,
+                    align: r.u8()?,
+                    rgba: r.u32()?,
+                    texture: r.u16()?,
+                    name: r.str()?,
+                    text: r.str()?,
+                });
+            }
+            hud.push(HudLayout { name, items });
+        }
+        let ns = r.u16()?;
+        let mut strings = Vec::with_capacity(usize::from(ns));
+        for _ in 0..ns {
+            strings.push((r.str()?, r.str()?));
+        }
         Some(UiPack {
             fonts,
             screens,
             white,
             icons,
+            hud,
+            strings,
         })
+    }
+
+    /// HUD layout `name`.
+    pub fn hud(&self, name: &str) -> Option<&HudLayout> {
+        self.hud.iter().find(|l| l.name == name)
+    }
+
+    /// MW2's localized string `key`.
+    pub fn string(&self, key: &str) -> Option<&str> {
+        self.strings
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.as_str())
     }
 
     /// The texture of HUD image `name`.
@@ -653,6 +773,20 @@ mod tests {
             }],
             white: 5,
             icons: vec![("compassping_player".into(), 7)],
+            hud: vec![HudLayout {
+                name: "weaponbar".into(),
+                items: vec![HudItem {
+                    od: od::AMMO_STOCK,
+                    x: -136.0,
+                    halign: 10,
+                    valign: 10,
+                    text_scale: 0.58,
+                    texture: NONE,
+                    text: "x".into(),
+                    ..HudItem::default()
+                }],
+            }],
+            strings: vec![("MPUI_RUST".into(), "Rust".into())],
         };
         let back = UiPack::decode(&p.encode()).expect("decodes");
         assert_eq!(back, p);
@@ -674,6 +808,8 @@ mod tests {
         );
         assert_eq!(back.icon("CompassPing_Player"), Some(7));
         assert_eq!(back.font("FONTS/TEST"), Some(0));
+        assert_eq!(back.string("mpui_rust"), Some("Rust"));
+        assert_eq!(back.hud("weaponbar").map(|l| l.items[0].halign), Some(10));
         assert!(UiPack::decode(&p.encode()[..10]).is_none());
     }
 }

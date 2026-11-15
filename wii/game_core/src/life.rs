@@ -208,6 +208,16 @@ impl MatchClock {
     pub fn over(&self, now_ms: u32) -> bool {
         self.remaining_ms(now_ms) == 0
     }
+
+    /// Time since the match started.
+    pub fn elapsed_ms(&self, now_ms: u32) -> u32 {
+        now_ms.wrapping_sub(self.start_ms)
+    }
+
+    /// Time left, when the match has a limit.
+    pub fn left_ms(&self, now_ms: u32) -> Option<u32> {
+        (self.limit_ms != u32::MAX).then(|| self.remaining_ms(now_ms))
+    }
 }
 
 #[cfg(test)]
