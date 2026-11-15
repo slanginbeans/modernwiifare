@@ -1201,6 +1201,9 @@ fn run_map(
         };
         world.lod_scale = debug.lod_scale();
         world.map_fog = debug.map_fog;
+        for g in arsenal.guns.iter_mut().flatten() {
+            g.kick_scale = debug.kick_scale();
+        }
         sound::MUTED.store(!debug.sound, core::sync::atomic::Ordering::Relaxed);
         if debug.infinite_ammo
             && let Some(g) = arsenal.guns[arsenal.active].as_mut()

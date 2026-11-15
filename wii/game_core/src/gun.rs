@@ -161,6 +161,8 @@ pub struct Gun {
     camera: [RecoilAxis; 3],
     pub kick_angles: [f32; 3],
     gun_recoil: GunRecoilPlacementState,
+    /// Multiplies each shot's camera and gun kick (1: IW4L's amplitudes; the debug menu's comparison sets 2).
+    pub kick_scale: f32,
 }
 
 impl Gun {
@@ -203,6 +205,7 @@ impl Gun {
             camera: Default::default(),
             kick_angles: [0.0; 3],
             gun_recoil: GunRecoilPlacementState::default(),
+            kick_scale: 1.0,
         })
     }
 
@@ -517,11 +520,12 @@ impl Gun {
         };
         let samples = [self.random(), self.random(), self.random(), self.random()];
         let impulse = weapon_fire_recoil(view, gun, ps, samples);
+        let scale = f64::from(self.kick_scale);
         for (axis, amplitude) in self.camera.iter_mut().zip(impulse.camera_peak) {
-            axis.add_peak(f64::from(amplitude), CAMERA_PEAK_SECONDS);
+            axis.add_peak(f64::from(amplitude) * scale, CAMERA_PEAK_SECONDS);
         }
         for (axis, amplitude) in self.gun_recoil.axes.iter_mut().zip(impulse.model_peak) {
-            axis.add_peak(f64::from(amplitude), MODEL_PEAK_SECONDS);
+            axis.add_peak(f64::from(amplitude) * scale, MODEL_PEAK_SECONDS);
         }
     }
 
