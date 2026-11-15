@@ -67,6 +67,9 @@ Not sacrificed: collision (never simplified), movement and weapon timings, 640×
 | meshoptimizer strips for opaque batches where shorter (REVISION 28) | `mp_rust`: world display-list vertices 402k -> 393k, model ones 262k -> 254k. |
 | First-person rigid vertices placed by GX bone matrices (matrix index per vertex, ten per draw) | Only blended vertices (arms, hands) are skinned on the CPU. **Not yet measured on hardware** (`vm`). |
 | Weapon files streamed during the death screen (192 KB a frame from 1 s after death) | The respawn no longer stops for a 4-8 MB SD read when the class changed (whatever is left loads then). |
+| Hardware round, build `cfb39c57` (`mp_rust` 5 min, `mp_terminal` 109 s; `docs/spikes/results.md`) | `mp_rust`: p50 25.5 ms, p99 32 ms, GPU-bound (GPU wait 15 ms, CPU 10.4 ms); bot-respawn spikes 50-195 ms. `mp_terminal`: p50 31.8 ms, p99 57.5 ms, 35% of frames over 33 ms, **CPU-bound in world submission** (up to 42 ms at 449k triangles / 2,362 draws, no GPU wait); characters 8-16 ms with several bodies in view |
+| Spawn choice traces lazily (`arena::best_spawn`): each spawn's weight once, sight traces only for spawns that can still win (same pick as before; 2,000 random FFA + team cases) | Host test: 5.5× fewer sight traces (470,784 → 85,584). Removes the 50-195 ms bot-respawn frames' cause. **Not yet measured on hardware** (`bot`). |
+| AUTO draw distance also shrinks when world submission is the CPU cost (≥ 35% of a missed frame and ≥ 4 ms) | `mp_terminal` was CPU-bound, so AUTO (GPU wait only) never moved. **Not yet measured on hardware.** |
 
 Where that leaves us: `mp_terminal` spends ~244k world + ~91k model triangles per view, still ~3× the 60 fps
 budget. Memory is solved for every map.

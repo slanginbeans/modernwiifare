@@ -2332,7 +2332,11 @@ fn run_map(
         gfx.frame_end();
         let end = ffi::us();
         timing.add(end, end.wrapping_sub(frame_start), cpu_us, gfx.gpu_wait_us);
-        auto_distance.update(end.wrapping_sub(frame_start), gfx.gpu_wait_us);
+        auto_distance.update(
+            end.wrapping_sub(frame_start),
+            gfx.gpu_wait_us,
+            sections[section::WORLD],
+        );
         // Memory every 5 s is enough (mallinfo walks the heap).
         let (mem1_free, mem2_free) = if now / 5000 != last_mem_s {
             last_mem_s = now / 5000;

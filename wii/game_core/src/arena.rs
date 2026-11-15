@@ -318,13 +318,12 @@ pub fn pick_spawn(
     if spawns.is_empty() {
         return None;
     }
-    let weight = |i: usize| {
+    let weight = |i: usize, sights: u32| {
         let p = spawns[i].0;
         let mut w = jitter(i);
         if !others.is_empty() {
             let (mut from_ideal, mut bad) = (0.0, 0.0);
             let mut nearest = f32::MAX;
-            let mut sights = 0;
             for &o in others {
                 let d = libm::sqrtf(dist2(p, o));
                 if d < SPAWN_BAD_DIST {
@@ -332,9 +331,6 @@ pub fn pick_spawn(
                 }
                 from_ideal += libm::fabsf(d - SPAWN_IDEAL_DIST);
                 nearest = nearest.min(d);
-                if sees(i, o) {
-                    sights += 1;
-                }
             }
             let well = (SPAWN_IDEAL_DIST - from_ideal / others.len() as f32) / SPAWN_IDEAL_DIST;
             w += well - bad * 2.0;
@@ -348,7 +344,39 @@ pub fn pick_spawn(
         }
         w
     };
-    (0..spawns.len()).max_by(|&a, &b| weight(a).total_cmp(&weight(b)))
+    let sights = |i: usize| others.iter().filter(|&&o| sees(i, o)).count() as u32;
+    best_spawn(spawns.len(), weight, sights)
+}
+
+/// The spawn with the highest `weight(i, sights)`, ties to the higher index (exactly what
+/// `(0..n).max_by(|a, b| full(a).total_cmp(&full(b)))` picks). `sights(i)` costs a sight trace per enemy, so it is only
+/// counted for spawns that can still win: a sighting only lowers a weight, so `weight(i, 0)` bounds spawn `i`, and
+/// spawns are tried from the highest bound down until no bound can beat the best found.
+///
+/// Before this, every comparison re-ran both spawns' traces: a bot's respawn on the Wii cost 50-137 ms in one frame
+/// (hardware log, `mp_rust`, build `cfb39c57`).
+fn best_spawn(
+    n: usize,
+    weight: impl Fn(usize, u32) -> f32,
+    sights: impl Fn(usize) -> u32,
+) -> Option<usize> {
+    let key = |w: f32, i: usize, bw: f32, bi: usize| w.total_cmp(&bw).then(i.cmp(&bi));
+    let mut order: Vec<(f32, usize)> = (0..n).map(|i| (weight(i, 0), i)).collect();
+    order.sort_by(|a, b| key(b.0, b.1, a.0, a.1));
+    let mut best: Option<(f32, usize)> = None;
+    for (bound, i) in order {
+        if let Some((bw, bi)) = best
+            && key(bound, i, bw, bi).is_lt()
+        {
+            break;
+        }
+        let s = sights(i);
+        let w = if s == 0 { bound } else { weight(i, s) };
+        if best.is_none_or(|(bw, bi)| key(w, i, bw, bi).is_gt()) {
+            best = Some((w, i));
+        }
+    }
+    best.map(|b| b.1)
 }
 
 /// MW2's team spawn weighting (`_spawnlogic.gsc` `getSpawnpoint_NearTeam` with the penalties it applies): far from
@@ -367,7 +395,7 @@ pub fn pick_spawn_team(
         return None;
     }
     let players = allies.len() + enemies.len();
-    let weight = |i: usize| {
+    let weight = |i: usize, sights: u32| {
         let p = spawns[i].0;
         let sum = |set: &[[f32; 3]]| set.iter().map(|&o| libm::sqrtf(dist2(p, o))).sum::<f32>();
         let mut w = jitter(i);
@@ -378,7 +406,7 @@ pub fn pick_spawn_team(
             .iter()
             .map(|&o| libm::sqrtf(dist2(p, o)))
             .fold(f32::MAX, f32::min);
-        w -= SPAWN_LOS_PENALTY * enemies.iter().filter(|&&o| sees(i, o)).count() as f32;
+        w -= SPAWN_LOS_PENALTY * sights as f32;
         if nearest < NEARBY_ENEMY_RANGE {
             w -= NEARBY_ENEMY_PENALTY * (1.0 - nearest / NEARBY_ENEMY_RANGE);
         }
@@ -387,7 +415,8 @@ pub fn pick_spawn_team(
         }
         w
     };
-    (0..spawns.len()).max_by(|&a, &b| weight(a).total_cmp(&weight(b)))
+    let sights = |i: usize| enemies.iter().filter(|&&o| sees(i, o)).count() as u32;
+    best_spawn(spawns.len(), weight, sights)
 }
 
 /// MW2's spawn weighting numbers (`_spawnlogic.gsc`; the distances are IW4L's `sim::SPAWN_IDEAL_DIST` /
@@ -1608,6 +1637,154 @@ mod tests {
         let favour_2 = |i: usize| if i == 2 { 0.1 } else { 0.0 };
         assert_eq!(pick_spawn(&s, &[], None, blind, favour_2), Some(2));
         assert_eq!(pick_spawn(&[], &enemy, None, blind, none), None);
+    }
+
+    /// The spawn picks before the lazy sight traces: every comparison re-weighed both spawns.
+    fn brute_ffa(
+        spawns: &[([f32; 3], f32)],
+        others: &[[f32; 3]],
+        last: Option<usize>,
+        sees: &dyn Fn(usize, [f32; 3]) -> bool,
+        jitter: &dyn Fn(usize) -> f32,
+    ) -> Option<usize> {
+        let weight = |i: usize| {
+            let p = spawns[i].0;
+            let mut w = jitter(i);
+            if !others.is_empty() {
+                let (mut from_ideal, mut bad) = (0.0, 0.0);
+                let mut nearest = f32::MAX;
+                let mut sights = 0;
+                for &o in others {
+                    let d = libm::sqrtf(dist2(p, o));
+                    if d < SPAWN_BAD_DIST {
+                        bad += (SPAWN_BAD_DIST - d) / SPAWN_BAD_DIST;
+                    }
+                    from_ideal += libm::fabsf(d - SPAWN_IDEAL_DIST);
+                    nearest = nearest.min(d);
+                    if sees(i, o) {
+                        sights += 1;
+                    }
+                }
+                let well = (SPAWN_IDEAL_DIST - from_ideal / others.len() as f32) / SPAWN_IDEAL_DIST;
+                w += well - bad * 2.0;
+                w -= SPAWN_LOS_PENALTY * sights as f32;
+                if nearest < NEARBY_ENEMY_RANGE {
+                    w -= NEARBY_ENEMY_PENALTY * (1.0 - nearest / NEARBY_ENEMY_RANGE);
+                }
+            }
+            if last == Some(i) {
+                w -= SAME_SPAWN_PENALTY;
+            }
+            w
+        };
+        (0..spawns.len()).max_by(|&a, &b| weight(a).total_cmp(&weight(b)))
+    }
+
+    fn brute_team(
+        spawns: &[([f32; 3], f32)],
+        allies: &[[f32; 3]],
+        enemies: &[[f32; 3]],
+        last: Option<usize>,
+        sees: &dyn Fn(usize, [f32; 3]) -> bool,
+        jitter: &dyn Fn(usize) -> f32,
+    ) -> Option<usize> {
+        let players = allies.len() + enemies.len();
+        let weight = |i: usize| {
+            let p = spawns[i].0;
+            let sum = |set: &[[f32; 3]]| set.iter().map(|&o| libm::sqrtf(dist2(p, o))).sum::<f32>();
+            let mut w = jitter(i);
+            if players > 0 {
+                w += (sum(enemies) - 2.0 * sum(allies)) / players as f32;
+            }
+            let nearest = enemies
+                .iter()
+                .map(|&o| libm::sqrtf(dist2(p, o)))
+                .fold(f32::MAX, f32::min);
+            w -= SPAWN_LOS_PENALTY * enemies.iter().filter(|&&o| sees(i, o)).count() as f32;
+            if nearest < NEARBY_ENEMY_RANGE {
+                w -= NEARBY_ENEMY_PENALTY * (1.0 - nearest / NEARBY_ENEMY_RANGE);
+            }
+            if last == Some(i) {
+                w -= SAME_SPAWN_PENALTY;
+            }
+            w
+        };
+        (0..spawns.len()).max_by(|&a, &b| weight(a).total_cmp(&weight(b)))
+    }
+
+    #[test]
+    fn lazy_spawn_traces_pick_what_the_full_search_picks() {
+        use core::cell::Cell;
+        let mut seed: u32 = 0x1234_5678;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        let (mut lazy_traces, mut brute_traces) = (0u64, 0u64);
+        for case in 0..2000 {
+            let n = 1 + (rnd() % 48) as usize;
+            let coord = |r: u32| (r % 6000) as f32 - 3000.0;
+            let spawns: Vec<([f32; 3], f32)> = (0..n)
+                .map(|_| ([coord(rnd()), coord(rnd()), 0.0], 0.0))
+                .collect();
+            let people = |k: usize, rnd: &mut dyn FnMut() -> u32| -> Vec<[f32; 3]> {
+                (0..k).map(|_| [coord(rnd()), coord(rnd()), 0.0]).collect()
+            };
+            let enemies = people((rnd() % 6) as usize, &mut rnd);
+            let allies = people((rnd() % 3) as usize, &mut rnd);
+            let last = if rnd() % 3 == 0 {
+                Some((rnd() as usize) % n)
+            } else {
+                None
+            };
+            // Sight: a fixed pseudo-random answer per (spawn, enemy position); some cases see everything or nothing.
+            let salt = rnd();
+            let mode = case % 4;
+            let traces = Cell::new(0u64);
+            let sees = |i: usize, o: [f32; 3]| {
+                traces.set(traces.get() + 1);
+                let h = (i as u32).wrapping_mul(0x9e37_79b9)
+                    ^ (o[0] as i32 as u32)
+                    ^ (o[1] as i32 as u32).rotate_left(16)
+                    ^ salt;
+                match mode {
+                    0 => false,
+                    1 => true,
+                    _ => h.is_multiple_of(3),
+                }
+            };
+            // Ties: half the cases without the random part, so equal weights happen.
+            let tie = case % 2 == 0;
+            let jitter = |i: usize| {
+                if tie {
+                    0.0
+                } else {
+                    ((i as u32 ^ salt) % 997) as f32 / 997.0 * 0.2
+                }
+            };
+
+            let want = brute_ffa(&spawns, &enemies, last, &sees, &jitter);
+            brute_traces += traces.replace(0);
+            let got = pick_spawn(&spawns, &enemies, last, sees, jitter);
+            lazy_traces += traces.replace(0);
+            assert_eq!(got, want, "ffa case {case}");
+
+            let want = brute_team(&spawns, &allies, &enemies, last, &sees, &jitter);
+            brute_traces += traces.replace(0);
+            let got = pick_spawn_team(&spawns, &allies, &enemies, last, sees, jitter);
+            lazy_traces += traces.replace(0);
+            assert_eq!(got, want, "team case {case}");
+        }
+        {
+            extern crate std;
+            std::println!("sight traces: brute force {brute_traces}, lazy {lazy_traces}");
+        }
+        assert!(
+            lazy_traces * 4 < brute_traces,
+            "lazy {lazy_traces} vs brute {brute_traces}"
+        );
     }
 
     #[test]
