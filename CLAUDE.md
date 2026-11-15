@@ -30,7 +30,8 @@ never run (supersedes 0002)
   (Spike D). Prefers the retail x86 zone in `zone/iw4x/x86/english/` over IW4x's x64 rewrite in `zone/english/`.
   `texture <png> --role <role>`: one PNG to a Wii `.gxt` + `_preview.png` (output under `out/`).
   `pack <game folder> --map <zone>|all`: map packs `out/packs/<map>.wpk`; `all` also writes `common.wpk` (weapons,
-  classes, rules, menus, characters) and `views/<weapon>.wpk`. `common`: those alone. `rules.rs` reads values from the
+  classes, rules, menus, characters) and `views/<weapon>.wpk`. `common`: those alone. `--slim-views` (or
+  `MWF_SLIM_VIEWS=1`): smaller weapon files, off by default (`docs/pack.md`, "Slim weapon files"). `rules.rs` reads values from the
   user's scripts (ADR 0007). `preview <pack.wpk>`: software render of a pack (also the viewmodel and characters).
   `menu-preview`: menus. `report <log>...`: summarises the Wii's SD-card match logs (`report.bat`).
   `textures <game folder> [--map <zone>]`: every GfxImage of a map zone (in-zone or IWI) to `.gxt` under

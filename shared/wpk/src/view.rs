@@ -7,10 +7,39 @@
 //! camera.
 //! Animations: each clip is baked to `frames` evenly spaced poses at `framerate`; a track stores one rotation (i16 ×
 //! 4, ±32767) and optionally a translation delta per frame, or a single value when constant.
+//!
+//! On disk a blob may instead carry **compact tracks** ([`flags::COMPACT_TRACKS`], written by
+//! [`ViewModel::encode_compact`]): only the frames linear interpolation can't reproduce within a [`Tolerance`], each with
+//! its frame number, and translations as i16 with a per-track scale. [`ViewModel::decode`] expands them back to every
+//! frame, so the in-memory [`ViewModel`] (and everything that samples it) is the same either way.
 
 use alloc::vec::Vec;
 
 use crate::be::{self, Push};
+
+/// Format flags in the blob header (the u16 after `flash_bone`; 0 in older files).
+pub mod flags {
+    /// Clip tracks are stored as keyframes (see the module docs).
+    pub const COMPACT_TRACKS: u16 = 1;
+}
+
+/// How far a compact track may stray from the baked frames (after decoding, against the original frames).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tolerance {
+    /// Largest rotation error, degrees.
+    pub rot_deg: f32,
+    /// Largest translation error, world units (inches).
+    pub trans: f32,
+}
+
+impl Tolerance {
+    /// The `--slim-views` setting: far below a pixel for the first-person gun (the screen is ~0.1° per pixel; the
+    /// gun sits ~10-20 units from the eye, where 0.005 units is ~0.02°).
+    pub const SLIM: Tolerance = Tolerance {
+        rot_deg: 0.02,
+        trans: 0.005,
+    };
+}
 
 /// Weapon animation slots (IW4 `weapAnimFiles` indices); every one a weapon names is carried.
 pub mod slot {
@@ -246,11 +275,24 @@ impl ViewModel {
     }
 
     pub fn encode(&self) -> Vec<u8> {
+        self.encode_with(None)
+    }
+
+    /// As [`ViewModel::encode`], with compact tracks within `tol` (see the module docs).
+    pub fn encode_compact(&self, tol: Tolerance) -> Vec<u8> {
+        self.encode_with(Some(tol))
+    }
+
+    fn encode_with(&self, compact: Option<Tolerance>) -> Vec<u8> {
         let mut o = Vec::new();
         o.u16(self.bones.len() as u16);
         o.u16(self.view_bone);
         o.u16(self.flash_bone);
-        o.u16(0);
+        o.u16(if compact.is_some() {
+            flags::COMPACT_TRACKS
+        } else {
+            0
+        });
         for b in &self.bones {
             o.u16(b.parent as u16);
             b.local_rot.iter().for_each(|&x| o.f32(x));
@@ -283,13 +325,18 @@ impl ViewModel {
             o.u16(c.frames);
             o.u16(c.tracks.len() as u16);
             for t in &c.tracks {
-                o.u16(t.bone);
-                o.u16(t.rot.len() as u16);
-                o.u16(t.trans.len() as u16);
-                o.u16(t.keys.len() as u16);
-                t.rot.iter().flatten().for_each(|&x| o.u16(x as u16));
-                t.trans.iter().flatten().for_each(|&x| o.f32(x));
-                t.keys.iter().for_each(|&k| o.u16(k));
+                match compact {
+                    Some(tol) => compact::write_track(&mut o, t, usize::from(c.frames), tol),
+                    None => {
+                        o.u16(t.bone);
+                        o.u16(t.rot.len() as u16);
+                        o.u16(t.trans.len() as u16);
+                        o.u16(t.keys.len() as u16);
+                        t.rot.iter().flatten().for_each(|&x| o.u16(x as u16));
+                        t.trans.iter().flatten().for_each(|&x| o.f32(x));
+                        t.keys.iter().for_each(|&k| o.u16(k));
+                    }
+                }
             }
         }
         o
@@ -300,7 +347,7 @@ impl ViewModel {
         let nb = usize::from(r.u16()?);
         let view_bone = r.u16()?;
         let flash_bone = r.u16()?;
-        r.u16()?;
+        let format = r.u16()?;
         let mut bones = Vec::with_capacity(nb);
         for _ in 0..nb {
             let parent = r.u16()? as i16;
@@ -356,6 +403,10 @@ impl ViewModel {
             let nt = usize::from(r.u16()?);
             let mut tracks = Vec::with_capacity(nt);
             for _ in 0..nt {
+                if format & flags::COMPACT_TRACKS != 0 {
+                    tracks.push(compact::read_track(&mut r, usize::from(frames))?);
+                    continue;
+                }
                 let bone = r.u16()?;
                 let nr = usize::from(r.u16()?);
                 let ntr = usize::from(r.u16()?);
@@ -410,6 +461,299 @@ impl ViewModel {
     }
 }
 
+/// Compact tracks: keyframes chosen against the decoder's own interpolation, expanded back to every frame on load.
+mod compact {
+    use super::{Push, Rd, Tolerance, Track, ViewError, quat_from_i16, quat_to_i16};
+    use alloc::vec::Vec;
+
+    const TRANS_NONE: u8 = 0;
+    /// i16 × 3 with a per-track f32 scale.
+    const TRANS_I16: u8 = 1;
+    /// f32 × 3 (a track whose range is too wide for i16 within the tolerance).
+    const TRANS_F32: u8 = 2;
+
+    /// Where frame `m` falls between keys at frames `a` and `b` (the encoder and decoder share this exactly).
+    fn frac(m: usize, a: usize, b: usize) -> f32 {
+        (m - a) as f32 / (b - a) as f32
+    }
+
+    /// Sign-aligned nlerp of two stored rotations, quantised as a decoded frame is.
+    pub(super) fn lerp_rot(a: [i16; 4], b: [i16; 4], t: f32) -> [i16; 4] {
+        let qa = quat_from_i16(a);
+        let mut qb = quat_from_i16(b);
+        if (0..4).map(|k| qa[k] * qb[k]).sum::<f32>() < 0.0 {
+            qb = qb.map(|v| -v);
+        }
+        quat_to_i16(core::array::from_fn(|k| qa[k] + (qb[k] - qa[k]) * t))
+    }
+
+    /// Angle between two stored rotations, degrees. `4·asin(|a − b| / 2)` in f64: exact at the tiny angles that
+    /// matter here, where `acos` of a dot product rounds to zero.
+    pub(super) fn rot_err_deg(a: [i16; 4], b: [i16; 4]) -> f64 {
+        let unit = |q: [i16; 4]| {
+            let v = q.map(f64::from);
+            let len = libm::sqrt(v.iter().map(|x| x * x).sum::<f64>()).max(1e-12);
+            v.map(|x| x / len)
+        };
+        let (qa, qb) = (unit(a), unit(b));
+        let dist = |s: f64| {
+            libm::sqrt(
+                (0..4)
+                    .map(|k| {
+                        let d = qa[k] - s * qb[k];
+                        d * d
+                    })
+                    .sum::<f64>(),
+            )
+        };
+        let d = dist(1.0).min(dist(-1.0));
+        4.0 * libm::asin((d / 2.0).min(1.0)) * (180.0 / core::f64::consts::PI)
+    }
+
+    fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+        core::array::from_fn(|k| a[k] + (b[k] - a[k]) * t)
+    }
+
+    fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
+        libm::sqrtf((0..3).map(|k| (a[k] - b[k]) * (a[k] - b[k])).sum::<f32>())
+    }
+
+    /// Longest gap between two keys, frames (bounds the encoder's search).
+    const MAX_GAP: usize = 48;
+
+    /// Keys over `n` frames: from each key, the furthest frame (within [`MAX_GAP`]) that `ok` accepts as the next key.
+    /// Searched from far to near: a nearer end can fail where a farther one passes (nlerp's uneven speed makes short
+    /// chords of a baked IW4 segment worse than the segment itself). Always keeps the first and the last frame.
+    fn reduce(n: usize, ok: impl Fn(usize, usize) -> bool) -> Vec<usize> {
+        let mut keys = alloc::vec![0];
+        let mut i = 0;
+        while i + 1 < n {
+            let far = (i + MAX_GAP).min(n - 1);
+            let j = (i + 2..=far).rev().find(|&c| ok(i, c)).unwrap_or(i + 1);
+            keys.push(j);
+            i = j;
+        }
+        keys
+    }
+
+    /// `keys` unless listing their frame numbers costs more than storing every frame (`value_bytes` each).
+    fn worth_it(keys: Vec<usize>, n: usize, value_bytes: usize) -> Vec<usize> {
+        if keys.len() > 1 && keys.len() < n && keys.len() * (2 + value_bytes) >= n * value_bytes {
+            (0..n).collect()
+        } else {
+            keys
+        }
+    }
+
+    /// A keyed track (`Track::keys`) as one sample per frame, interpolated as the runtime does.
+    fn per_frame(t: &Track, frames: usize) -> (Vec<[i16; 4]>, Vec<[f32; 3]>) {
+        if t.keys.is_empty() {
+            return (t.rot.clone(), t.trans.clone());
+        }
+        let spread = |len: usize| len > 1;
+        let rot = if spread(t.rot.len()) {
+            (0..frames)
+                .map(|f| {
+                    let (a, b, w) = t.at(f as f32, t.rot.len());
+                    lerp_rot(t.rot[a], t.rot[b], w)
+                })
+                .collect()
+        } else {
+            t.rot.clone()
+        };
+        let trans = if spread(t.trans.len()) {
+            (0..frames)
+                .map(|f| {
+                    let (a, b, w) = t.at(f as f32, t.trans.len());
+                    lerp3(t.trans[a], t.trans[b], w)
+                })
+                .collect()
+        } else {
+            t.trans.clone()
+        };
+        (rot, trans)
+    }
+
+    pub(super) fn write_track(o: &mut Vec<u8>, t: &Track, frames: usize, tol: Tolerance) {
+        let (rot_frames, trans_frames) = per_frame(t, frames);
+        o.u16(t.bone);
+        // Rotation: one value when every frame is within tolerance of the first.
+        let rot = &rot_frames;
+        let tol_r = f64::from(tol.rot_deg);
+        let keys = if rot.len() <= 1 || rot.iter().all(|&q| rot_err_deg(rot[0], q) <= tol_r) {
+            alloc::vec![0]
+        } else {
+            reduce(rot.len(), |a, b| {
+                (a + 1..b)
+                    .all(|m| rot_err_deg(lerp_rot(rot[a], rot[b], frac(m, a, b)), rot[m]) <= tol_r)
+            })
+        };
+        let keys = worth_it(keys, rot.len(), 8);
+        o.u16(keys.len() as u16);
+        // Frame numbers only when some frames were dropped (every frame kept: none needed).
+        if keys.len() > 1 && keys.len() < rot.len() {
+            keys.iter().for_each(|&k| o.u16(k as u16));
+        }
+        keys.iter()
+            .flat_map(|&k| rot[k])
+            .for_each(|x| o.u16(x as u16));
+
+        // Translation.
+        let tr = &trans_frames;
+        if tr.is_empty() {
+            o.u8(TRANS_NONE);
+            o.u8(0);
+            return;
+        }
+        let max_abs = tr.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs()));
+        let scale = if max_abs > 0.0 {
+            max_abs / 32767.0
+        } else {
+            1.0
+        };
+        // i16 when its rounding (at most half a step per axis) leaves half the tolerance for interpolation.
+        let kind = if scale * 0.5 * libm::sqrtf(3.0) <= tol.trans * 0.5 {
+            TRANS_I16
+        } else {
+            TRANS_F32
+        };
+        let stored = |v: [f32; 3]| -> [f32; 3] {
+            if kind == TRANS_I16 {
+                v.map(|x| libm::roundf(x / scale).clamp(-32767.0, 32767.0) * scale)
+            } else {
+                v
+            }
+        };
+        let keys = if tr.len() == 1 || tr.iter().all(|&v| dist3(stored(tr[0]), v) <= tol.trans) {
+            alloc::vec![0]
+        } else {
+            reduce(tr.len(), |a, b| {
+                let (va, vb) = (stored(tr[a]), stored(tr[b]));
+                (a + 1..b).all(|m| dist3(lerp3(va, vb, frac(m, a, b)), tr[m]) <= tol.trans)
+            })
+        };
+        let keys = worth_it(keys, tr.len(), if kind == TRANS_I16 { 6 } else { 12 });
+        o.u8(kind);
+        o.u8(0);
+        o.u16(keys.len() as u16);
+        if keys.len() > 1 && keys.len() < tr.len() {
+            keys.iter().for_each(|&k| o.u16(k as u16));
+        }
+        if kind == TRANS_I16 {
+            o.f32(scale);
+            for &k in &keys {
+                tr[k].iter().for_each(|&x| {
+                    o.u16(libm::roundf(x / scale).clamp(-32767.0, 32767.0) as i16 as u16)
+                });
+            }
+        } else {
+            keys.iter().flat_map(|&k| tr[k]).for_each(|x| o.f32(x));
+        }
+    }
+
+    /// Key frame numbers: strictly increasing, from 0 to `frames - 1`. A key per frame stores no list.
+    fn read_keys(r: &mut Rd<'_>, count: usize, frames: usize) -> Result<Vec<usize>, ViewError> {
+        if count <= 1 {
+            return Ok(alloc::vec![0]);
+        }
+        if count == frames {
+            return Ok((0..frames).collect());
+        }
+        if count > frames {
+            return Err(ViewError::BadIndex("clip keys"));
+        }
+        let mut keys = Vec::with_capacity(count);
+        for _ in 0..count {
+            keys.push(usize::from(r.u16()?));
+        }
+        let ordered = keys.windows(2).all(|w| w[0] < w[1]);
+        if keys[0] != 0 || keys[count - 1] + 1 != frames || !ordered {
+            return Err(ViewError::BadIndex("clip keys"));
+        }
+        Ok(keys)
+    }
+
+    /// Every frame from keyed values: one value stays one (a constant track).
+    fn expand<T: Copy>(
+        keys: &[usize],
+        vals: &[T],
+        frames: usize,
+        lerp: impl Fn(T, T, f32) -> T,
+    ) -> Vec<T> {
+        if vals.len() <= 1 {
+            return vals.to_vec();
+        }
+        let mut out = Vec::with_capacity(frames);
+        for w in 0..keys.len() - 1 {
+            let (a, b) = (keys[w], keys[w + 1]);
+            for m in a..b {
+                out.push(if m == a {
+                    vals[w]
+                } else {
+                    lerp(vals[w], vals[w + 1], frac(m, a, b))
+                });
+            }
+        }
+        out.push(vals[vals.len() - 1]);
+        out
+    }
+
+    pub(super) fn read_track(r: &mut Rd<'_>, frames: usize) -> Result<Track, ViewError> {
+        let bone = r.u16()?;
+        let nr = usize::from(r.u16()?);
+        if nr == 0 || (nr > 1 && frames < 2) {
+            return Err(ViewError::BadIndex("clip keys"));
+        }
+        let keys = read_keys(r, nr, frames)?;
+        let mut vals = Vec::with_capacity(nr);
+        for _ in 0..nr {
+            vals.push([
+                r.u16()? as i16,
+                r.u16()? as i16,
+                r.u16()? as i16,
+                r.u16()? as i16,
+            ]);
+        }
+        let rot = expand(&keys, &vals, frames, lerp_rot);
+
+        let kind = r.u8()?;
+        r.u8()?;
+        let trans = match kind {
+            TRANS_NONE => Vec::new(),
+            TRANS_I16 | TRANS_F32 => {
+                let nt = usize::from(r.u16()?);
+                if nt == 0 || (nt > 1 && frames < 2) {
+                    return Err(ViewError::BadIndex("clip keys"));
+                }
+                let keys = read_keys(r, nt, frames)?;
+                let mut vals = Vec::with_capacity(nt);
+                if kind == TRANS_I16 {
+                    let scale = r.f32()?;
+                    for _ in 0..nt {
+                        let mut v = [0.0f32; 3];
+                        for x in &mut v {
+                            *x = f32::from(r.u16()? as i16) * scale;
+                        }
+                        vals.push(v);
+                    }
+                } else {
+                    for _ in 0..nt {
+                        vals.push([r.f32()?, r.f32()?, r.f32()?]);
+                    }
+                }
+                expand(&keys, &vals, frames, lerp3)
+            }
+            _ => return Err(ViewError::BadIndex("clip translation kind")),
+        };
+        Ok(Track {
+            bone,
+            rot,
+            trans,
+            keys: Vec::new(),
+        })
+    }
+}
+
 /// i16 quaternion (±32767) to f32.
 pub fn quat_from_i16(q: [i16; 4]) -> [f32; 4] {
     q.map(|v| f32::from(v) / 32767.0)
@@ -425,6 +769,332 @@ pub fn quat_to_i16(q: [f32; 4]) -> [i16; 4] {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    /// A two-bone model with the given clips (enough for decode's checks).
+    fn model_with(clips: alloc::vec::Vec<Clip>) -> ViewModel {
+        ViewModel {
+            bones: vec![
+                Bone {
+                    parent: -1,
+                    local_rot: [0.0, 0.0, 0.0, 1.0],
+                    ..Bone::default()
+                },
+                Bone {
+                    parent: 0,
+                    local_rot: [0.0, 0.0, 0.0, 1.0],
+                    ..Bone::default()
+                },
+            ],
+            view_bone: 0,
+            flash_bone: u16::MAX,
+            verts: vec![SkinVertex::default(); 3],
+            indices: vec![0, 1, 2],
+            surfaces: vec![],
+            clips,
+        }
+    }
+
+    /// Smooth, noisy, constant and near-constant tracks over `n` frames, as a baked clip would hold them.
+    fn sample_clip(n: usize) -> Clip {
+        let axis_angle = |ax: [f32; 3], deg: f32| {
+            let h = deg.to_radians() * 0.5;
+            let s = libm::sinf(h);
+            quat_to_i16([ax[0] * s, ax[1] * s, ax[2] * s, libm::cosf(h)])
+        };
+        let mut seed: u32 = 0x2545_f491;
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % 2001) as f32 / 1000.0 - 1.0
+        };
+        let smooth_rot: Vec<[i16; 4]> = (0..n)
+            .map(|f| axis_angle([0.0, 0.6, 0.8], 40.0 * libm::sinf(f as f32 * 0.07)))
+            .collect();
+        let smooth_trans: Vec<[f32; 3]> = (0..n)
+            .map(|f| {
+                let t = f as f32 * 0.05;
+                [3.0 * libm::sinf(t), -1.5 * libm::cosf(t), 0.25 * t]
+            })
+            .collect();
+        let noisy_rot: Vec<[i16; 4]> = (0..n)
+            .map(|_| axis_angle([1.0, 0.0, 0.0], 5.0 * noise()))
+            .collect();
+        let near_const: Vec<[i16; 4]> = (0..n)
+            .map(|f| {
+                let mut q = axis_angle([0.0, 0.0, 1.0], 10.0);
+                q[0] += (f % 2) as i16; // one quantisation step of jitter
+                q
+            })
+            .collect();
+        Clip {
+            slot: slot::RELOAD,
+            looping: false,
+            framerate: 30.0,
+            frames: n as u16,
+            tracks: vec![
+                Track {
+                    bone: 1,
+                    rot: smooth_rot,
+                    trans: smooth_trans,
+                    keys: vec![],
+                },
+                Track {
+                    bone: 1,
+                    rot: noisy_rot,
+                    trans: vec![],
+                    keys: vec![],
+                },
+                Track {
+                    bone: 1,
+                    rot: near_const,
+                    trans: vec![[0.5, -0.25, 1.0]],
+                    keys: vec![],
+                },
+                Track {
+                    bone: 0,
+                    rot: vec![[0, 0, 0, 32767]],
+                    trans: vec![],
+                    keys: vec![],
+                },
+                // A translation range too wide for i16 at the tolerance: kept as f32.
+                Track {
+                    bone: 1,
+                    rot: vec![[0, 0, 0, 32767]],
+                    trans: (0..n)
+                        .map(|f| [5000.0 * libm::sinf(f as f32 * 0.03), 0.0, 0.0])
+                        .collect(),
+                    keys: vec![],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn compact_tracks_stay_within_tolerance_and_shrink() {
+        let tol = Tolerance::SLIM;
+        let v = model_with(vec![sample_clip(91), sample_clip(2), sample_clip(1)]);
+        let full = v.encode();
+        let small = v.encode_compact(tol);
+        let back = ViewModel::decode(&small).unwrap();
+        assert_eq!(back.clips.len(), v.clips.len());
+        for (c, d) in v.clips.iter().zip(&back.clips) {
+            assert_eq!(
+                (c.slot, c.frames, c.tracks.len()),
+                (d.slot, d.frames, d.tracks.len())
+            );
+            for (t, u) in c.tracks.iter().zip(&d.tracks) {
+                assert_eq!(t.bone, u.bone);
+                // Every frame (or the constant) within tolerance of the original.
+                assert!(u.rot.len() == 1 || u.rot.len() == usize::from(c.frames));
+                for f in 0..usize::from(c.frames) {
+                    let a = t.rot[f.min(t.rot.len() - 1)];
+                    let b = u.rot[f.min(u.rot.len() - 1)];
+                    let e = compact::rot_err_deg(a, b);
+                    assert!(e <= f64::from(tol.rot_deg) + 1e-9, "rot frame {f}: {e}°");
+                }
+                assert_eq!(t.trans.is_empty(), u.trans.is_empty());
+                for f in 0..t.trans.len().max(u.trans.len()) {
+                    let a = t.trans[f.min(t.trans.len() - 1)];
+                    let b = u.trans[f.min(u.trans.len() - 1)];
+                    let e = libm::sqrtf((0..3).map(|k| (a[k] - b[k]) * (a[k] - b[k])).sum());
+                    assert!(e <= tol.trans * 1.0001, "trans frame {f}: {e}");
+                }
+            }
+        }
+        // The constant and near-constant tracks collapse to one value; the noisy one keeps most frames.
+        let c = &back.clips[0];
+        assert_eq!(c.tracks[2].rot.len(), 1);
+        assert_eq!(c.tracks[3].rot, vec![[0, 0, 0, 32767]]);
+        // Even this mix (a noise track, an f32-wide track) must not grow.
+        assert!(
+            small.len() < full.len(),
+            "compact {} vs full {}",
+            small.len(),
+            full.len()
+        );
+        // Re-encoding the decoded model compactly is stable in size (keys survive decode exactly).
+        assert!(back.encode_compact(tol).len() <= small.len());
+    }
+
+    #[test]
+    fn baked_keyframes_shrink_and_noise_does_not_grow() {
+        let tol = Tolerance::SLIM;
+        // What the converter bakes: an IW4 animation keyed every 6 frames, interpolated linearly to every frame.
+        // Compact tracks should find those keys again.
+        let n = 91;
+        let mut seed: u32 = 0x1357_9bdf;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % 2001) as f32 / 1000.0 - 1.0
+        };
+        let keys: Vec<usize> = (0..n).step_by(6).chain(core::iter::once(n - 1)).collect();
+        let key_rot: Vec<[i16; 4]> = keys
+            .iter()
+            .map(|_| quat_to_i16([0.3 * rnd(), 0.3 * rnd(), 0.3 * rnd(), 1.0]))
+            .collect();
+        let key_tr: Vec<[f32; 3]> = keys
+            .iter()
+            .map(|_| [4.0 * rnd(), 4.0 * rnd(), 4.0 * rnd()])
+            .collect();
+        let (mut rot, mut trans) = (Vec::new(), Vec::new());
+        for w in 0..keys.len() - 1 {
+            let (a, b) = (keys[w], keys[w + 1]);
+            for m in a..b {
+                let t = (m - a) as f32 / (b - a) as f32;
+                rot.push(compact::lerp_rot(key_rot[w], key_rot[w + 1], t));
+                trans.push(core::array::from_fn(|k| {
+                    key_tr[w][k] + (key_tr[w + 1][k] - key_tr[w][k]) * t
+                }));
+            }
+        }
+        rot.push(key_rot[key_rot.len() - 1]);
+        trans.push(key_tr[key_tr.len() - 1]);
+        let clip = Clip {
+            slot: slot::RELOAD,
+            looping: false,
+            framerate: 30.0,
+            frames: n as u16,
+            tracks: vec![Track {
+                bone: 1,
+                rot,
+                trans,
+                keys: vec![],
+            }],
+        };
+        let v = model_with(vec![clip]);
+        let (full, small) = (v.encode().len(), v.encode_compact(tol).len());
+        assert!(
+            small * 3 < full,
+            "baked keys: compact {small} vs full {full}"
+        );
+
+        // Noise can't be thinned; it must not cost more than before.
+        let mut noisy = sample_clip(91);
+        noisy.tracks = vec![noisy.tracks.remove(1)];
+        let v = model_with(vec![noisy]);
+        let (full, small) = (v.encode().len(), v.encode_compact(tol).len());
+        assert!(small <= full + 4, "noise: compact {small} vs full {full}");
+    }
+
+    #[test]
+    fn keyed_tracks_compact_like_their_frames() {
+        // A track keyed the way the converter keys player animations (samples at keys, interpolated between).
+        let keyed = Track {
+            bone: 1,
+            rot: vec![
+                quat_to_i16([0.0, 0.0, 0.0, 1.0]),
+                quat_to_i16([0.0, 0.0, 0.2, 1.0]),
+                quat_to_i16([0.0, 0.1, 0.2, 1.0]),
+            ],
+            trans: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 2.0, 0.0]],
+            keys: vec![0, 7, 19],
+        };
+        let clip = Clip {
+            slot: slot::IDLE,
+            looping: true,
+            framerate: 30.0,
+            frames: 20,
+            tracks: vec![keyed.clone()],
+        };
+        let back =
+            ViewModel::decode(&model_with(vec![clip]).encode_compact(Tolerance::SLIM)).unwrap();
+        let t = &back.clips[0].tracks[0];
+        assert!(t.keys.is_empty() && t.rot.len() == 20 && t.trans.len() == 20);
+        for f in 0..20 {
+            let (a, b, w) = keyed.at(f as f32, 3);
+            let want_r = compact::lerp_rot(keyed.rot[a], keyed.rot[b], w);
+            assert!(
+                compact::rot_err_deg(want_r, t.rot[f]) <= f64::from(Tolerance::SLIM.rot_deg) + 1e-9
+            );
+            let want_t: [f32; 3] = core::array::from_fn(|k| {
+                keyed.trans[a][k] + (keyed.trans[b][k] - keyed.trans[a][k]) * w
+            });
+            let e = libm::sqrtf((0..3).map(|k| (want_t[k] - t.trans[f][k]).powi(2)).sum());
+            assert!(e <= Tolerance::SLIM.trans * 1.0001, "frame {f}: {e}");
+        }
+    }
+
+    #[test]
+    fn compact_keeps_exact_tracks_exact() {
+        // A track that only steps (no interpolation can fake it) must come back bit for bit.
+        let steps: Vec<[i16; 4]> = (0..12)
+            .map(|f| {
+                if f < 6 {
+                    [0, 0, 0, 32767]
+                } else {
+                    [0, 23170, 0, 23170]
+                }
+            })
+            .collect();
+        let v = model_with(vec![Clip {
+            slot: slot::FIRE,
+            looping: false,
+            framerate: 30.0,
+            frames: 12,
+            tracks: vec![Track {
+                bone: 1,
+                rot: steps.clone(),
+                trans: vec![],
+                keys: vec![],
+            }],
+        }]);
+        let back = ViewModel::decode(&v.encode_compact(Tolerance::SLIM)).unwrap();
+        assert_eq!(back.clips[0].tracks[0].rot, steps);
+    }
+
+    #[test]
+    fn compact_rejects_bad_keys() {
+        // A steady turn over 10 frames: two keys (frames 0 and 9) with a frame list.
+        let ramp: Vec<[i16; 4]> = (0..10)
+            .map(|f| quat_to_i16([0.0, 0.0, 0.01 * f as f32, 1.0]))
+            .collect();
+        let clip = Clip {
+            slot: slot::FIRE,
+            looping: false,
+            framerate: 30.0,
+            frames: 10,
+            tracks: vec![Track {
+                bone: 1,
+                rot: ramp,
+                trans: vec![],
+                keys: vec![],
+            }],
+        };
+        let good = model_with(vec![clip]).encode_compact(Tolerance::SLIM);
+        assert!(ViewModel::decode(&good).is_ok());
+        // Clips start where a model without clips ends (its clip count is that model's last two bytes).
+        let clips_at = model_with(vec![]).encode_compact(Tolerance::SLIM).len();
+        // Clip header: slot, looping, framerate, frames, track count (10 bytes); track: bone, key count.
+        let keys_at = clips_at + 10 + 2;
+        assert_eq!(be::u16(&good, keys_at), 2, "two rotation keys");
+        let list_at = keys_at + 2;
+        assert_eq!(
+            (be::u16(&good, list_at), be::u16(&good, list_at + 2)),
+            (0, 9)
+        );
+
+        let mut bad = good.clone();
+        bad[list_at..list_at + 2].copy_from_slice(&5u16.to_be_bytes()); // first key must be frame 0
+        assert_eq!(
+            ViewModel::decode(&bad).unwrap_err(),
+            ViewError::BadIndex("clip keys")
+        );
+        let mut bad = good.clone();
+        bad[list_at + 2..list_at + 4].copy_from_slice(&8u16.to_be_bytes()); // last key must be the last frame
+        assert_eq!(
+            ViewModel::decode(&bad).unwrap_err(),
+            ViewError::BadIndex("clip keys")
+        );
+        let mut bad = good;
+        bad[keys_at..keys_at + 2].copy_from_slice(&11u16.to_be_bytes()); // more keys than frames
+        assert_eq!(
+            ViewModel::decode(&bad).unwrap_err(),
+            ViewError::BadIndex("clip keys")
+        );
+    }
 
     #[test]
     fn round_trip_and_checks() {

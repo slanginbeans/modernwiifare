@@ -78,6 +78,22 @@ ignores the section.
 | `SNDV` | `VariantRecord` (40 B) | a clip in `SNDD` (offset, padded length, rate), volume and pitch ranges, probability weight, falloff distances (min / max) |
 | `SNDD` | – | mono 16-bit big-endian PCM, each clip 32-byte aligned and padded to 32 (ASND DMA) |
 
+### Slim weapon files (toggle, off by default)
+`mwf-convert pack ... --slim-views` / `common ... --slim-views`, or `MWF_SLIM_VIEWS=1` in the environment (so
+`build.bat` picks it up: `set MWF_SLIM_VIEWS=1` before running it). The option is part of the pack stamp, so turning it
+on or off rebuilds `common.wpk` and the weapon files on the next run. With it on, each `views/<weapon>.wpk` gets:
+- **Compact clip tracks** (`VIEW` header flag `wpk::view::flags::COMPACT_TRACKS`): only the frames linear interpolation
+  can't reproduce within `Tolerance::SLIM` (0.02° rotation, 0.005 units translation, checked against the decoder's own
+  output), each with its frame number (none when every frame is kept), and translations as i16 with a per-track scale
+  (f32 when a track's range is too wide for that). `ViewModel::decode` expands them back to every frame, so the
+  runtime's samplers and the in-memory model are unchanged; only the file in MEM2 shrinks.
+- **No texture mips** on the first-person model (level 0 only, and level 0 of any I4 alpha plane). The shim turns
+  mipmapping off for single-level textures.
+- **Sounds at 32 kHz** where the source is faster (a Blackman-windowed sinc low-pass just under 16 kHz); slower clips
+  are untouched.
+
+The converter prints the total size of the weapon files; compare a run with and without the option.
+
 ## How the world is built (`converter/src/pack.rs`)
 - Surfaces are batched by vertex group (consecutive surfaces spanning under 65,536 vertices, so u16 indices reach
   them), 1024-unit grid cell (for frustum culling), material and lightmap. Sky-material surfaces are dropped; the

@@ -428,6 +428,9 @@ pub(crate) struct Textures {
     pub(crate) data: Vec<u8>,
     /// `.gxt` file name -> texture index.
     by_file: HashMap<String, u16>,
+    /// Keep only level 0 of each file (`--slim-views`: the first-person gun sits at the camera, so its smaller mips
+    /// go unused; GX then samples it without mipmapping).
+    pub(crate) base_level_only: bool,
 }
 
 impl Textures {
@@ -497,17 +500,31 @@ impl Textures {
             gx_texture::container::parse(&bytes).map_err(|e| format!("{file}: {e:?}"))?;
         let plane = gx_texture::container::parse_alpha_plane(&bytes)
             .map_err(|e| format!("{file}: {e:?}"))?;
+        let (w, ht) = (u32::from(h.width), u32::from(h.height));
+        let base_only = self.base_level_only && h.levels > 1;
+        let data = if base_only {
+            &data[..h.format.level_size(w, ht).min(data.len())]
+        } else {
+            data
+        };
+        let plane = plane.map(|(a, p)| {
+            if base_only {
+                &p[..a.format.level_size(w, ht).min(p.len())]
+            } else {
+                p
+            }
+        });
         let c = gx_texture::Converted {
             format: h.format,
-            width: u32::from(h.width),
-            height: u32::from(h.height),
-            levels: u32::from(h.levels),
+            width: w,
+            height: ht,
+            levels: if base_only { 1 } else { u32::from(h.levels) },
             traits: gx_texture::policy::Traits {
                 grey: false,
                 alpha: gx_texture::policy::Alpha::Opaque,
             },
             data: data.to_vec(),
-            alpha_plane: plane.map(|(_, p)| p.to_vec()),
+            alpha_plane: plane.map(<[u8]>::to_vec),
         };
         let i = self.add(&c, wrap);
         self.by_file.insert(file.to_owned(), i);
@@ -1394,6 +1411,57 @@ pub fn render_text(r: &PackReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slim_views_keep_only_the_base_level() {
+        use gx_texture::policy::{Options, Role, convert_with};
+        let dir = std::env::temp_dir().join(format!("mwf_base_level_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // An opaque texture and a smooth-alpha one (colour + I4 alpha plane), both with mips.
+        let opaque = gx_texture::Image::from_fn(64, 32, |x, y| [x as u8 * 4, y as u8 * 8, 90, 255]);
+        let smooth =
+            gx_texture::Image::from_fn(64, 64, |x, y| [200, x as u8, y as u8, (x * 4) as u8]);
+        for (name, img) in [("opaque.gxt", &opaque), ("smooth.gxt", &smooth)] {
+            let c = convert_with(img, Role::Viewmodel, Options::default());
+            assert!(c.levels > 1, "{name}: needs mips for this test");
+            std::fs::write(dir.join(name), gx_texture::container::write(&c)).unwrap();
+        }
+        let mut full = Textures::default();
+        let mut slim = Textures {
+            base_level_only: true,
+            ..Textures::default()
+        };
+        for name in ["opaque.gxt", "smooth.gxt"] {
+            let a = full.add_file(&dir, name, Wrap::Repeat).unwrap() as usize;
+            let b = slim.add_file(&dir, name, Wrap::Repeat).unwrap() as usize;
+            let (fr, sr) = (full.records[a], slim.records[b]);
+            assert!(fr.levels > 1 && sr.levels == 1, "{name}");
+            assert_eq!(
+                (sr.width, sr.height, sr.format),
+                (fr.width, fr.height, fr.format)
+            );
+            let fmt = gx_texture::TexFormat::from_gx_id(sr.format).unwrap();
+            assert_eq!(
+                sr.data_len as usize,
+                fmt.level_size(u32::from(sr.width), u32::from(sr.height))
+            );
+            assert!(sr.data_len < fr.data_len);
+            // The level kept is the same bytes as the full file's level 0.
+            let f0 = &full.data[fr.data_off as usize..][..sr.data_len as usize];
+            let s0 = &slim.data[sr.data_off as usize..][..sr.data_len as usize];
+            assert_eq!(f0, s0);
+            if fr.alpha_len > 0 {
+                assert!(
+                    sr.alpha_len > 0 && sr.alpha_len < fr.alpha_len,
+                    "{name}: alpha plane"
+                );
+                let i4 =
+                    gx_texture::TexFormat::I4.level_size(u32::from(sr.width), u32::from(sr.height));
+                assert_eq!(sr.alpha_len as usize, i4);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn weld_merges_identical_vertices_only() {

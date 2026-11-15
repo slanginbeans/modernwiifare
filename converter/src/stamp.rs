@@ -92,6 +92,19 @@ impl Stamp {
         Stamp::decode(all.get(off..off + len)?)
     }
 
+    /// This stamp with an output option folded in when it is on (so turning it on or off rebuilds the output).
+    pub fn with(self, option: &str, on: bool) -> Stamp {
+        if !on {
+            return self;
+        }
+        let mut h = self.inputs;
+        for b in option.bytes() {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        Stamp { inputs: h, ..self }
+    }
+
     /// Whether `path` exists and was made from the same inputs by this converter revision.
     pub fn up_to_date(&self, path: &Path) -> bool {
         Stamp::read(path).is_some_and(|s| s == *self)
@@ -101,6 +114,20 @@ impl Stamp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn options_change_the_stamp_only_when_on() {
+        let s = Stamp {
+            revision: REVISION,
+            inputs: 42,
+        };
+        assert_eq!(s.with("slim-views", false), s);
+        let on = s.with("slim-views", true);
+        assert_ne!(on, s);
+        assert_eq!(on, s.with("slim-views", true));
+        assert_ne!(on, s.with("other", true));
+        assert_eq!(on.revision, REVISION);
+    }
 
     #[test]
     fn stamps_round_trip_and_follow_their_inputs() {
