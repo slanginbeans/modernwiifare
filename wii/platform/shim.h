@@ -220,6 +220,8 @@ int32_t mwf_snd_play(const void *pcm, uint32_t bytes, uint32_t rate, uint8_t vol
 /* The same for a 4-bit DSP ADPCM clip (`wpk::adpcm`, 32-byte aligned): decoded a piece at a time while it plays. */
 int32_t mwf_snd_play_adpcm(const void *clip, uint32_t bytes, uint32_t rate, uint8_t vol_l, uint8_t vol_r);
 void mwf_snd_stop_all(void);
+/* Sounds started so far by taking over the voice playing longest, because all were busy. */
+uint32_t mwf_snd_steals(void);
 /* Implemented by the game (Rust, `wpk::adpcm::decode`): decode up to `max` samples of `clip` from sample `start`,
    continuing from `hist` ([h1, h2], updated). Returns the samples written. Safe to call from the audio interrupt. */
 uint32_t mwf_adpcm_decode(const uint8_t *clip, uint32_t len, uint32_t start, int16_t *hist, int16_t *out,

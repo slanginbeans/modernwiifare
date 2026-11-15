@@ -1155,6 +1155,10 @@ fn run_map(
     let tactical =
         |o: &game_core::options::Options| o.layout == game_core::options::layout::TACTICAL;
     let mut mapper = controls::Mapper::default();
+    // Diagnostics: the sprint button last frame (a press that doesn't start a sprint is logged with why), and the
+    // sound voices taken over so far (logged once a second when it grows).
+    let mut sprint_held_before = false;
+    let mut steals_logged = 0u32;
     let mut aim_targets: Vec<look::AimTarget> = Vec::with_capacity(bots);
     // The current field of view over the hip one (look speed and aim assist scale with the zoom).
     let mut hip_fov_scale = 1.0f32;
@@ -1200,6 +1204,17 @@ fn run_map(
         let dt = msec as f32 / 1000.0;
         let (gc_pad, x360_pad) = ffi::pads();
         let ctl = mapper.map(&gc_pad, &x360_pad, tactical(options));
+        let mut sprint_check = ctl.held(act::SPRINT) && !sprint_held_before;
+        sprint_held_before = ctl.held(act::SPRINT);
+        let steals = unsafe { ffi::mwf_snd_steals() };
+        if steals != steals_logged && now / 1000 != last.wrapping_sub(msec) / 1000 {
+            devlog::event(
+                now,
+                "sound_voices_full",
+                format_args!("taken_over={}", steals.wrapping_sub(steals_logged)),
+            );
+            steals_logged = steals;
+        }
         // The debug settings, every frame (the pause menu's debug page can change them).
         if let Some(a) = arena.as_mut() {
             a.god_mode = debug.god_mode;
@@ -1495,12 +1510,21 @@ fn run_map(
             && life.alive()
         {
             let eye = p.eye();
+            let fwd = cam.forward();
             for (i, f) in a.fighters.iter().enumerate().skip(1) {
                 // Aim assist helps against enemies only.
                 if !f.life.alive() || !a.enemies(0, i) {
                     continue;
                 }
                 let (feet, chest) = arena::feet_and_aim(&f.player);
+                // Its regions are near the screen's centre (at most 160 of 320 half-width pixels: about 18° off the
+                // view at the hip FOV), so an enemy over 45° off the view (last frame's) can't be a target: no sight
+                // trace for it (they cost up to milliseconds each through dense collision).
+                let d: [f32; 3] = core::array::from_fn(|k| chest[k] - eye[k]);
+                let len = libm::sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                if len > 48.0 && d[0] * fwd[0] + d[1] * fwd[1] + d[2] * fwd[2] < len * 0.707 {
+                    continue;
+                }
                 let height = f.player.hull_height();
                 let t = c.trace(eye, chest, [0.0; 3], [0.0; 3], game_core::gun::MASK_SHOT);
                 if t.fraction < 1.0 {
@@ -1609,6 +1633,28 @@ fn run_map(
                         &weapon_move,
                         tick_ms,
                     );
+                    if core::mem::take(&mut sprint_check)
+                        && p.ps.pm_flags & playerstate_iw4::pm_flags::SPRINTING == 0
+                    {
+                        // Why a sprint press did nothing (IW4L `update_sprint`): forward under 105, the weapon
+                        // in a state that blocks it (melee 13-15, offhand 16-21), the button needing a release,
+                        // or the meter (start / end / length vs the player's clock).
+                        devlog::event(
+                            now,
+                            "sprint_refused",
+                            format_args!(
+                                "fwd={forward} ws={} upreq={} pmf={:#x} ground={} start={} end={} len={} t={}",
+                                p.ps.weaponstate_primary,
+                                p.ps.sprint_button_up_required,
+                                p.ps.pm_flags,
+                                p.on_ground(),
+                                p.ps.last_sprint_start,
+                                p.ps.last_sprint_end,
+                                p.ps.sprint_start_max_length,
+                                p.ps.command_time,
+                            ),
+                        );
+                    }
                     cam = p.camera(aspect);
                     // ADS zoom (IW4L `calc_fov_from_ads` with the weapon's zoom FOV and window).
                     let fov = arsenal.gun().map_or(look::HIP_FOV, |g| {
