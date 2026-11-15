@@ -36,7 +36,8 @@ never run (supersedes 0002)
   "Smaller map packs"; the Wii side is `mwf_world_desc` in the shim, called before every world draw).
   `--adpcm` (`MWF_ADPCM`): sounds as 4-bit DSP ADPCM (`shared/wpk/src/adpcm.rs`), decoded while they play by the shim's
   ASND voice callback; off by default (`docs/pack.md`, "ADPCM sounds"). `--slim-anims` (`MWF_SLIM_ANIMS`): keyframed
-  player animations (`wpk::player_anim::slim`), off by default. Pack reports: `<map>.json` has a texture
+  player animations (`wpk::player_anim::slim`), off by default. `--trim-sounds` (`MWF_TRIM_SOUNDS`): quiet sound
+  tails cut, off by default. Map reports also break down collision (`clip_report.rs`, measuring only). Pack reports: `<map>.json` has a texture
   breakdown (`tex_report.rs`); `common.json` covers `common.wpk` and the weapon files. `rules.rs` reads values from the
   user's scripts (ADR 0007). `preview <pack.wpk>`: software render of a pack (also the viewmodel and characters).
   `menu-preview`: menus. `report <log>...`: summarises the Wii's SD-card match logs (`report.bat`).

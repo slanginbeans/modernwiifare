@@ -26,6 +26,7 @@ function New-Settings {
         SmallDl     = $false   # smaller display lists (MWF_SMALL_DL)
         SmallProps  = $false   # small props from their second level of detail (MWF_SMALL_PROPS)
         Adpcm       = $false   # sounds as 4-bit DSP ADPCM (MWF_ADPCM)
+        TrimSounds  = $false   # sounds without their quiet tails (MWF_TRIM_SOUNDS)
         SlimAnims   = $false   # player animations as keyframes (MWF_SLIM_ANIMS)
         Force       = $false   # reconvert everything (--force)
         Simplify    = '1.0'    # world detail (--simplify <ratio>; 1.0 = full)
@@ -80,6 +81,7 @@ function Get-BuildCommand($s, [switch]$Clean) {
         MWF_SMALL_DL      = if ($s.SmallDl) { '1' } else { $null }
         MWF_SMALL_PROPS   = if ($s.SmallProps) { '1' } else { $null }
         MWF_ADPCM         = if ($s.Adpcm) { '1' } else { $null }
+        MWF_TRIM_SOUNDS   = if ($s.TrimSounds) { '1' } else { $null }
         MWF_SLIM_ANIMS    = if ($s.SlimAnims) { '1' } else { $null }
         MWF_CONVERT_FLAGS = if ($flags.Count) { $flags -join ' ' } else { $null }
         MWF_ASSUME_YES    = if ($s.AllowDownloads) { '1' } else { $null }
@@ -95,7 +97,7 @@ $settings = Read-Settings
 
 $form = New-Object Windows.Forms.Form
 $form.Text = 'Modern Wiifare builder'
-$form.Size = New-Object Drawing.Size(760, 850)
+$form.Size = New-Object Drawing.Size(760, 876)
 $form.MinimumSize = New-Object Drawing.Size(640, 560)
 $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object Drawing.Font('Segoe UI', 9)
@@ -129,6 +131,7 @@ $cbTiled = Add-Check 'Maps: more compact world vertices (testing: UV tiles for w
 $cbSmallDl = Add-Check 'Maps: smaller display lists (testing: 8-bit indices, no colour where white)' 'MWF_SMALL_DL=1. Rebuilds the map packs when switched.' $settings.SmallDl
 $cbSmallProps = Add-Check 'Maps: small props start at their second level of detail (testing)' 'MWF_SMALL_PROPS=1. Rebuilds the map packs when switched.' $settings.SmallProps
 $cbAdpcm = Add-Check 'Sounds: ADPCM (testing: about 3.5x smaller, decoded as they play)' 'MWF_ADPCM=1. Rebuilds common.wpk and the weapon files when switched.' $settings.Adpcm
+$cbTrimSounds = Add-Check 'Sounds: cut quiet tails (testing: below -54 dB, starts unchanged)' 'MWF_TRIM_SOUNDS=1. Rebuilds common.wpk and the weapon files when switched.' $settings.TrimSounds
 $cbSlimAnims = Add-Check 'Player animations: keyframes only (testing: within 0.25 degrees)' 'MWF_SLIM_ANIMS=1. Rebuilds common.wpk when switched.' $settings.SlimAnims
 $cbForce = Add-Check 'Reconvert everything (ignore up-to-date packs)' 'Passes --force to the converter.' $settings.Force
 $cbDownloads = Add-Check 'Allow downloading missing tools (Rust, llvm-mingw)' 'Answers yes to build.bat''s download prompts (MWF_ASSUME_YES=1). There is no console here to ask in.' $settings.AllowDownloads
@@ -235,7 +238,7 @@ $log.ScrollBars = 'Both'
 $log.WordWrap = $false
 $log.Font = New-Object Drawing.Font('Consolas', 9)
 $log.Location = New-Object Drawing.Point(16, $y)
-$log.Size = New-Object Drawing.Size(706, (790 - $y))
+$log.Size = New-Object Drawing.Size(706, (816 - $y))
 $log.Anchor = 'Top,Bottom,Left,Right'
 $form.Controls.Add($log)
 
@@ -248,6 +251,7 @@ function Get-UiSettings {
     $s.SmallDl = $cbSmallDl.Checked
     $s.SmallProps = $cbSmallProps.Checked
     $s.Adpcm = $cbAdpcm.Checked
+    $s.TrimSounds = $cbTrimSounds.Checked
     $s.SlimAnims = $cbSlimAnims.Checked
     $s.Force = $cbForce.Checked
     $s.AllowDownloads = $cbDownloads.Checked
@@ -382,12 +386,13 @@ if ($SelfTest) {
     Check 'defaults: no small dl' $c.Env.MWF_SMALL_DL $null
     Check 'defaults: no small props' $c.Env.MWF_SMALL_PROPS $null
     Check 'defaults: no adpcm' $c.Env.MWF_ADPCM $null
+    Check 'defaults: no trim sounds' $c.Env.MWF_TRIM_SOUNDS $null
     Check 'defaults: no slim anims' $c.Env.MWF_SLIM_ANIMS $null
     Check 'defaults: no flags' $c.Env.MWF_CONVERT_FLAGS $null
     $s = New-Settings
     $s.Update = $false; $s.Data = $false; $s.SlimViews = $true; $s.Force = $true; $s.Simplify = '0.5'
     $s.AllowDownloads = $true; $s.Game = 'D:\mwf\Call of Duty Modern Warfare 2'
-    $s.TiledUv = $true; $s.SmallDl = $true; $s.Adpcm = $true; $s.SlimAnims = $true; $s.SmallProps = $true
+    $s.TiledUv = $true; $s.SmallDl = $true; $s.Adpcm = $true; $s.SlimAnims = $true; $s.SmallProps = $true; $s.TrimSounds = $true
     $c = Get-BuildCommand $s
     Check 'switches: args' ($c.Args -join ' ') 'noupdate nodata nopause'
     Check 'switches: slim' $c.Env.MWF_SLIM_VIEWS '1'
@@ -397,6 +402,7 @@ if ($SelfTest) {
     Check 'switches: small dl' $c.Env.MWF_SMALL_DL '1'
     Check 'switches: small props' $c.Env.MWF_SMALL_PROPS '1'
     Check 'switches: adpcm' $c.Env.MWF_ADPCM '1'
+    Check 'switches: trim sounds' $c.Env.MWF_TRIM_SOUNDS '1'
     Check 'switches: slim anims' $c.Env.MWF_SLIM_ANIMS '1'
     Check 'switches: game' $c.Env.MWF_GAME 'D:\mwf\Call of Duty Modern Warfare 2'
     Check 'switches: devkitpro unset' $c.Env.MWF_DEVKITPRO $null
@@ -408,6 +414,7 @@ if ($SelfTest) {
     Check 'ui: small dl' $u.SmallDl $true
     Check 'ui: tiled uv off' $u.TiledUv $false
     Check 'ui: adpcm off' $u.Adpcm $false
+    Check 'ui: trim sounds off' $u.TrimSounds $false
     Check 'ui: slim anims off' $u.SlimAnims $false
     Check 'ui: small props off' $u.SmallProps $false
     Check 'ui: detail' $u.Simplify '0.5'

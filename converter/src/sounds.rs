@@ -246,6 +246,10 @@ pub struct Bank {
     pub max_rate: Option<u32>,
     /// Clips as 4-bit DSP ADPCM (`--adpcm`, [`wpk::adpcm`]; `SNDD`'s count says so), else 16-bit PCM.
     pub adpcm: bool,
+    /// Cut each clip's quiet tail (`--trim-sounds`, [`trim_tail`]).
+    pub trim: bool,
+    /// Samples cut by `trim`, by rate (the report).
+    trimmed_by_rate: std::collections::BTreeMap<u32, u64>,
     /// Samples written so far, by rate (the report).
     samples_by_rate: std::collections::BTreeMap<u32, (usize, u64)>,
 }
@@ -259,6 +263,8 @@ pub struct BankReport {
     pub clips: usize,
     pub seconds: f64,
     pub bytes: u64,
+    /// Seconds of quiet tails cut (`--trim-sounds`).
+    pub trimmed_seconds: f64,
     /// Clips and seconds by sample rate (Hz).
     pub by_rate: std::collections::BTreeMap<u32, RateBucket>,
 }
@@ -278,6 +284,7 @@ impl BankReport {
         self.clips += o.clips;
         self.seconds += o.seconds;
         self.bytes += o.bytes;
+        self.trimmed_seconds += o.trimmed_seconds;
         for (r, b) in &o.by_rate {
             let e = self.by_rate.entry(*r).or_default();
             e.clips += b.clips;
@@ -341,6 +348,29 @@ pub fn resample_be(pcm: &[u8], from: u32, to: u32) -> Vec<u8> {
     out
 }
 
+/// Loudest a sample may be and still count as silence for [`trim_tail`]: -54 dBFS (65 of 32767), under the noise
+/// floor of the Wii's output and far under anything mixed with a match around it.
+pub const TRIM_THRESHOLD: i16 = 65;
+
+/// How much of the quiet tail [`trim_tail`] keeps after the last audible sample, seconds (the decay's last few
+/// milliseconds, so the cut never lands mid-wave).
+pub const TRIM_KEEP_S: f64 = 0.010;
+
+/// Samples to keep of mono 16-bit big-endian `pcm` at `rate` Hz: up to the last sample louder than
+/// [`TRIM_THRESHOLD`], plus [`TRIM_KEEP_S`]. Only the end is cut: a clip still starts on the same sample, so nothing
+/// plays earlier or later (notetrack and event timings are unchanged). A clip that is silent throughout keeps one
+/// sample.
+pub fn trim_tail(pcm: &[u8], rate: u32) -> usize {
+    let n = pcm.len() / 2;
+    let last = (0..n).rev().find(|&i| {
+        i16::from_be_bytes([pcm[i * 2], pcm[i * 2 + 1]]).unsigned_abs() > TRIM_THRESHOLD as u16
+    });
+    match last {
+        Some(i) => (i + 1 + (f64::from(rate) * TRIM_KEEP_S) as usize).min(n),
+        None => n.min(1),
+    }
+}
+
 impl Bank {
     /// A loaded sound's clip in `data`, written the first time it's asked for.
     fn clip(&mut self, capture: &Capture, loaded: &str) -> Option<(u32, u32, u32)> {
@@ -355,6 +385,11 @@ impl Bank {
         {
             mono = resample_be(&mono, rate, max);
             rate = max;
+        }
+        if self.trim {
+            let keep = trim_tail(&mono, rate);
+            *self.trimmed_by_rate.entry(rate).or_default() += (mono.len() / 2 - keep) as u64;
+            mono.truncate(keep * 2);
         }
         let samples = mono.len() / 2;
         let e = self.samples_by_rate.entry(rate).or_default();
@@ -381,6 +416,9 @@ impl Bank {
             bytes: self.data.len() as u64,
             ..BankReport::default()
         };
+        for (&rate, &cut) in &self.trimmed_by_rate {
+            r.trimmed_seconds += cut as f64 / f64::from(rate.max(1));
+        }
         for (&rate, &(clips, samples)) in &self.samples_by_rate {
             let seconds = samples as f64 / f64::from(rate.max(1));
             r.seconds += seconds;
@@ -685,6 +723,17 @@ mod tests {
             adpcm: true,
             ..Bank::default()
         };
+        // Half a second of tone, then a second of near-silence (under the threshold): trimming keeps the tone and
+        // 10 ms, and the clip still starts on its first sample.
+        let mut tail = pcm.clone();
+        tail.extend((0..44_100).flat_map(|i| (if i % 2 == 0 { 40i16 } else { -40 }).to_be_bytes()));
+        let keep = trim_tail(&tail, 44_100);
+        assert!(
+            keep >= pcm.len() / 2 && keep <= pcm.len() / 2 + 441,
+            "{keep}"
+        );
+        assert_eq!(&tail[..pcm.len()], &pcm[..]);
+        assert_eq!(trim_tail(&[0; 64], 44_100), 1);
         assert_eq!(plain.add(&c, "hum"), 0);
         assert_eq!(small.add(&c, "hum"), 0);
         assert_eq!(data_count(&plain), 0);
@@ -710,5 +759,33 @@ mod tests {
         assert_eq!((r.encoding, r.clips, r.aliases), ("dsp-adpcm", 1, 1));
         assert!((r.seconds - 0.5).abs() < 0.01);
         assert_eq!(r.by_rate[&44_100].clips, 1);
+        // Through a bank: the tail is cut and reported.
+        c.loaded.insert(
+            "tail".into(),
+            LoadedPcm {
+                format: MSS_PCM,
+                rate: 44_100,
+                bits: 16,
+                channels: 1,
+                data: tail.chunks_exact(2).flat_map(|b| [b[1], b[0]]).collect(),
+            },
+        );
+        let row = AliasRow {
+            loaded: Some("tail".into()),
+            ..c.aliases["hum"][0].clone()
+        };
+        c.aliases.insert("t".into(), vec![row]);
+        let mut trimmed = Bank {
+            trim: true,
+            ..Bank::default()
+        };
+        trimmed.add(&c, "t");
+        let r = trimmed.report();
+        assert!(
+            (r.trimmed_seconds - 0.99).abs() < 0.01,
+            "{}",
+            r.trimmed_seconds
+        );
+        assert!((r.seconds - 0.51).abs() < 0.01, "{}", r.seconds);
     }
 }

@@ -394,6 +394,8 @@ pub struct PackReport {
     pub nav_nodes: usize,
     pub nav_edges: usize,
     pub collision: crate::collision::ClipReport,
+    /// `CLIP` by table, and what lossless repacking could save (`clip_report`; measuring only).
+    pub collision_breakdown: crate::clip_report::ClipBreakdown,
     pub static_models: StaticModelReport,
     pub visibility: VisReport,
     /// Where `TXDA` goes: by use, format and size (`tex_report`).
@@ -1397,7 +1399,9 @@ pub fn build(
     }
     let clip = world.clip.as_ref().map_err(|e| format!("collision: {e}"))?;
     report.collision = crate::collision::ClipReport::of(clip);
-    b.section(wpk::tag::CLIP, 1, clip.encode());
+    let clip_bytes = clip.encode();
+    report.collision_breakdown = crate::clip_report::breakdown(clip, &clip_bytes);
+    b.section(wpk::tag::CLIP, 1, clip_bytes);
     // The bots' walk graph, flooded out from the spawn points over the collision.
     let seeds: Vec<[f32; 3]> = spawns.iter().map(|s| s.origin).collect();
     let nav = game_core::nav::bake(&game_core::collision::MapClip::new(clip), &seeds);
@@ -1669,6 +1673,7 @@ pub fn render_text(r: &PackReport) -> String {
 ",
         c.brushes, c.planes, c.nodes, c.leaves, c.mesh_triangles, c.brush_models
     ));
+    s.push_str(&crate::clip_report::render_text(&r.collision_breakdown));
     s.push_str(&crate::tex_report::render_text(&r.texture_breakdown));
     s
 }

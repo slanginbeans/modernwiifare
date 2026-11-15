@@ -13,7 +13,7 @@
 //!       Converts every texture (GfxImage) of one map zone to Wii `.gxt` files, taking pixels from the zone or
 //!       from main/*.iwd, and writes a content-free report.json beside them. Default folder: out/textures/<zone>.
 //!       --verbose prints one line per texture (with its name) to the console only.
-//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--small-props] [--adpcm] [--slim-anims]
+//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--small-props] [--adpcm] [--trim-sounds] [--slim-anims]
 //!       Builds the Wii pack of one map: its textures (as `textures` does), lightmaps, materials, world geometry as
 //!       display lists, skybox and spawns. Default output: out/packs/<zone>.wpk (+ a content-free .json report).
 //!   mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw <deg> --pitch <deg>] [--out <file.png>]
@@ -27,6 +27,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod clip_report;
 mod collision;
 mod fx;
 mod inventory;
@@ -60,7 +61,7 @@ const SHARED_TABLES_ZONE: &str = "code_post_gfx_mp";
 const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <report.json>]\n  \
      mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]\n  \
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
-     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--small-props] [--adpcm] [--slim-anims]\n  \
+     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--small-props] [--adpcm] [--trim-sounds] [--slim-anims]\n  \
      mwf-convert report <log file>...\n  \
      mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n      [--viewmodel <view.wpk> --anim <slot> --time <s>] [--character <common.wpk> --team 0|1
       [--pmove idle|run|walk|sprint|idlecr|...] [--ptype autorifle|pistol|...] [--pclass rifle|...]
@@ -247,6 +248,9 @@ struct MapArgs {
     /// Player animations in `common.wpk` cut to the frames interpolation can't rebuild within
     /// `wpk::player_anim::SLIM` (`--slim-anims`, or `MWF_SLIM_ANIMS=1`). Off by default while it's tested on hardware.
     slim_anims: bool,
+    /// Sounds (`common.wpk` and the weapon files) without their quiet tails (`--trim-sounds`, or `MWF_TRIM_SOUNDS=1`;
+    /// `sounds::trim_tail`). Off by default while it's tested on hardware.
+    trim_sounds: bool,
     /// Sounds (`common.wpk` and the weapon files) as 4-bit DSP ADPCM, 3.5x smaller than 16-bit PCM, decoded on the
     /// Wii as they play (`--adpcm`, or `MWF_ADPCM=1`). Off by default while it's tested on hardware.
     adpcm: bool,
@@ -278,6 +282,7 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
     let mut small_dl = env_on("MWF_SMALL_DL");
     let mut small_props = env_on("MWF_SMALL_PROPS");
     let mut adpcm = env_on("MWF_ADPCM");
+    let mut trim_sounds = env_on("MWF_TRIM_SOUNDS");
     let mut slim_anims = env_on("MWF_SLIM_ANIMS");
     let mut quality = simplify::WorldQuality::default();
     let mut it = args.iter();
@@ -304,6 +309,10 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
         }
         if a == "--adpcm" {
             adpcm = true;
+            continue;
+        }
+        if a == "--trim-sounds" {
+            trim_sounds = true;
             continue;
         }
         if a == "--slim-anims" {
@@ -349,6 +358,7 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
         small_dl,
         small_props,
         adpcm,
+        trim_sounds,
         slim_anims,
     })
 }
@@ -576,6 +586,9 @@ fn run_pack(args: &[String]) -> ExitCode {
         }
         if a.adpcm {
             common_args.push("--adpcm".to_owned());
+        }
+        if a.trim_sounds {
+            common_args.push("--trim-sounds".to_owned());
         }
         if a.slim_anims {
             common_args.push("--slim-anims".to_owned());
@@ -813,6 +826,7 @@ fn run_common(args: &[String]) -> ExitCode {
     let st = stamp_of(&a, &zones)
         .with("slim-views", a.slim_views)
         .with("adpcm", a.adpcm)
+        .with("trim-sounds", a.trim_sounds)
         .with("slim-anims", a.slim_anims);
     if a.slim_views {
         println!(
@@ -1017,6 +1031,7 @@ fn run_common(args: &[String]) -> ExitCode {
     // Thrown weapons' world sounds (explosions, bounces, pull back, throw) in the common pack's own bank.
     let mut world_bank = sounds::Bank::default();
     world_bank.adpcm = a.adpcm;
+    world_bank.trim = a.trim_sounds;
     let equips: Vec<_> = extra
         .iter()
         .map(|e| {
@@ -1467,6 +1482,7 @@ fn run_common(args: &[String]) -> ExitCode {
         let mut bank = sounds::Bank::default();
         bank.max_rate = a.slim_views.then_some(sounds::SLIM_RATE);
         bank.adpcm = a.adpcm;
+        bank.trim = a.trim_sounds;
         let snd = sounds::weapon_sounds(&capture, &mut bank, &v.sounds, &v.notes);
         let w = weapons.iter().position(|x| x.name() == v.name).unwrap_or(0);
         let mut b = wpk::PackBuilder::new(&v.base);
@@ -1530,10 +1546,11 @@ fn run_common(args: &[String]) -> ExitCode {
         ("weapon files", &report.views.sounds),
     ] {
         println!(
-            "{what} sounds ({}): {} clips, {:.0} s, {:.2} MiB",
+            "{what} sounds ({}): {} clips, {:.0} s ({:.0} s of quiet tails cut), {:.2} MiB",
             s.encoding,
             s.clips,
             s.seconds,
+            s.trimmed_seconds,
             s.bytes as f64 / (1024.0 * 1024.0)
         );
     }
