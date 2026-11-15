@@ -193,6 +193,77 @@ pub fn skin_into(vm: &ViewModel, skin: &[Mtx34], out: &mut [[f32; 3]]) {
     }
 }
 
+/// A position-matrix key of a vertex for GX's per-vertex matrices: its bone when it is rigid (one bone at full
+/// weight), else [`BLENDED`] (the CPU skins it and it takes the model-to-eye matrix alone).
+pub fn matrix_key(v: &wpk::view::SkinVertex) -> u16 {
+    if v.weights[0] == 255 {
+        u16::from(v.bones[0])
+    } else {
+        BLENDED
+    }
+}
+
+/// [`matrix_key`] of a vertex the CPU skins.
+pub const BLENDED: u16 = u16::MAX;
+
+/// GX has ten position matrices for a draw.
+pub const MATRIX_SLOTS: usize = 10;
+
+/// `tris` (vertex indices) cut into draw groups of at most [`MATRIX_SLOTS`] distinct matrix keys each, in order:
+/// (the group's keys, its triangles).
+pub fn matrix_groups(vm: &ViewModel, tris: &[u16]) -> Vec<(Vec<u16>, Vec<u16>)> {
+    let mut out: Vec<(Vec<u16>, Vec<u16>)> = Vec::new();
+    let mut keys: Vec<u16> = Vec::new();
+    let mut group: Vec<u16> = Vec::new();
+    for t in tris.chunks_exact(3) {
+        let mut need: Vec<u16> = Vec::with_capacity(3);
+        for &i in t {
+            let k = vm.verts.get(usize::from(i)).map_or(BLENDED, matrix_key);
+            if !keys.contains(&k) && !need.contains(&k) {
+                need.push(k);
+            }
+        }
+        if keys.len() + need.len() > MATRIX_SLOTS {
+            out.push((core::mem::take(&mut keys), core::mem::take(&mut group)));
+            need.clear();
+            for &i in t {
+                let k = vm.verts.get(usize::from(i)).map_or(BLENDED, matrix_key);
+                if !need.contains(&k) {
+                    need.push(k);
+                }
+            }
+        }
+        keys.extend_from_slice(&need);
+        group.extend_from_slice(t);
+    }
+    if !group.is_empty() {
+        out.push((keys, group));
+    }
+    out
+}
+
+/// [`skin_into`] for the listed vertices only (the rest keep what `out` holds: GX transforms the rigid ones).
+pub fn skin_listed_into(vm: &ViewModel, skin: &[Mtx34], list: &[u16], out: &mut [[f32; 3]]) {
+    const W: f32 = 1.0 / 255.0;
+    for &i in list {
+        let (Some(v), Some(o)) = (vm.verts.get(usize::from(i)), out.get_mut(usize::from(i))) else {
+            continue;
+        };
+        let mut p = [0.0f32; 3];
+        for k in 0..4 {
+            if v.weights[k] == 0 {
+                continue;
+            }
+            let w = f32::from(v.weights[k]) * W;
+            let q = apply(&skin[usize::from(v.bones[k])], v.pos);
+            for j in 0..3 {
+                p[j] += q[j] * w;
+            }
+        }
+        *o = p;
+    }
+}
+
 /// Model space → GX eye space with `tag_view` (posed world `view`) on the camera. IW4 axes (x forward, y left,
 /// z up) become eye axes (x right, y up, looking down −z).
 pub fn eye_from_model(view: &Mtx34) -> Mtx34 {
@@ -240,6 +311,47 @@ mod tests {
             surfaces: vec![],
             clips: vec![],
         }
+    }
+
+    #[test]
+    fn matrix_groups_stay_within_ten_matrices() {
+        // 12 rigid vertices on 12 different bones and one blended vertex; triangles fan around the blended one.
+        let mut vm = two_bones();
+        vm.verts = (0..12u8)
+            .map(|b| SkinVertex {
+                bones: [b, 0, 0, 0],
+                weights: [255, 0, 0, 0],
+                ..SkinVertex::default()
+            })
+            .collect();
+        vm.verts.push(SkinVertex {
+            bones: [0, 1, 0, 0],
+            weights: [128, 127, 0, 0],
+            ..SkinVertex::default()
+        });
+        let tris: Vec<u16> = (0..11u16).flat_map(|i| [12, i, i + 1]).collect();
+        let groups = matrix_groups(&vm, &tris);
+        assert!(groups.len() >= 2);
+        let mut all = Vec::new();
+        for (keys, g) in &groups {
+            assert!(keys.len() <= MATRIX_SLOTS && keys.contains(&BLENDED));
+            for &i in g {
+                assert!(keys.contains(&matrix_key(&vm.verts[usize::from(i)])));
+            }
+            all.extend_from_slice(g);
+        }
+        assert_eq!(all, tris);
+        // Only the listed (blended) vertex is skinned; the others keep what the buffer holds.
+        let skin = vec![IDENTITY; 12];
+        let mut out = vec![[7.0; 3]; 13];
+        vm.verts[12].pos = [1.0, 2.0, 3.0];
+        skin_listed_into(&vm, &skin, &[12], &mut out);
+        assert_eq!(out[0], [7.0; 3]);
+        let p = out[12];
+        assert!(
+            (p[0] - 1.0).abs() < 0.01 && (p[2] - 3.0).abs() < 0.02,
+            "{p:?}"
+        );
     }
 
     #[test]

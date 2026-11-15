@@ -1102,6 +1102,8 @@ fn run_map(
     let mut radar = game_core::minimap::Radar::default();
     let mut radar_at = last;
     let mut timing = Timing::default();
+    // The debug menu's AUTO draw distance (follows the frame time).
+    let mut auto_distance = game_core::auto_distance::AutoDistance::default();
     let mut rects: Vec<Rect> = Vec::with_capacity(4096);
     let mut frame_start = ffi::us();
     let mut last_mem_s = u32::MAX;
@@ -1168,7 +1170,10 @@ fn run_map(
             a.bots_frozen = debug.bots_frozen;
         }
         world.draw_models = debug.world_models;
-        world.draw_distance = f32::from(debug.draw_distance_units());
+        world.draw_distance = match debug.draw_distance_units() {
+            game_core::debug::AUTO => auto_distance.distance,
+            d => f32::from(d),
+        };
         world.lod_scale = debug.lod_scale();
         world.map_fog = debug.map_fog;
         sound::MUTED.store(!debug.sound, core::sync::atomic::Ordering::Relaxed);
@@ -2327,6 +2332,7 @@ fn run_map(
         gfx.frame_end();
         let end = ffi::us();
         timing.add(end, end.wrapping_sub(frame_start), cpu_us, gfx.gpu_wait_us);
+        auto_distance.update(end.wrapping_sub(frame_start), gfx.gpu_wait_us);
         // Memory every 5 s is enough (mallinfo walks the heap).
         let (mem1_free, mem2_free) = if now / 5000 != last_mem_s {
             last_mem_s = now / 5000;

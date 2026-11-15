@@ -64,6 +64,8 @@ unsafe extern "C" {
     pub fn mwf_gpu_wait_us() -> u32;
     pub fn mwf_gpu_idle();
     pub fn mwf_world_tint(rgba: u32);
+    pub fn mwf_view_arrays_indexed(positions: *const u8, attributes: *const u8);
+    pub fn mwf_pos_matrix_slot(m: *const [[f32; 4]; 3], slot: u32);
     pub fn mwf_fog(on: i32, start: f32, end: f32, rgba: u32);
 
     pub fn mwf_net_init(ip: *mut u8, mask: *mut u8, gw: *mut u8) -> i32;

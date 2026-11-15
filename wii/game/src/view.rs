@@ -1,8 +1,10 @@
 //! The first-person model on the Wii: decoded from the weapon's view file when its class is equipped, animated as
 //! MW2's viewmodel anim tree (`game_core::weapon_anim`: every weapon animation slot, clips fitted to the weapon's
 //! timers, the ADS overlay, per-bone blending), placed as MW2 places the gun (`game_core::weapon_view`: view sway,
-//! bob, idle sway, stance and movement offsets, recoil), skinned on the CPU, and drawn from prebuilt display lists
-//! over positions written to MEM2.
+//! bob, idle sway, stance and movement offsets, recoil), and drawn from prebuilt display lists over positions in
+//! MEM2. Rigid vertices (one bone at full weight: most of a gun) keep their model-space positions and GX places them
+//! with their bone's matrix (a matrix index per vertex, at most ten matrices per draw); only the blended ones (arms,
+//! hands) are skinned on the CPU each frame.
 //!
 //! Lighting is a flat ×1 for now (MW2 lights the viewmodel from the light grid at the player).
 
@@ -25,12 +27,14 @@ use crate::ffi;
 const FOVY: f32 = 51.08;
 const ZNEAR: f32 = 1.0;
 const ZFAR: f32 = 512.0;
-/// GX vertex format of the model's display lists (POS, CLR0, TEX0 indexed).
+/// GX vertex format of the model's display lists (matrix index direct; POS, CLR0, TEX0 indexed).
 const VTXFMT: u8 = 6;
 
 struct Draw {
     dl: &'static [u8],
     state: DrawState,
+    /// The matrix of each slot this draw's vertices use (`vmod::matrix_key`: a bone, or `BLENDED`).
+    slots: Vec<u16>,
 }
 
 pub struct View {
@@ -45,6 +49,8 @@ pub struct View {
     draws: Vec<Draw>,
     world: Vec<Mtx34>,
     skin: Vec<Mtx34>,
+    /// The vertices the CPU skins (blended); the rest are placed by GX.
+    blended: Vec<u16>,
     /// The anim tree (built for the gun it was first drawn with), the clips it plays, blend scratch.
     anim: Option<(u32, Animator)>,
     playing: Vec<Playing>,
@@ -106,7 +112,17 @@ impl View {
             let b = mem2(n * 12)?;
             Some(unsafe { core::slice::from_raw_parts_mut(b.as_mut_ptr().cast::<[f32; 3]>(), n) })
         };
-        let positions = [set()?, set()?];
+        let mut positions = [set()?, set()?];
+        // Rigid vertices stay in model space in both sets (GX moves them); the blended ones are written each frame.
+        for p in positions.iter_mut() {
+            for (o, v) in p.iter_mut().zip(&vm.verts) {
+                *o = v.pos;
+            }
+            unsafe { ffi::mwf_flush(p.as_ptr().cast(), (n * 12) as u32) };
+        }
+        let blended: Vec<u16> = (0..n as u16)
+            .filter(|&i| vmod::matrix_key(&vm.verts[usize::from(i)]) == vmod::BLENDED)
+            .collect();
         let attr = mem2(n * 12)?;
         for (i, v) in vm.verts.iter().enumerate() {
             let at = i * 12;
@@ -115,41 +131,49 @@ impl View {
             attr[at + 8..at + 12].copy_from_slice(&v.uv[1].to_be_bytes());
         }
         unsafe { ffi::mwf_flush(attr.as_ptr(), attr.len() as u32) };
-        // One display list per surface: GX_TRIANGLES, three u16 indices per vertex.
+        // Display lists per surface, cut into groups of at most ten matrices: GX_TRIANGLES, each vertex a matrix
+        // index (slot x 3) then three u16 indices.
         let mut draws = Vec::with_capacity(vm.surfaces.len());
         for s in &vm.surfaces {
             let idx = &vm.indices[s.first_index as usize..(s.first_index + s.index_count) as usize];
             if idx.is_empty() {
                 continue;
             }
-            let len = (3 + idx.len() * 6).div_ceil(32) * 32;
-            let dl = mem2(len)?;
-            dl.fill(0);
-            dl[0] = records::gx_triangles(VTXFMT);
-            dl[1..3].copy_from_slice(&(idx.len() as u16).to_be_bytes());
-            for (k, &i) in idx.iter().enumerate() {
-                for a in 0..3 {
-                    let at = 3 + k * 6 + a * 2;
-                    dl[at..at + 2].copy_from_slice(&i.to_be_bytes());
-                }
-            }
-            unsafe { ffi::mwf_flush(dl.as_ptr(), len as u32) };
             let tex = if s.texture == NONE {
                 -1
             } else {
                 handles.get(usize::from(s.texture)).copied().unwrap_or(-1)
             };
-            draws.push(Draw {
-                dl,
-                state: DrawState {
-                    tex,
-                    lightmap: -1,
-                    blend: s.blend,
-                    alpha_ref: s.alpha_ref,
-                    cull: 0,
-                    tint: 0,
-                },
-            });
+            for (slots, tris) in vmod::matrix_groups(&vm, idx) {
+                const VERTEX: usize = 7;
+                let len = (3 + tris.len() * VERTEX).div_ceil(32) * 32;
+                let dl = mem2(len)?;
+                dl.fill(0);
+                dl[0] = records::gx_triangles(VTXFMT);
+                dl[1..3].copy_from_slice(&(tris.len() as u16).to_be_bytes());
+                for (k, &i) in tris.iter().enumerate() {
+                    let at = 3 + k * VERTEX;
+                    let key = vmod::matrix_key(&vm.verts[usize::from(i)]);
+                    let slot = slots.iter().position(|&s| s == key).unwrap_or(0);
+                    dl[at] = (slot * 3) as u8;
+                    for a in 0..3 {
+                        dl[at + 1 + a * 2..at + 3 + a * 2].copy_from_slice(&i.to_be_bytes());
+                    }
+                }
+                unsafe { ffi::mwf_flush(dl.as_ptr(), len as u32) };
+                draws.push(Draw {
+                    dl,
+                    state: DrawState {
+                        tex,
+                        lightmap: -1,
+                        blend: s.blend,
+                        alpha_ref: s.alpha_ref,
+                        cull: 0,
+                        tint: 0,
+                    },
+                    slots,
+                });
+            }
         }
         Some(View {
             positions,
@@ -158,6 +182,7 @@ impl View {
             draws,
             world: Vec::with_capacity(vm.bones.len()),
             skin: Vec::with_capacity(vm.bones.len()),
+            blended,
             anim: None,
             playing: Vec::with_capacity(8),
             blend: BlendScratch::default(),
@@ -259,12 +284,13 @@ impl View {
         vmod::skin_matrices(&self.vm, &self.world, &mut self.skin);
         self.parity ^= 1;
         let positions = &mut self.positions[self.parity];
-        // Skinned straight into this frame's MEM2 positions (the GPU may still read the other set).
-        vmod::skin_into(&self.vm, &self.skin, positions);
+        // The blended vertices, skinned straight into this frame's MEM2 positions (the GPU may still read the other
+        // set); the rigid ones stay as loaded.
+        vmod::skin_listed_into(&self.vm, &self.skin, &self.blended, positions);
         unsafe {
             ffi::mwf_flush(positions.as_ptr().cast(), (positions.len() * 12) as u32);
             ffi::mwf_view_begin(FOVY, ZNEAR, ZFAR);
-            ffi::mwf_view_arrays(positions.as_ptr().cast(), self.attributes);
+            ffi::mwf_view_arrays_indexed(positions.as_ptr().cast(), self.attributes);
         }
         // MW2's weapon placement (sway, bob, idle sway, movement offsets, recoil) about the eye.
         let placed = self.placement.update(
@@ -278,10 +304,22 @@ impl View {
         );
         let eye = vmod::eye_from_model(&self.world[usize::from(self.vm.view_bone)]);
         let eye = vmod::mul(&eye_transform(&placed), &eye);
-        gfx.pos_matrix(&eye);
         self.last_eye = Some(eye);
         let mut last: Option<DrawState> = None;
+        let mut loaded: [u16; vmod::MATRIX_SLOTS] = [u16::MAX - 1; vmod::MATRIX_SLOTS];
         for d in &self.draws {
+            // This draw's matrices: model to eye, times the bone's skin matrix for rigid parts.
+            for (slot, &key) in d.slots.iter().enumerate() {
+                if loaded[slot] == key {
+                    continue;
+                }
+                loaded[slot] = key;
+                let m = match self.skin.get(usize::from(key)) {
+                    Some(s) if key != vmod::BLENDED => vmod::mul(&eye, s),
+                    _ => eye,
+                };
+                unsafe { ffi::mwf_pos_matrix_slot(&m, slot as u32) };
+            }
             if last != Some(d.state) {
                 gfx.world_state(&d.state);
                 last = Some(d.state);

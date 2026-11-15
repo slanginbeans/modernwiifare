@@ -281,7 +281,7 @@ int32_t mwf_tex_create(const mwf_tex_desc *d) {
 
 /* ---- frame --------------------------------------------------------------------------------------------------- */
 
-enum { MODE_NONE, MODE_SKY, MODE_WORLD, MODE_HUD, MODE_VIEW, MODE_UI };
+enum { MODE_NONE, MODE_SKY, MODE_WORLD, MODE_HUD, MODE_VIEW, MODE_UI, MODE_VIEW_MTX };
 
 extern GXRModeObj *mwf_rmode;
 /* Depth range split: the first-person model gets [0, VIEW_DEPTH], the world [VIEW_DEPTH, 1]. */
@@ -606,6 +606,26 @@ void mwf_view_arrays(const void *pos, const void *attr) {
     GX_SetArray(GX_VA_CLR0, (void *)attr, 12);
     GX_SetArray(GX_VA_TEX0, (void *)((const uint8_t *)attr + 4), 12);
     GX_InvVtxCache();
+}
+
+/* As mwf_view_arrays, for display lists whose vertices start with a position-matrix index (u8, direct: the GX
+ * matrix slot x 3), so GX places rigid parts with their bone's matrix (mwf_pos_matrix_slot). */
+void mwf_view_arrays_indexed(const void *pos, const void *attr) {
+    if (mode != MODE_VIEW_MTX) {
+        mwf_view_arrays(pos, attr);
+        mode = MODE_VIEW_MTX;
+        GX_SetVtxDesc(GX_VA_PTNMTXIDX, GX_DIRECT);
+    }
+    world_base = NULL;
+    GX_SetArray(GX_VA_POS, (void *)pos, 12);
+    GX_SetArray(GX_VA_CLR0, (void *)attr, 12);
+    GX_SetArray(GX_VA_TEX0, (void *)((const uint8_t *)attr + 4), 12);
+    GX_InvVtxCache();
+}
+
+/* Load `m` into position matrix slot `slot` (0..9). */
+void mwf_pos_matrix_slot(const float m[3][4], uint32_t slot) {
+    if (slot < 10) GX_LoadPosMtxImm((f32(*)[4])m, GX_PNMTX0 + slot * 3);
 }
 
 /* ---- HUD ------------------------------------------------------------------------------------------------------ */

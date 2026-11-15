@@ -19,6 +19,7 @@
 extern crate alloc;
 
 pub mod arena;
+pub mod auto_distance;
 pub mod bot;
 pub mod camera;
 pub mod character;

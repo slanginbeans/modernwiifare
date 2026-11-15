@@ -70,11 +70,14 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
     explosives or last stand yet), One Man Army, deathstreaks.
 
 ## Next, performance (ranked by expected milliseconds; measure with the logs first)
-1. **World vertex load** (~12-25 ms on big maps): draw distance with fog and model LOD scale are in (debug menu;
-   per-map defaults still to set from hardware logs). Vertex welding is in (`mp_rust`: -1% world, -6% model
+1. **World vertex load** (~12-25 ms on big maps): draw distance with fog and model LOD scale are in (debug menu),
+   with an AUTO draw distance that follows the frame time (shrinks while GPU-bound frames miss 60 fps, grows back
+   while they hold it; 2500 units at least) in place of per-map defaults; fixed per-map values can still come from
+   hardware logs. Vertex welding is in (`mp_rust`: -1% world, -6% model
    display-list vertices, -1 MB MEM2); strips now start at border triangles (another -0.7%). IW4's world is many small
-   surfaces with few shared edges, so strips stay short (~2.1 vertices per world triangle); swap strips are the next
-   lever if the logs say vertices are the cost.
+   surfaces with few shared edges, so strips stay short. Opaque batches now take meshoptimizer's strips (turning with
+   repeated-vertex triangles) where they send fewer vertices: `mp_rust` world 402k -> 393k, models 262k -> 254k
+   (~2.0 vertices per world triangle).
 2. ~~**Run the CPU while the GPU draws**~~ done (draw-sync tokens, three XFBs, skinned positions double-buffered;
    frame = max(CPU, GPU), capped at one per retrace; not yet measured on hardware).
 3. Draw submit: done: opaque static-model surfaces draw surface by surface, so instances of one model change only
@@ -82,7 +85,9 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
    world batches presorted at load (a frame sorts only models and blended surfaces). Not yet: shared quantisation
    origins.
 4. Viewmodel and characters: skinned straight into their MEM2 buffers with a multiply for the weights (no copy, no
-   divide). Not yet: GX matrices for rigid parts, strips for its triangles.
+   divide). The viewmodel's rigid vertices (one bone at full weight) are placed by GX with their bone's matrix (a
+   matrix index per vertex, at most ten per draw); only blended vertices are skinned on the CPU. Not yet: the same
+   for characters, strips for the viewmodel's triangles.
 5. ~~Weapon-file hitch at spawn~~ done differently: a whole class set is ~4-8 MB (files average 2.1 MB), too much to
    keep every class's loaded, so the next life's files stream in during the death screen (192 KB a frame, from 1 s
    after death); what's left at the respawn loads then.

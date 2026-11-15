@@ -64,13 +64,15 @@ Not sacrificed: collision (never simplified), movement and weapon timings, 640×
 | Static-model draw order and tint-only state (`mwf_world_tint`); opaque world batches presorted at load | Instances of one model draw back to back with one material, changing one konst register instead of reprogramming TEV and reloading textures. The overlay's STATE is now full+tint changes. **Not yet measured on hardware.** |
 | Vertex welding and border-first strips (converter, REVISION 27) | `mp_rust`: world display-list vertices 408k -> 402k for 193k triangles, model ones 281k -> 262k, MEM2 -1 MB. |
 | Skinning straight into MEM2 with multiplied weights (first-person model, characters) | One copy of every skinned position and a divide per weighted influence gone each frame. **Not yet measured on hardware** (`vm`, `bod`). |
+| meshoptimizer strips for opaque batches where shorter (REVISION 28) | `mp_rust`: world display-list vertices 402k -> 393k, model ones 262k -> 254k. |
+| First-person rigid vertices placed by GX bone matrices (matrix index per vertex, ten per draw) | Only blended vertices (arms, hands) are skinned on the CPU. **Not yet measured on hardware** (`vm`). |
 | Weapon files streamed during the death screen (192 KB a frame from 1 s after death) | The respawn no longer stops for a 4-8 MB SD read when the class changed (whatever is left loads then). |
 
 Where that leaves us: `mp_terminal` spends ~244k world + ~91k model triangles per view, still ~3× the 60 fps
 budget. Memory is solved for every map.
 
 **Draw distance and model detail** (`World::draw_distance`, `World::lod_scale`; debug menu DRAW DISTANCE
-full / 6000 / 4000 / 3000 / 2000 units, MODEL DETAIL normal / low / lower / lowest = LOD distance ×1 / 1.5 / 2 / 3,
+full / 6000 / 4000 / 3000 / 2000 units / AUTO (follows the frame time: `game_core::auto_distance`), MODEL DETAIL normal / low / lower / lowest = LOD distance ×1 / 1.5 / 2 / 3,
 MAP FOG on / off). A shorter draw distance moves the far plane in: world batches past it are culled by their bounds,
 model instances by their spheres, and GX linear fog ends at the far plane, so geometry fades out instead of popping.
 The fog is the map's own where the pack has it (`FOGD`: MW2's `setExpFog` from `maps/createart/<map>_art.gsc`, as a

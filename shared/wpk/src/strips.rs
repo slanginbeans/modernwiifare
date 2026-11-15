@@ -143,7 +143,11 @@ pub fn display_list(tris: &[u16]) -> Vec<u8> {
 
 /// [`display_list`] in vertex format `vtxfmt`.
 pub fn display_list_fmt(tris: &[u16], vtxfmt: u8) -> Vec<u8> {
-    let st = stripify(tris);
+    strips_display_list(&stripify(tris), vtxfmt)
+}
+
+/// A display list of `st` (strips may hold repeated-vertex "swap" triangles: zero area, nothing drawn).
+pub fn strips_display_list(st: &Strips, vtxfmt: u8) -> Vec<u8> {
     let mut dl = Vec::new();
     let put = |dl: &mut Vec<u8>, op: u8, verts: &[u16]| {
         dl.u8(op);
@@ -201,13 +205,15 @@ pub fn dl_triangles(dl: &[u8]) -> Vec<[u16; 3]> {
     out
 }
 
-/// Same triangles with the same winding (any order, any rotation)?
+/// Same triangles with the same winding (any order, any rotation)? Triangles with a repeated vertex draw nothing
+/// and are ignored on both sides (strips use them to turn).
 pub fn same_triangles(
     a: impl Iterator<Item = [u16; 3]>,
     b: impl Iterator<Item = [u16; 3]>,
 ) -> bool {
     let canon = |it: &mut dyn Iterator<Item = [u16; 3]>| {
         let mut v: Vec<[u16; 3]> = it
+            .filter(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2])
             .map(|t| {
                 let r = if t[0] <= t[1] && t[0] <= t[2] {
                     0

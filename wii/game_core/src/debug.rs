@@ -10,8 +10,12 @@ use crate::bot::Skill;
 /// File format version (first byte of `debug.dat`).
 const VERSION: u8 = 2;
 
-/// Draw distances (world units, inches) the debug menu steps through; 0 is the full far plane.
-pub const DRAW_DISTANCES: [u16; 5] = [0, 6000, 4000, 3000, 2000];
+/// Draw distances (world units, inches) the debug menu steps through; 0 is the full far plane, [`AUTO`] follows the
+/// frame time (`auto_distance`).
+pub const DRAW_DISTANCES: [u16; 6] = [0, 6000, 4000, 3000, 2000, AUTO];
+
+/// The AUTO draw distance in [`DRAW_DISTANCES`].
+pub const AUTO: u16 = u16::MAX;
 
 /// Model detail: the static-model LOD distance scale of each step (1 is the PC game's LOD distances).
 pub const MODEL_DETAIL: [(f32, &str); 4] = [
@@ -199,6 +203,7 @@ impl DebugSettings {
             Item::WorldModels => on_off(self.world_models),
             Item::DrawDistance => match self.draw_distance_units() {
                 0 => String::from("FULL"),
+                AUTO => String::from("AUTO"),
                 d => alloc::format!("{d}"),
             },
             Item::ModelDetail => String::from(MODEL_DETAIL[self.detail_index()].1),
@@ -249,7 +254,7 @@ impl DebugSettings {
         }
     }
 
-    /// The draw distance in world units (0: the full far plane).
+    /// The draw distance in world units (0: the full far plane; [`AUTO`]: from the frame time).
     pub fn draw_distance_units(&self) -> u16 {
         DRAW_DISTANCES[usize::from(self.draw_distance) % DRAW_DISTANCES.len()]
     }

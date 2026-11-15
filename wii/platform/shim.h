@@ -188,6 +188,10 @@ void mwf_world_view(void);
 void mwf_fog(int32_t on, float start, float end, uint32_t rgba);
 /* Only the static-model light colour of the last mwf_world_state (whose tint was nonzero) changes. */
 void mwf_world_tint(uint32_t rgba);
+/* First-person display lists with a per-vertex position-matrix index (u8 = slot x 3) before the three indices. */
+void mwf_view_arrays_indexed(const void *pos, const void *attr);
+/* Load a 3x4 position matrix into slot 0..9 (GX_PNMTX0 + 3 x slot). */
+void mwf_pos_matrix_slot(const float m[3][4], uint32_t slot);
 /* Arrays for the model: positions f32x3 (stride 12), and per vertex RGBA8 + UV f32x2 (stride 12). GX_VTXFMT6,
  * display lists index POS, CLR0, TEX0 (u16 each). */
 void mwf_view_arrays(const void *positions, const void *attributes);

@@ -1251,12 +1251,42 @@ fn weld(verts: &mut Vec<WorldVertex>, tris: &mut [u16]) -> usize {
 
 /// Strips for order-independent materials; alpha-blended ones keep their authored triangle order (it is their
 /// layering order).
+/// Opaque ones get the shorter of two strippings: ours (exact triangles, no turns) and meshoptimizer's (after its
+/// vertex-cache order; it turns with repeated-vertex triangles, which cost a vertex each but keep strips going).
 fn display_list(blended: bool, tris: &[u16], vtxfmt: u8) -> Vec<u8> {
     if blended {
-        records::world_display_list_fmt(tris, vtxfmt)
-    } else {
-        wpk::strips::display_list_fmt(tris, vtxfmt)
+        return records::world_display_list_fmt(tris, vtxfmt);
     }
+    let ours = wpk::strips::display_list_fmt(tris, vtxfmt);
+    match meshopt_strips(tris) {
+        Some(st) => {
+            let theirs = wpk::strips::strips_display_list(&st, vtxfmt);
+            if wpk::strips::dl_vertex_count(&theirs) < wpk::strips::dl_vertex_count(&ours) {
+                theirs
+            } else {
+                ours
+            }
+        }
+        None => ours,
+    }
+}
+
+/// `tris` as meshoptimizer strips (cut at its restart index; a 3-vertex piece is a lone triangle).
+fn meshopt_strips(tris: &[u16]) -> Option<wpk::strips::Strips> {
+    let indices: Vec<u32> = tris.iter().map(|&i| u32::from(i)).collect();
+    let vertex_count = usize::from(*tris.iter().max()?) + 1;
+    let ordered = meshopt::optimize_vertex_cache(&indices, vertex_count);
+    let strip = meshopt::stripify(&ordered, vertex_count, u32::MAX).ok()?;
+    let mut st = wpk::strips::Strips::default();
+    for piece in strip.split(|&i| i == u32::MAX) {
+        let piece: Vec<u16> = piece.iter().map(|&i| i as u16).collect();
+        match piece.len() {
+            0..=2 => {}
+            3 => st.singles.push([piece[0], piece[1], piece[2]]),
+            _ => st.strips.push(piece),
+        }
+    }
+    Some(st)
 }
 
 /// A batch's own vertices, fixed-point when they fit around `origin` (see `wpk::quant`), else floats. Appends them to

@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 /// 25: HUD icons (hitmarker, weapons' and killstreaks' icons in `UIPK`).
 /// 26: map fog (`FOGD`, the art script's `setExpFog`).
 /// 27: welded vertices (world and model surfaces), strips started at the fewest-neighbour triangles.
-pub const REVISION: u32 = 27;
+/// 28: opaque display lists take meshoptimizer's strips where they send fewer vertices.
+pub const REVISION: u32 = 28;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {
