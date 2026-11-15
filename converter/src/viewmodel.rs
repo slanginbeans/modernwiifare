@@ -641,24 +641,32 @@ pub fn build_character(
     let mut parts: Vec<(usize, Vec<usize>)> = vec![(body, (0..bb.names.len()).collect())];
     if let Some(h) = head {
         let hb = read_bones(s, links, h)?;
+        // The head's vertices are in its own model space (its root at the origin), where its `baseMat` bind poses
+        // are. Each head bone the body also has follows the body's (a copy parented to it, unnamed so animations
+        // keep driving the body's); the head's own bones (the face) hang under them; all unbind with the head's
+        // bind poses.
         let mut map = Vec::with_capacity(hb.names.len());
         for i in 0..hb.names.len() {
-            if let Some(k) = names
-                .iter()
-                .position(|n| !n.is_empty() && *n == hb.names[i])
-            {
-                map.push(k);
-                continue;
-            }
             let (bq, bt) = hb.bind[i];
-            let parent = hb.parent[i].map(|p| map[p]);
+            let shared = names
+                .iter()
+                .position(|n| !n.is_empty() && *n == hb.names[i]);
+            let (parent, local_rot, local_trans, name) = match shared {
+                Some(k) => (Some(k), [0.0, 0.0, 0.0, 1.0], [0.0; 3], String::new()),
+                None => (
+                    hb.parent[i].map(|p| map[p]),
+                    hb.local_rot[i],
+                    hb.local_trans[i],
+                    hb.names[i].clone(),
+                ),
+            };
             vm.bones.push(Bone {
                 parent: parent.map_or(-1, |p| p as i16),
-                local_rot: hb.local_rot[i],
-                local_trans: hb.local_trans[i],
+                local_rot,
+                local_trans,
                 inv_bind: inverse_rigid(bq, bt),
             });
-            names.push(hb.names[i].clone());
+            names.push(name);
             map.push(vm.bones.len() - 1);
         }
         parts.push((h, map));

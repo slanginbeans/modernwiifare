@@ -79,7 +79,7 @@ Counter-UAV (a class killstreak, D-pad left): up as long as a UAV (`_uav.gsc`), 
 
 EMP: jams the enemies' radar as a Counter-UAV does, for `_emp.gsc`'s jam time (60 s in MW2's). Not yet: its HUD blackout and its effect on other killstreaks. Tactical Nuke: `_nuke.gsc`'s countdown on the HUD, then everyone dies (`nukeDeath`'s delay after it) and the match ends with its caller (their team) winning.
 
-Player characters: the other players are MW2's bodies for the map's factions (`CHAR`: each team's assault body and head, a low LOD so the Wii can skin several), animated by MW2's player animation script (`PSCR`, the user's `mp/playeranim.script` baked at convert time; clips `PANM` read in place from MEM2, bound by bone name at load). Each frame a player's movement type (IW4L's `footsteps_anim_move_type`), weapon (player-anim type and class), ADS, strafing and firing pick the script's first matching item; its animation plays on the legs, the torso or both, cross-fading over IW4's blend time. Firing, reload, melee and grenade throws play their event's torso animation for its duration; a death plays the death item matching the hit location, the direction the damage came from and whether an explosion did it, and the body lies there until the respawn. IW4's controller tags bend the spine to the aim pitch and turn the torso from the legs, which follow the view once it is 20 degrees away. Skinned on the CPU and drawn at the player's position, turned with the legs; the weapon it holds (the common pack's `GUNM`: its world model, read in place) is drawn on its `tag_weapon_right` while it lives. Players behind you aren't posed or skinned (their animation state still runs). Without characters in the pack, the placeholder boxes are drawn. Hit detection still uses the boxes.
+Player characters: the other players are MW2's bodies for the map's factions (`CHAR`: each team's assault body and head, a low LOD so the Wii can skin several; the head's vertices are in its own model space, so its bones, those it shares with the body too, unbind with the head's own bind poses and follow the body's), animated by MW2's player animation script (`PSCR`, the user's `mp/playeranim.script` baked at convert time; clips `PANM` read in place from MEM2, bound by bone name at load). Each frame a player's movement type (IW4L's `footsteps_anim_move_type`), weapon (player-anim type and class), ADS, strafing and firing pick the script's first matching item; its animation plays on the legs, the torso or both, cross-fading over IW4's blend time. Firing, reload, melee and grenade throws play their event's torso animation for its duration; a death plays the death item matching the hit location, the direction the damage came from and whether an explosion did it, and the body lies there until the respawn. IW4's controller tags bend the spine to the aim pitch and turn the torso from the legs, which follow the view once it is 20 degrees away. Skinned on the CPU and drawn at the player's position, turned with the legs; the weapon it holds (the common pack's `GUNM`: its world model, read in place) is drawn on its `tag_weapon_right` while it lives. Players behind you aren't posed or skinned (their animation state still runs). Without characters in the pack, the placeholder boxes are drawn. Hit detection still uses the boxes.
 
 The match HUD (`game_core::hud_mw2`) uses MW2's fonts and HUD images from `common.wpk` (`UIPK` icons: each weapon's `hudIcon` as `weapon:<name>`, the killstreak table's icons as `streak:<name>`, MW2's hitmarker `damage_feedback`): the weapon's icon, magazine and reserve and its name bottom right, the lethal and tactical grenades with their counts above them, the killstreak ready to call in on the right, the kill feed, scores (team or yours and the leader's), Domination's flags and the clock bottom left, MW2's hitmarker and a `+points` popup at the crosshair, notices and the nuke's countdown at the top, and the respawn countdown when dead. The positions are this build's, not MW2's `hud.menu` layout. Without the UI in the pack the plain HUD is drawn. `mwf-convert menu-preview <common.wpk>` renders it with sample content (`out/preview/menu_hud.png`).
 
@@ -139,8 +139,10 @@ checks (or is from an older converter: convert again), orange = out of memory or
 The two weapon files of the spawned class load into MEM2 above the map (about 2 × 1.8 MiB) and are swapped when a
 spawn brings other weapons (MEM2 and texture handles released back to a mark taken after the map).
 The pack's GPU data (textures, vertices, display lists) is read into MEM2 and used in place; the sections decoded at
-load (visibility, cell tables, collision) are written last by the converter, read into a temporary MEM1 buffer,
-decoded into MEM1 and the buffer freed. `mwf-convert pack` prints the MEM2 part and warns above 44 MiB. Leaving a map
+load (visibility, cell tables, collision, walk graph) are written last by the converter, read into a temporary MEM1
+buffer, decoded into MEM1 and the buffer freed. Only the part before them stays in memory, so everything read in place
+(characters, destructibles, objectives) is written before them (the converter's self-check refuses a pack that
+doesn't) and read with `Pack::parse_prefix`. `mwf-convert pack` prints the MEM2 part and warns above 44 MiB. Leaving a map
 releases its MEM2 (bump allocator mark/release) and its textures.
 
 ## Structure
@@ -223,8 +225,8 @@ feed, and hits show MW2's hitmarker.
   bakes from the map's collision (`NAVG` in the pack, flooded out from the spawn points on a 48-unit grid) with A*
   routes, and jump when stuck. Not yet: mantling, ladders, doors, grenades, knifing, their weapon sounds, and other
   players blocking movement (players pass through each other).
-- **Bodies**: bots are drawn as shaded boxes, one per hit volume (skin-coloured head and neck), until the character
-  models are converted.
+- **Bodies**: MW2's character models (see "Player characters"); the shaded boxes, one per hit volume, only without
+  characters in the pack or with them turned off in the debug menu.
 - **Destructible objects** (`game_core::destructible`, map pack `DST*`): MW2's cars, electric boxes, air conditioners,
   newspaper stands, copiers, fans and the like, placed as the map places them, with MW2's own models, health, effects
   and explosions read from its `_destructible_types*.gsc` at convert time (ADR 0007). Their main body runs MW2's chain

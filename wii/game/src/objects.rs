@@ -23,7 +23,7 @@ pub struct Props {
 impl Props {
     /// The map's objects (`None` without any) and what draws them (textures created through `gfx`).
     pub fn load(map: &'static [u8], gfx: &mut impl Gfx) -> Option<(Props, Objects)> {
-        let pack = wpk::Pack::parse(map, false).ok()?;
+        let pack = wpk::Pack::parse_prefix(map).ok()?;
         let models = Guns::parse(pack.section(wpk::tag::DEST_MODELS)?.data)?;
         let types = wpk::destructible::decode_types(pack.section(wpk::tag::DEST_TYPES)?.data)?;
         let boxes = wpk::destructible::decode_boxes(pack.section(wpk::tag::DEST_BOXES)?.data)?;

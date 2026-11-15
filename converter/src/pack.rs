@@ -1392,6 +1392,49 @@ pub fn build(
         objs.len() as u32,
         records::encode(&objs),
     );
+    // Destructible objects: models, textures, collision, types, the placed ones, and their effects (read in place,
+    // so before the sections the Wii decodes at load: it keeps only what comes before those).
+    let d = &world.destructibles;
+    report.destructibles = d.instances.len();
+    report.destructible_types = d.types.len();
+    report.destructible_models = d.models.len();
+    report.destructibles_skipped = d.skipped;
+    report.destructible_effects = d.fx.len();
+    if !d.instances.is_empty() {
+        b.section(
+            wpk::tag::DEST_MODELS,
+            d.models.len() as u32,
+            wpk::held::encode(&d.models),
+        );
+        b.section(
+            wpk::tag::DEST_TEXTURES,
+            d.tex.records.len() as u32,
+            records::encode(&d.tex.records),
+        );
+        b.section(wpk::tag::DEST_TEXTURE_DATA, 0, d.tex.data.clone());
+        b.section(
+            wpk::tag::DEST_BOXES,
+            d.boxes.len() as u32,
+            wpk::destructible::encode_boxes(&d.boxes),
+        );
+        b.section(
+            wpk::tag::DEST_TYPES,
+            d.types.len() as u32,
+            wpk::destructible::encode_types(&d.types),
+        );
+        b.section(
+            wpk::tag::DEST_INSTANCES,
+            d.instances.len() as u32,
+            wpk::destructible::encode_instances(&d.instances),
+        );
+        b.section(wpk::tag::DEST_FX, d.fx.len() as u32, d.fx.encode());
+        b.section(
+            wpk::tag::DEST_FX_TEXTURES,
+            d.fx_tex.records.len() as u32,
+            records::encode(&d.fx_tex.records),
+        );
+        b.section(wpk::tag::DEST_FX_TEXTURE_DATA, 0, d.fx_tex.data.clone());
+    }
     let v = &world.vis;
     report.visibility = VisReport {
         cells: v.vis.cells.len(),
@@ -1436,50 +1479,20 @@ pub fn build(
     report.nav_nodes = nav.nodes.len();
     report.nav_edges = nav.edges.len();
     b.section(wpk::tag::NAV, nav.nodes.len() as u32, nav.encode());
-    // Destructible objects: models, textures, collision, types, the placed ones, and their effects.
-    let d = &world.destructibles;
-    report.destructibles = d.instances.len();
-    report.destructible_types = d.types.len();
-    report.destructible_models = d.models.len();
-    report.destructibles_skipped = d.skipped;
-    report.destructible_effects = d.fx.len();
-    if !d.instances.is_empty() {
-        b.section(
-            wpk::tag::DEST_MODELS,
-            d.models.len() as u32,
-            wpk::held::encode(&d.models),
-        );
-        b.section(
-            wpk::tag::DEST_TEXTURES,
-            d.tex.records.len() as u32,
-            records::encode(&d.tex.records),
-        );
-        b.section(wpk::tag::DEST_TEXTURE_DATA, 0, d.tex.data.clone());
-        b.section(
-            wpk::tag::DEST_BOXES,
-            d.boxes.len() as u32,
-            wpk::destructible::encode_boxes(&d.boxes),
-        );
-        b.section(
-            wpk::tag::DEST_TYPES,
-            d.types.len() as u32,
-            wpk::destructible::encode_types(&d.types),
-        );
-        b.section(
-            wpk::tag::DEST_INSTANCES,
-            d.instances.len() as u32,
-            wpk::destructible::encode_instances(&d.instances),
-        );
-        b.section(wpk::tag::DEST_FX, d.fx.len() as u32, d.fx.encode());
-        b.section(
-            wpk::tag::DEST_FX_TEXTURES,
-            d.fx_tex.records.len() as u32,
-            records::encode(&d.fx_tex.records),
-        );
-        b.section(wpk::tag::DEST_FX_TEXTURE_DATA, 0, d.fx_tex.data.clone());
-    }
     let bytes = b.finish();
     let pack = wpk::Pack::parse(&bytes, true).map_err(|e| format!("pack self-check: {e:?}"))?;
+    // The Wii keeps only the part before the first decoded-at-load section in memory: everything read in place
+    // must lie there.
+    let in_place = pack.in_place_len();
+    for (tag, _) in pack.section_sizes() {
+        let at = pack.section_offset(tag).unwrap_or(0);
+        if at >= in_place && !wpk::decoded_at_load().contains(&tag) {
+            return Err(format!(
+                "pack self-check: section {} lies past the in-place part",
+                String::from_utf8_lossy(&tag)
+            ));
+        }
+    }
     for t in [
         wpk::tag::TEXTURES,
         wpk::tag::TEXTURE_DATA,

@@ -32,7 +32,9 @@ use std::path::{Path, PathBuf};
 /// 32: pack reports with a texture breakdown and `common.json`; `--adpcm` sounds.
 /// 33: the class panel's image slots and their pictures and icons (`UIPK`).
 /// 34: destructible objects in map packs (`DSTM`, `DSTX`, `DSTD`, `DSTB`, `DSTY`, `DSTE`, `DSFX`, `DSFT`, `DSFD`).
-pub const REVISION: u32 = 34;
+/// 35: characters' heads unbound with their own bind poses (faces); destructible sections before the
+///     decoded-at-load tail.
+pub const REVISION: u32 = 35;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

@@ -125,7 +125,7 @@ impl Effects {
 
     /// Add the map pack's effects (`DSFX`; none in an older pack).
     pub fn load_map(&mut self, map: &'static [u8], gfx: &mut impl Gfx) {
-        let Ok(pack) = wpk::Pack::parse(map, false) else {
+        let Ok(pack) = wpk::Pack::parse_prefix(map) else {
             return;
         };
         let Some(defs) = pack

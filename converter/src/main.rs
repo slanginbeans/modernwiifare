@@ -66,7 +66,7 @@ const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <repor
      mwf-convert report <log file>...\n  \
      mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n      [--viewmodel <view.wpk> --anim <slot> --time <s>] [--character <common.wpk> --team 0|1
       [--pmove idle|run|walk|sprint|idlecr|...] [--ptype autorifle|pistol|...] [--pclass rifle|...]
-      [--pevent fireweapon|reload|death|...] [--paim <pitch>] [--pgun <n>] [--pturn <deg>]]
+      [--pevent fireweapon|reload|death|...] [--paim <pitch>] [--pgun <n>] [--pturn <deg>] [--pdist <units>]]
       [--fxpack <common.wpk> --fx <n> --time <s>] [--dstate <n>]\n  \
      mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask|minimap] [--out <folder>]";
 
@@ -1860,6 +1860,7 @@ fn run_preview(args: &[String]) -> ExitCode {
             "--paim" => char_shot.aim_pitch = value().parse().unwrap_or(0.0),
             "--pgun" => char_shot.gun = value().parse().ok(),
             "--pturn" => char_shot.turn = value().parse().unwrap_or(0.0),
+            "--pdist" => char_shot.distance = value().parse().unwrap_or(120.0),
             "--fx" => fx_index = value().parse().ok(),
             "--dstate" => dest_state = value().parse().unwrap_or(0),
             "--fxweapon" => fx_weapon = Some(value()),
@@ -1938,6 +1939,11 @@ fn run_preview(args: &[String]) -> ExitCode {
                 common: b,
                 team: char_team,
                 time: anim_time,
+                distance: if char_shot.distance > 0.0 {
+                    char_shot.distance
+                } else {
+                    120.0
+                },
                 ..char_shot
             }),
         effect: fx_pack

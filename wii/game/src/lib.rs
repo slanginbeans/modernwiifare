@@ -882,7 +882,7 @@ fn run_map(
         (vis, clip, nav)
     };
     // Game-mode objectives (Domination flags; none with an older pack).
-    let objectives: Vec<wpk::records::ObjectiveRecord> = wpk::Pack::parse(bytes, false)
+    let objectives: Vec<wpk::records::ObjectiveRecord> = wpk::Pack::parse_prefix(bytes)
         .ok()
         .and_then(|p| p.section(wpk::tag::OBJECTIVES))
         .map_or_else(Vec::new, |s| wpk::records::iter(s.data).collect());
@@ -909,12 +909,15 @@ fn run_map(
         ffi::ms(),
         "loaded",
         format_args!(
-            "ms={} mem1_free={}k mem2_free={}k collision={} nav_points={}",
+            "ms={} mem1_free={}k mem2_free={}k collision={} nav_points={} characters={} objects={} objectives={}",
             ffi::ms().wrapping_sub(load_start),
             unsafe { ffi::mwf_mem1_free_bytes() } / 1024,
             unsafe { ffi::mwf_mem2_free_bytes() } / 1024,
             clip.is_some(),
             nav.as_ref().map_or(0, |n| n.graph.nodes.len()),
+            characters.is_some(),
+            map_objects.as_ref().map_or(0, |o| o.len()),
+            objectives.len(),
         ),
     );
     let aspect = if unsafe { ffi::mwf_widescreen() } != 0 {

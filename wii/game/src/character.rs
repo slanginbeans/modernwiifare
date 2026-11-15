@@ -199,7 +199,7 @@ impl Characters {
         texture: impl Fn(u16) -> i32,
         gfx: &mut impl Gfx,
     ) -> Option<Characters> {
-        let pack = wpk::Pack::parse(map, false).ok()?;
+        let pack = wpk::Pack::parse_prefix(map).ok()?;
         let teams = wpk::view::decode_characters(pack.section(wpk::tag::CHARACTERS)?.data);
         let common = wpk::Pack::parse(common, false).ok()?;
         let held = Held::load(&common, gfx);

@@ -31,7 +31,7 @@ pub struct View {
     pub hfov_deg: f32,
     /// First-person model to draw on top: the common pack, its animation slot and time in seconds.
     pub viewmodel: Option<(Vec<u8>, u8, f32)>,
-    /// A player character to draw 120 units ahead, facing the camera on the floor below the eye.
+    /// A player character to draw ahead (120 units unless set), facing the camera on the floor below the eye.
     pub character: Option<CharacterShot>,
     /// An effect played 150 units ahead pointing at the camera: the common pack, its `FXDF` index and the time
     /// since it started (seconds).
@@ -128,6 +128,8 @@ pub struct CharacterShot {
     pub gun: Option<usize>,
     /// Degrees the character is turned from facing the camera.
     pub turn: f32,
+    /// How far ahead of the eye it stands (120 when 0).
+    pub distance: f32,
 }
 
 /// Draw the first-person model from `common` (its first `VIEW` section) over the frame, with its own depth.
@@ -875,8 +877,8 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
         vmod::skin(&vm, &skin, &mut pos);
         let y = view.yaw.to_radians();
         let base = [
-            view.eye[0] + y.cos() * 120.0,
-            view.eye[1] + y.sin() * 120.0,
+            view.eye[0] + y.cos() * shot.distance,
+            view.eye[1] + y.sin() * shot.distance,
             view.eye[2] - 60.0,
         ];
         let (s, co) = (
