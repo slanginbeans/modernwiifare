@@ -582,8 +582,18 @@ void mwf_snd_init(void) {
     ASND_Pause(0);
 }
 
+/* A voice for a new sound: a free one, else the one playing longest (voice stealing: footsteps of six players and
+   full-auto fire with long tails can keep all 16 busy, and a dropped gunshot is worse than a cut-off tail). ASND hands
+   out voice 0 last; stealing picks among 1..15. */
+static s32 claim_voice(void);
+static u32 voice_steals = 0;
+
+uint32_t mwf_snd_steals(void) {
+    return voice_steals;
+}
+
 int32_t mwf_snd_play(const void *pcm, uint32_t bytes, uint32_t rate, uint8_t vol_l, uint8_t vol_r) {
-    s32 voice = ASND_GetFirstUnusedVoice();
+    s32 voice = claim_voice();
     if (voice < 0)
         return -1;
     if (ASND_SetVoice(voice, VOICE_MONO_16BIT, (s32)rate, 0, (void *)pcm, (s32)bytes, vol_l, vol_r, NULL) != SND_OK)
@@ -636,8 +646,33 @@ static void adpcm_more(s32 v) {
     a->next ^= 1;
 }
 
+static u32 voice_started[MAX_SND_VOICES];
+static u32 voice_clock = 0;
+
+static s32 claim_voice(void) {
+    s32 v = ASND_GetFirstUnusedVoice();
+    if (v < 0 || v >= MAX_SND_VOICES) {
+        u32 oldest = 0xffffffffu;
+        v = -1;
+        for (s32 i = 1; i < MAX_SND_VOICES; i++)
+            if (voice_started[i] < oldest) {
+                oldest = voice_started[i];
+                v = i;
+            }
+        if (v < 0)
+            return -1;
+        u32 level = IRQ_Disable();
+        adpcm_voices[v].clip = NULL;
+        IRQ_Restore(level);
+        ASND_StopVoice(v);
+        voice_steals++;
+    }
+    voice_started[v] = ++voice_clock;
+    return v;
+}
+
 int32_t mwf_snd_play_adpcm(const void *clip, uint32_t bytes, uint32_t rate, uint8_t vol_l, uint8_t vol_r) {
-    s32 voice = ASND_GetFirstUnusedVoice();
+    s32 voice = claim_voice();
     if (voice < 0 || voice >= MAX_SND_VOICES)
         return -1;
     u32 level = IRQ_Disable();

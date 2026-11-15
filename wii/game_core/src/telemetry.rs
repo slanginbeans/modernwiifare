@@ -6,7 +6,8 @@
 //! - `S t=<s> fps= fr=avg/max cpu= gpu= <section>=avg ... tris= draws= mem1= mem2=` one row per second (averages in
 //!   ms with 0.01 precision, max frame);
 //! - `X t= fr= <section>= ...` a spike: one frame over 33 ms, with its own breakdown (at most 20 per minute);
-//! - `E t= <what> key=value ...` events (kills, deaths, hits, load errors, sound voices exhausted, bot stuck ...);
+//! - `E t= <what> key=value ...` events (kills, deaths, hits, load errors, `sound_voices_full` (sounds that took
+//!   over a playing voice), `sprint_refused` (a sprint press that didn't start one, with why), bot stuck ...);
 //! - `P` summary at the end (percentiles from a frame-time histogram, share of frames over budget, section
 //!   averages over the whole session, event counts).
 //!
