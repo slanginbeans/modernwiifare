@@ -25,6 +25,7 @@ function New-Settings {
         TiledUv     = $false   # more fixed-point world vertices (MWF_TILED_UV)
         SmallDl     = $false   # smaller display lists (MWF_SMALL_DL)
         Adpcm       = $false   # sounds as 4-bit DSP ADPCM (MWF_ADPCM)
+        SlimAnims   = $false   # player animations as keyframes (MWF_SLIM_ANIMS)
         Force       = $false   # reconvert everything (--force)
         Simplify    = '1.0'    # world detail (--simplify <ratio>; 1.0 = full)
         AllowDownloads = $false # let build.bat / mwf-convert.ps1 download Rust / llvm-mingw (MWF_ASSUME_YES)
@@ -77,6 +78,7 @@ function Get-BuildCommand($s, [switch]$Clean) {
         MWF_TILED_UV      = if ($s.TiledUv) { '1' } else { $null }
         MWF_SMALL_DL      = if ($s.SmallDl) { '1' } else { $null }
         MWF_ADPCM         = if ($s.Adpcm) { '1' } else { $null }
+        MWF_SLIM_ANIMS    = if ($s.SlimAnims) { '1' } else { $null }
         MWF_CONVERT_FLAGS = if ($flags.Count) { $flags -join ' ' } else { $null }
         MWF_ASSUME_YES    = if ($s.AllowDownloads) { '1' } else { $null }
         MWF_GAME          = if ([string]::IsNullOrWhiteSpace($s.Game)) { $null } else { $s.Game }
@@ -91,7 +93,7 @@ $settings = Read-Settings
 
 $form = New-Object Windows.Forms.Form
 $form.Text = 'Modern Wiifare builder'
-$form.Size = New-Object Drawing.Size(760, 798)
+$form.Size = New-Object Drawing.Size(760, 824)
 $form.MinimumSize = New-Object Drawing.Size(640, 560)
 $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object Drawing.Font('Segoe UI', 9)
@@ -124,6 +126,7 @@ $cbSlim = Add-Check 'Slim weapon files (testing: keyframed clips, no gun mips, 3
 $cbTiled = Add-Check 'Maps: more compact world vertices (testing: UV tiles for wide surfaces)' 'MWF_TILED_UV=1. Rebuilds the map packs when switched.' $settings.TiledUv
 $cbSmallDl = Add-Check 'Maps: smaller display lists (testing: 8-bit indices, no colour where white)' 'MWF_SMALL_DL=1. Rebuilds the map packs when switched.' $settings.SmallDl
 $cbAdpcm = Add-Check 'Sounds: ADPCM (testing: about 3.5x smaller, decoded as they play)' 'MWF_ADPCM=1. Rebuilds common.wpk and the weapon files when switched.' $settings.Adpcm
+$cbSlimAnims = Add-Check 'Player animations: keyframes only (testing: within 0.25 degrees)' 'MWF_SLIM_ANIMS=1. Rebuilds common.wpk when switched.' $settings.SlimAnims
 $cbForce = Add-Check 'Reconvert everything (ignore up-to-date packs)' 'Passes --force to the converter.' $settings.Force
 $cbDownloads = Add-Check 'Allow downloading missing tools (Rust, llvm-mingw)' 'Answers yes to build.bat''s download prompts (MWF_ASSUME_YES=1). There is no console here to ask in.' $settings.AllowDownloads
 
@@ -229,7 +232,7 @@ $log.ScrollBars = 'Both'
 $log.WordWrap = $false
 $log.Font = New-Object Drawing.Font('Consolas', 9)
 $log.Location = New-Object Drawing.Point(16, $y)
-$log.Size = New-Object Drawing.Size(706, (738 - $y))
+$log.Size = New-Object Drawing.Size(706, (764 - $y))
 $log.Anchor = 'Top,Bottom,Left,Right'
 $form.Controls.Add($log)
 
@@ -241,6 +244,7 @@ function Get-UiSettings {
     $s.TiledUv = $cbTiled.Checked
     $s.SmallDl = $cbSmallDl.Checked
     $s.Adpcm = $cbAdpcm.Checked
+    $s.SlimAnims = $cbSlimAnims.Checked
     $s.Force = $cbForce.Checked
     $s.AllowDownloads = $cbDownloads.Checked
     $s.Simplify = @('1.0', '0.75', '0.5', '0.35')[[Math]::Max(0, $cmbDetail.SelectedIndex)]
@@ -373,11 +377,12 @@ if ($SelfTest) {
     Check 'defaults: no tiled uv' $c.Env.MWF_TILED_UV $null
     Check 'defaults: no small dl' $c.Env.MWF_SMALL_DL $null
     Check 'defaults: no adpcm' $c.Env.MWF_ADPCM $null
+    Check 'defaults: no slim anims' $c.Env.MWF_SLIM_ANIMS $null
     Check 'defaults: no flags' $c.Env.MWF_CONVERT_FLAGS $null
     $s = New-Settings
     $s.Update = $false; $s.Data = $false; $s.SlimViews = $true; $s.Force = $true; $s.Simplify = '0.5'
     $s.AllowDownloads = $true; $s.Game = 'D:\mwf\Call of Duty Modern Warfare 2'
-    $s.TiledUv = $true; $s.SmallDl = $true; $s.Adpcm = $true
+    $s.TiledUv = $true; $s.SmallDl = $true; $s.Adpcm = $true; $s.SlimAnims = $true
     $c = Get-BuildCommand $s
     Check 'switches: args' ($c.Args -join ' ') 'noupdate nodata nopause'
     Check 'switches: slim' $c.Env.MWF_SLIM_VIEWS '1'
@@ -386,6 +391,7 @@ if ($SelfTest) {
     Check 'switches: tiled uv' $c.Env.MWF_TILED_UV '1'
     Check 'switches: small dl' $c.Env.MWF_SMALL_DL '1'
     Check 'switches: adpcm' $c.Env.MWF_ADPCM '1'
+    Check 'switches: slim anims' $c.Env.MWF_SLIM_ANIMS '1'
     Check 'switches: game' $c.Env.MWF_GAME 'D:\mwf\Call of Duty Modern Warfare 2'
     Check 'switches: devkitpro unset' $c.Env.MWF_DEVKITPRO $null
     Check 'clean: args' ((Get-BuildCommand $s -Clean).Args -join ' ') 'clean nopause'
@@ -396,6 +402,7 @@ if ($SelfTest) {
     Check 'ui: small dl' $u.SmallDl $true
     Check 'ui: tiled uv off' $u.TiledUv $false
     Check 'ui: adpcm off' $u.Adpcm $false
+    Check 'ui: slim anims off' $u.SlimAnims $false
     Check 'ui: detail' $u.Simplify '0.5'
     $form.Dispose()
     if ($fail) { exit 1 } else { Write-Host 'builder self-test passed'; exit 0 }

@@ -136,6 +136,22 @@ with `--slim-views`' 32 kHz.
 - **To check on hardware:** clicks or gaps at buffer joins, very short sounds (footsteps), many sounds at once, and how
   it sounds next to PCM.
 
+### Keyframed player animations (toggle, off by default)
+`--slim-anims` on `pack` / `common`, or `MWF_SLIM_ANIMS=1` (`builder.bat`: "Player animations: keyframes only").
+Part of the stamp. `PANM` keeps its format (it already reads keyed tracks); `wpk::player_anim::slim` only chooses
+fewer samples:
+- Each track gets one list of key frames, shared by its rotation and translation: from each key, the furthest frame
+  (up to 48 on) where linear interpolation, done the way `TrackRef` does it on the Wii (nlerp of the stored
+  quaternions, lerp of the 1/32-unit translations), stays within `player_anim::SLIM` of every frame between:
+  0.25° and 0.1 units. That is about half a pixel on a leg at 3 m at 480p, and only on frames between keys.
+- A part that stays within tolerance of its first frame becomes one sample. A track keeps every frame when listing
+  keys would cost more than it saves.
+- Gameplay doesn't change: hit detection (`game_core::damage`) doesn't read the animated bones.
+- Host test: on a 30 fps run cycle, still bones shrink to one sample, but a ±30° swinging leg keeps most frames.
+  Linear keys can't follow a fast swing within a quarter degree. The real saving depends on how much of MW2's
+  player animations is still or slow; the converter prints `PANM` before and after, and `common.json` has both sizes
+  (`player_anims`).
+
 ## Pack reports
 Every `pack` run writes a content-free `.json` beside each pack (sizes and counts, no names):
 - **Map packs** (`out/packs/<map>.json`): sections, world and model numbers, and `texture_breakdown`
@@ -144,7 +160,8 @@ Every `pack` run writes a content-free `.json` beside each pack (sizes and count
   capping every texture at 256 or 128 texels across would save (`save_cap_256`, `save_cap_128`). Also the 12 largest
   textures (use, format, size, bytes).
 - **`common.json`** (beside `common.wpk`): its sections, the held weapons' and menus' textures broken down the same way,
-  the world sounds (encoding, clips, seconds and bytes, by sample rate), and `views`: all weapon files together
+  the world sounds (encoding, clips, seconds and bytes, by sample rate), `player_anims` (`PANM` size with and
+  without `--slim-anims`), and `views`: all weapon files together
   (files, bytes, sections, textures, sounds).
 
 ## How the world is built (`converter/src/pack.rs`)

@@ -462,7 +462,7 @@ impl ViewModel {
 }
 
 /// Compact tracks: keyframes chosen against the decoder's own interpolation, expanded back to every frame on load.
-mod compact {
+pub(crate) mod compact {
     use super::{Push, Rd, Tolerance, Track, ViewError, quat_from_i16, quat_to_i16};
     use alloc::vec::Vec;
 
@@ -524,7 +524,7 @@ mod compact {
     /// Keys over `n` frames: from each key, the furthest frame (within [`MAX_GAP`]) that `ok` accepts as the next key.
     /// Searched from far to near: a nearer end can fail where a farther one passes (nlerp's uneven speed makes short
     /// chords of a baked IW4 segment worse than the segment itself). Always keeps the first and the last frame.
-    fn reduce(n: usize, ok: impl Fn(usize, usize) -> bool) -> Vec<usize> {
+    pub(crate) fn reduce(n: usize, ok: impl Fn(usize, usize) -> bool) -> Vec<usize> {
         let mut keys = alloc::vec![0];
         let mut i = 0;
         while i + 1 < n {
@@ -546,7 +546,7 @@ mod compact {
     }
 
     /// A keyed track (`Track::keys`) as one sample per frame, interpolated as the runtime does.
-    fn per_frame(t: &Track, frames: usize) -> (Vec<[i16; 4]>, Vec<[f32; 3]>) {
+    pub(crate) fn per_frame(t: &Track, frames: usize) -> (Vec<[i16; 4]>, Vec<[f32; 3]>) {
         if t.keys.is_empty() {
             return (t.rot.clone(), t.trans.clone());
         }
