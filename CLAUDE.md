@@ -39,7 +39,7 @@ never run (supersedes 0002)
   player animations (`wpk::player_anim::slim`), off by default. `--trim-sounds` (`MWF_TRIM_SOUNDS`): quiet sound
   tails cut, off by default. Map reports also break down collision (`clip_report.rs`, measuring only). Pack reports: `<map>.json` has a texture
   breakdown (`tex_report.rs`); `common.json` covers `common.wpk` and the weapon files. `rules.rs` reads values from the
-  user's scripts (ADR 0007). `preview <pack.wpk>`: software render of a pack (also the viewmodel and characters).
+  user's scripts (ADR 0007); `destructibles.rs` reads the destructible object types the same way (map packs' `DST*`). `preview <pack.wpk>`: software render of a pack (also the viewmodel and characters).
   `menu-preview`: menus. `export <game folder> [--out out/export]` (`export.rs`): the class weapons as
   `WEAPONFILE` text, their player-view sounds as WAVs and an `index.json`, for Slick Blasters' `tools/mw2/`
   importers (the user's own data: never committed, like every `out/` file). `export-map <game folder> [--map <zone>|all]`
@@ -55,7 +55,9 @@ never run (supersedes 0002)
   `build.bat` / `pack --map all` keep the old packs.
 - `wii/`: Wii runtime (stable Rust, no_std + alloc, ADR 0006), builds `.dol`s with `make -C wii`.
   - `platform/`: the C shim over libogc (`shim.h` is the whole API Rust sees; keep `spikes/src/ffi.rs` in sync).
-  - `game_core/`: the game, `no_std` and host-tested: camera, world draw order, collision, player (IW4L pmove), gun
+    `shim_usbpad.c`: Xbox 360 wired pads over USB (IOS58 USBv5, known pad vendors only, never the LAN adapter).
+  - `game_core/`: the game, `no_std` and host-tested: controls (GameCube and 360 pads to actions, MW2's Default /
+    Tactical layouts), camera, world draw order, collision, player (IW4L pmove), gun
     (IW4L weapon state machine), damage, life, bots and walk graph, match loop and modes (FFA, TDM, Domination),
     grenades, perks, killstreaks, minimap, menus and UI pages, viewmodel animation, characters, telemetry.
     Draws only through the `gfx::Gfx` trait.

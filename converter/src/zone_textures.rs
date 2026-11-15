@@ -339,7 +339,10 @@ impl AssetLinkSink for Collector {
             self.links.scripts.insert(name.to_owned(), text);
         }
         // MW2's player animation script and the weapons' player-anim types (`player_anims.rs`).
-        if crate::player_anims::SOURCES.contains(&name) {
+        // ... and MW2's destructible types (`destructibles.rs`).
+        if crate::player_anims::SOURCES.contains(&name)
+            || crate::destructibles::SCRIPTS.contains(&name)
+        {
             let bytes = if zlib_compressed {
                 asset_transport::inflate_zlib(data).unwrap_or_default()
             } else {

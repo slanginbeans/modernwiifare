@@ -10,8 +10,8 @@ use alloc::vec::Vec;
 
 use game_core::arena::Fighter;
 use game_core::character::{
-    Body, Death, Held as HeldType, NO_BONE, PlayerAnims, Rig, Scratch, conditions,
-    death_conditions, movetype, strafing,
+    Body, Death, Held as HeldType, Motion, NO_BONE, PlayerAnims, Rig, Scratch, conditions,
+    death_conditions, motion_events, movetype, strafing,
 };
 use game_core::gfx::{DrawState, Gfx, Mtx34};
 use game_core::viewmodel as vmod;
@@ -65,6 +65,7 @@ struct Seen {
     last_fire_ms: Option<u32>,
     gun_state: i32,
     movetype: u8,
+    motion: Motion,
     /// Where its muzzle was last drawn (world origin and forward).
     flash: Option<([f32; 3], [f32; 3])>,
 }
@@ -142,6 +143,8 @@ pub struct Pose {
     pub gun_state: i32,
     /// The weapon in the hand (`WEAP` record).
     pub weapon: Option<u32>,
+    /// For jumps, landings and going prone.
+    pub motion: Motion,
 }
 
 impl Pose {
@@ -181,6 +184,7 @@ impl Pose {
             last_fire_ms: f.last_fire_ms,
             gun_state: f.gun.as_ref().map_or(0, |g| g.state()),
             weapon: f.gun.as_ref().map(|g| g.weapon_index()),
+            motion: Motion::of(ps, forward),
         }
     }
 }
@@ -195,7 +199,7 @@ impl Characters {
         texture: impl Fn(u16) -> i32,
         gfx: &mut impl Gfx,
     ) -> Option<Characters> {
-        let pack = wpk::Pack::parse(map, false).ok()?;
+        let pack = wpk::Pack::parse_prefix(map).ok()?;
         let teams = wpk::view::decode_characters(pack.section(wpk::tag::CHARACTERS)?.data);
         let common = wpk::Pack::parse(common, false).ok()?;
         let held = Held::load(&common, gfx);
@@ -289,6 +293,7 @@ impl Characters {
             s.body.reset(p.yaw);
             s.last_fire_ms = p.last_fire_ms;
             s.gun_state = p.gun_state;
+            s.motion = p.motion;
         }
         if !p.alive && s.alive {
             let c = death_conditions(p.conditions, &p.death, p.yaw);
@@ -316,6 +321,14 @@ impl Characters {
                 c.value[usize::from(anim_iw4::ANIM_COND_WEAPONCLASS)] = 1 << THROWN.class;
                 s.body.event(anims, EV_FIRE, mt, &c, now, false);
             }
+            // Jumps, landings and prone, under the movement type before the jump (IW4 plays them from pmove, where
+            // the movement type is still the one on the ground).
+            for ev in motion_events(&s.motion, &p.motion) {
+                let mut c = p.conditions;
+                c.value[usize::from(anim_iw4::ANIM_COND_MOVETYPE)] = 1 << s.movetype;
+                s.body.event(anims, ev, s.movetype, &c, now, false);
+            }
+            s.motion = p.motion;
             if p.movetype.is_some() {
                 s.body.moves(anims, mt, &p.conditions, now);
             }

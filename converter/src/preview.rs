@@ -31,11 +31,81 @@ pub struct View {
     pub hfov_deg: f32,
     /// First-person model to draw on top: the common pack, its animation slot and time in seconds.
     pub viewmodel: Option<(Vec<u8>, u8, f32)>,
-    /// A player character to draw 120 units ahead, facing the camera on the floor below the eye.
+    /// A player character to draw ahead (120 units unless set), facing the camera on the floor below the eye.
     pub character: Option<CharacterShot>,
     /// An effect played 150 units ahead pointing at the camera: the common pack, its `FXDF` index and the time
     /// since it started (seconds).
     pub effect: Option<(Vec<u8>, u16, f32)>,
+    /// Which state the map's destructible objects are drawn in (0 whole; past their last, their last).
+    pub destructible_state: usize,
+}
+
+/// A rigid model in the [`wpk::held`] layout with its textures, each model-space point placed by `place`.
+#[allow(clippy::too_many_arguments)]
+fn draw_rigid(
+    m: &wpk::held::GunRef<'_>,
+    textures: &[Option<Image>],
+    place: &dyn Fn([f32; 3]) -> [f32; 3],
+    cam: &Camera,
+    w: usize,
+    h: usize,
+    colour: &mut [[f32; 3]],
+    depth: &mut [f32],
+    stats: &mut Stats,
+) -> Result<(), String> {
+    let f = |b: &[u8], at: usize| wpk::be::f32(b, at);
+    let vert = |i: u16| -> CV {
+        let i = usize::from(i);
+        let p = [
+            f(m.positions, i * 12),
+            f(m.positions, i * 12 + 4),
+            f(m.positions, i * 12 + 8),
+        ];
+        let rgba = wpk::be::u32(m.attributes, i * 12).to_be_bytes();
+        CV {
+            c: cam.to_cam(place(p)),
+            uv: [f(m.attributes, i * 12 + 4), f(m.attributes, i * 12 + 8)],
+            lm: [0.0; 2],
+            rgba: rgba.map(|x| f32::from(x) / 255.0),
+        }
+    };
+    for d in 0..m.draws() {
+        let d = m.draw(d).ok_or("bad rigid model draw")?;
+        let tex = textures
+            .get(usize::from(d.texture))
+            .and_then(Option::as_ref);
+        for t in wpk::strips::dl_triangles_attrs(d.dl, 3) {
+            if t[0] == t[1] || t[1] == t[2] || t[0] == t[2] {
+                continue;
+            }
+            stats.triangles += 1;
+            let poly = clip_near(t.map(vert));
+            for k in 1..poly.len().saturating_sub(1) {
+                raster(
+                    [poly[0], poly[k], poly[k + 1]],
+                    cam,
+                    w,
+                    h,
+                    colour,
+                    depth,
+                    stats,
+                    |cv| {
+                        let b = tex.map_or([1.0; 4], |img| sample(img, cv.uv[0], cv.uv[1], false));
+                        [
+                            b[0] * cv.rgba[0],
+                            b[1] * cv.rgba[1],
+                            b[2] * cv.rgba[2],
+                            b[3] * cv.rgba[3],
+                        ]
+                    },
+                    Blend::from_u8(d.blend),
+                    d.alpha_ref,
+                    0,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A player character for the preview: posed by MW2's player animation script (the common pack's) as a player with
@@ -58,6 +128,8 @@ pub struct CharacterShot {
     pub gun: Option<usize>,
     /// Degrees the character is turned from facing the camera.
     pub turn: f32,
+    /// How far ahead of the eye it stands (120 when 0).
+    pub distance: f32,
 }
 
 /// Draw the first-person model from `common` (its first `VIEW` section) over the frame, with its own depth.
@@ -692,6 +764,57 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
         }
     }
 
+    // Destructible objects (`DST*`), each in state `view.destructible_state` (or its last).
+    if let (Some(guns), Some(types)) = (
+        pack.section(tag::DEST_MODELS)
+            .and_then(|s| wpk::held::Guns::parse(s.data)),
+        pack.section(tag::DEST_TYPES)
+            .and_then(|s| wpk::destructible::decode_types(s.data)),
+    ) {
+        let dtxd = section(tag::DEST_TEXTURE_DATA);
+        let dtex: Vec<Option<Image>> = records::iter::<TextureRecord>(section(tag::DEST_TEXTURES))
+            .map(|r| decode_texture(&r, dtxd))
+            .collect();
+        for inst in wpk::destructible::decode_instances(section(tag::DEST_INSTANCES)) {
+            let Some(t) = types.get(usize::from(inst.kind)) else {
+                continue;
+            };
+            let Some(st) = t.states.get(
+                view.destructible_state
+                    .min(t.states.len().saturating_sub(1)),
+            ) else {
+                continue;
+            };
+            let Some(m) = guns.model(usize::from(st.model)) else {
+                continue;
+            };
+            if sub(inst.origin, view.eye)
+                .iter()
+                .map(|x| x * x)
+                .sum::<f32>()
+                > 3000.0 * 3000.0
+            {
+                continue;
+            }
+            let a = inst.axes;
+            let o = inst.origin;
+            let place = |p: [f32; 3]| -> [f32; 3] {
+                core::array::from_fn(|k| o[k] + a[0][k] * p[0] + a[1][k] * p[1] + a[2][k] * p[2])
+            };
+            draw_rigid(
+                &m,
+                &dtex,
+                &place,
+                &cam,
+                w,
+                h,
+                &mut colour,
+                &mut depth,
+                &mut stats,
+            )?;
+        }
+    }
+
     if let Some(shot) = &view.character {
         use game_core::character as ch;
         use game_core::viewmodel as vmod;
@@ -724,6 +847,9 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
         });
         let c = ch::conditions(&ps, held, shot.movetype, 0, false);
         let mut body = ch::Body::new(0);
+        // Idle first, as a player stands before anything else plays (a torso-only movement keeps the legs).
+        let idle = ch::conditions(&ps, held, anim_iw4::ANIM_MT_IDLE, 0, false);
+        body.moves(&anims, anim_iw4::ANIM_MT_IDLE, &idle, 0);
         body.moves(&anims, shot.movetype, &c, 0);
         if let Some(e) = shot.event {
             let c = if e == anim_iw4::ANIM_ET_DEATH {
@@ -751,8 +877,8 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
         vmod::skin(&vm, &skin, &mut pos);
         let y = view.yaw.to_radians();
         let base = [
-            view.eye[0] + y.cos() * 120.0,
-            view.eye[1] + y.sin() * 120.0,
+            view.eye[0] + y.cos() * shot.distance,
+            view.eye[1] + y.sin() * shot.distance,
             view.eye[2] - 60.0,
         ];
         let (s, co) = (

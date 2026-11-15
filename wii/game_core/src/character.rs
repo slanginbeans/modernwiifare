@@ -553,6 +553,56 @@ pub fn movetype(ps: &playerstate_iw4::PlayerState, forward: i8, right: i8) -> Op
     movement_iw4::footsteps_anim_move_type(ps, forward, right, false)
 }
 
+/// What the movement events need of a player from frame to frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Motion {
+    /// pmove's `jump_time` (changes when a jump starts).
+    pub jump_time: i32,
+    pub on_ground: bool,
+    /// Vertical speed (units/s).
+    pub vz: f32,
+    pub prone: bool,
+    /// Moving backwards (the move command's forward part below zero).
+    pub backward: bool,
+}
+
+impl Motion {
+    pub fn of(ps: &playerstate_iw4::PlayerState, forward: i8) -> Motion {
+        Motion {
+            jump_time: ps.jump_time,
+            on_ground: ps.ground_entity_num != playerstate_iw4::ENTITYNUM_NONE,
+            vz: ps.velocity[2],
+            prone: ps.pm_flags & playerstate_iw4::pm_flags::PRONE != 0,
+            backward: forward < 0,
+        }
+    }
+}
+
+/// The landing speed (units/s, downwards) that plays the landing animation, as the Quake 3 lineage IW4 comes from.
+pub const LAND_SPEED: f32 = 200.0;
+
+/// The animation events (`ANIM_ET_*`) a change of movement from `was` to `now` plays: a jump (backwards when moving
+/// back), a landing (when falling faster than [`LAND_SPEED`]), going prone or getting up.
+pub fn motion_events(was: &Motion, now: &Motion) -> impl Iterator<Item = u8> {
+    let jumped = now.jump_time != was.jump_time && !now.on_ground;
+    let landed = now.on_ground && !was.on_ground && was.vz < -LAND_SPEED;
+    [
+        jumped.then_some(if now.backward { EV_JUMPBK } else { EV_JUMP }),
+        landed.then_some(EV_LAND),
+        (now.prone && !was.prone).then_some(EV_CROUCH_TO_PRONE),
+        (!now.prone && was.prone).then_some(EV_PRONE_TO_CROUCH),
+    ]
+    .into_iter()
+    .flatten()
+}
+
+/// IW4 `ANIM_ET_*` numbers IW4L names but doesn't export (`anim_iw4::ANIM_ET_NAMES` order; a test checks them).
+pub const EV_JUMP: u8 = 3;
+pub const EV_JUMPBK: u8 = 4;
+pub const EV_LAND: u8 = 5;
+pub const EV_CROUCH_TO_PRONE: u8 = 11;
+pub const EV_PRONE_TO_CROUCH: u8 = 12;
+
 /// IW4's strafing condition (IW4L `sim::player_anim_script::anim_strafing`): 0 not, 1 left, 2 right.
 pub fn strafing(ps: &playerstate_iw4::PlayerState, forward: i8, right: i8) -> u8 {
     let (f, r) = (f32::from(forward), f32::from(right));
@@ -828,5 +878,63 @@ mod tests {
             w[2],
             straight
         );
+    }
+
+    #[test]
+    fn event_numbers_match_iw4() {
+        let n = anim_iw4::ANIM_ET_NAMES;
+        assert_eq!(n[usize::from(EV_JUMP)], "JUMP");
+        assert_eq!(n[usize::from(EV_JUMPBK)], "JUMPBK");
+        assert_eq!(n[usize::from(EV_LAND)], "LAND");
+        assert_eq!(n[usize::from(EV_CROUCH_TO_PRONE)], "CROUCH_TO_PRONE");
+        assert_eq!(n[usize::from(EV_PRONE_TO_CROUCH)], "PRONE_TO_CROUCH");
+    }
+
+    #[test]
+    fn jumps_landings_and_prone_play_events() {
+        let ground = Motion {
+            on_ground: true,
+            ..Motion::default()
+        };
+        let events = |a: &Motion, b: &Motion| motion_events(a, b).collect::<Vec<_>>();
+        assert!(events(&ground, &ground).is_empty());
+        // A jump: the jump time changes and the player leaves the ground.
+        let up = Motion {
+            jump_time: 100,
+            on_ground: false,
+            vz: 260.0,
+            ..ground
+        };
+        assert_eq!(events(&ground, &up), [EV_JUMP]);
+        assert_eq!(
+            events(
+                &ground,
+                &Motion {
+                    backward: true,
+                    ..up
+                }
+            ),
+            [EV_JUMPBK]
+        );
+        // Walking off a ledge isn't a jump.
+        let off = Motion {
+            on_ground: false,
+            ..ground
+        };
+        assert!(events(&ground, &off).is_empty());
+        // Landing hard plays the landing; stepping down a little doesn't.
+        let falling = Motion { vz: -300.0, ..up };
+        let landed = Motion {
+            jump_time: 100,
+            ..ground
+        };
+        assert_eq!(events(&falling, &landed), [EV_LAND]);
+        assert!(events(&Motion { vz: -100.0, ..up }, &landed).is_empty());
+        let prone = Motion {
+            prone: true,
+            ..ground
+        };
+        assert_eq!(events(&ground, &prone), [EV_CROUCH_TO_PRONE]);
+        assert_eq!(events(&prone, &ground), [EV_PRONE_TO_CROUCH]);
     }
 }

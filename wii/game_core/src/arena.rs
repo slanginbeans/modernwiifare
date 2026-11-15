@@ -170,6 +170,16 @@ pub enum Event {
         flesh: bool,
         impact_type: i32,
     },
+    /// A destructible object's effect (the map pack's `DSFX` index).
+    ObjectFx {
+        effect: u16,
+        origin: [f32; 3],
+        forward: [f32; 3],
+    },
+    /// A destructible object blew up at `origin`.
+    ObjectExploded {
+        origin: [f32; 3],
+    },
 }
 
 /// The player's position for hit tests and for the bots to see.
@@ -311,6 +321,10 @@ pub struct Arena {
     /// Whether the human (slot 0) is in the match (not free-flying): bots ignore and can't hit it otherwise.
     pub human_present: bool,
     spawn_count: usize,
+    /// The map's destructible objects.
+    pub objects: crate::destructible::Objects,
+    /// What they asked for since the last [`Arena::update_objects`].
+    object_out: Vec<crate::destructible::Out>,
 }
 
 fn dist2(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -474,6 +488,8 @@ impl Arena {
             rng: 0x2545_f491,
             human_present: true,
             spawn_count: 0,
+            objects: crate::destructible::Objects::default(),
+            object_out: Vec::new(),
         };
         a.fighters.push(Fighter::new(human, gun(0), None, &rules));
         for i in 1..=bots {
@@ -697,6 +713,37 @@ impl Arena {
         let wall = libm::sqrtf(dist2(shot.start, shot.end));
         let dir_n: [f32; 3] =
             core::array::from_fn(|k| (shot.pen_end[k] - shot.start[k]) / length.max(1e-6));
+        // A destructible object before the wall and the players stops the bullet and takes its damage.
+        if let Some((t, obj, normal, flags)) = self.objects.ray(shot.start, shot.pen_end, MASK_SHOT)
+            && t * length <= wall + 0.5
+            && best.is_none_or(|b| t < b.0)
+        {
+            out.push(Event::Impact {
+                origin: core::array::from_fn(|k| shot.start[k] + dir_n[k] * t * length),
+                normal,
+                surface: ((flags >> 20) & 0x1f) as u8,
+                flesh: false,
+                impact_type: facts.impact_type,
+            });
+            let d = damage::at_distance(facts, t * length) as f32
+                * self.fighters[from].bullet_scale
+                * shot.scale_at(t * length);
+            // Shotguns (IW4 weapon class 3, "spread") count four times.
+            let cause = if facts.weap_class == 3 {
+                crate::destructible::Cause::Pellet
+            } else {
+                crate::destructible::Cause::Bullet
+            };
+            self.objects.damage(
+                obj,
+                d,
+                cause,
+                crate::destructible::Attacker::Player(from),
+                now,
+                &mut self.object_out,
+            );
+            return;
+        }
         if shot.hit && best.is_none_or(|b| b.0 * length > wall) {
             out.push(Event::Impact {
                 origin: shot.end,
@@ -914,6 +961,18 @@ impl Arena {
                 },
             });
             let kind = crate::grenade::effect(&g.facts);
+            if kind != crate::grenade::Effect::Smoke {
+                let scale = self.fighters[g.owner].explosive_scale;
+                self.splash_objects(
+                    clip,
+                    g.origin,
+                    g.facts.explosion_radius as f32,
+                    g.facts.explosion_outer_damage as f32 * scale,
+                    g.facts.explosion_inner_damage as f32 * scale,
+                    crate::destructible::Attacker::Player(g.owner),
+                    now,
+                );
+            }
             for v in 0..self.fighters.len() {
                 let f = &self.fighters[v];
                 if !f.life.alive() || (v == 0 && !self.human_present) {
@@ -1004,6 +1063,161 @@ impl Arena {
                         self.shock(v, false, secs, now);
                     }
                 }
+            }
+        }
+    }
+
+    /// Radius damage to the destructible objects (IW4 `RadiusDamage` on entities): `max` at `origin` down to `min`
+    /// at `range`, to each object in reach whose tag the blast can see.
+    #[allow(clippy::too_many_arguments)]
+    fn splash_objects(
+        &mut self,
+        clip: &MapClip<'_>,
+        origin: [f32; 3],
+        range: f32,
+        min: f32,
+        max: f32,
+        attacker: crate::destructible::Attacker,
+        now: u32,
+    ) {
+        if range <= 0.0 {
+            return;
+        }
+        for j in 0..self.objects.len() {
+            let Some(p) = self.objects.splash_point(j) else {
+                continue;
+            };
+            let dist = libm::sqrtf(dist2(origin, p));
+            if dist >= range {
+                continue;
+            }
+            let t = clip.trace(
+                origin,
+                p,
+                [0.0; 3],
+                [0.0; 3],
+                gamemode_iw4::G_CAN_DAMAGE_CONTENTS_MASK,
+            );
+            if t.fraction < 1.0 {
+                continue;
+            }
+            let amount = gamemode_iw4::radius_damage_amount(max, min, range, dist, 1.0) as f32;
+            self.objects
+                .splash(j, origin, amount, attacker, now, &mut self.object_out);
+        }
+    }
+
+    /// Run the destructible objects up to `now`: their drains, repeating effects and explosions (which hurt the
+    /// players as a grenade's blast does, credited to the last player who damaged the object, and reach the other
+    /// objects), and give movement their collision boxes as they are now.
+    pub fn update_objects(&mut self, clip: &MapClip<'_>, now: u32, out: &mut Vec<Event>) {
+        if self.objects.is_empty() {
+            return;
+        }
+        self.objects.update(now, &mut self.object_out);
+        let mut guard = 0;
+        while !self.object_out.is_empty() && guard < 16 {
+            guard += 1;
+            let mut batch = core::mem::take(&mut self.object_out);
+            for o in &batch {
+                match *o {
+                    crate::destructible::Out::Fx {
+                        effect,
+                        origin,
+                        forward,
+                    } => out.push(Event::ObjectFx {
+                        effect,
+                        origin,
+                        forward,
+                    }),
+                    crate::destructible::Out::Explode {
+                        origin,
+                        range,
+                        min,
+                        max,
+                        attacker,
+                        ..
+                    } => {
+                        out.push(Event::ObjectExploded { origin });
+                        self.blast_players(clip, origin, range, min, max, attacker, now, out);
+                        let by = attacker.map_or(crate::destructible::Attacker::Other, |p| {
+                            crate::destructible::Attacker::Player(p)
+                        });
+                        self.splash_objects(clip, origin, range, min, max, by, now);
+                    }
+                }
+            }
+            // Keep the buffer's capacity.
+            if self.object_out.is_empty() {
+                batch.clear();
+                self.object_out = batch;
+            }
+        }
+        clip.set_props(self.objects.placed().map(|(_, p)| p));
+    }
+
+    /// An object's explosion on the players (IW4 `RadiusDamage`): `max` at `origin` down to `min` at `range`, by how
+    /// much of each player the blast sees; from `attacker` (none: the object, so a death is the victim's own).
+    #[allow(clippy::too_many_arguments)]
+    fn blast_players(
+        &mut self,
+        clip: &MapClip<'_>,
+        origin: [f32; 3],
+        range: f32,
+        min: f32,
+        max: f32,
+        attacker: Option<usize>,
+        now: u32,
+        out: &mut Vec<Event>,
+    ) {
+        if range <= 0.0 {
+            return;
+        }
+        for v in 0..self.fighters.len() {
+            let f = &self.fighters[v];
+            if !f.life.alive() || (v == 0 && !self.human_present) {
+                continue;
+            }
+            let height = f.player.hull_height();
+            let feet = f.player.ps.origin;
+            let mid = [feet[0], feet[1], feet[2] + height * 0.5];
+            let dist = gamemode_iw4::radius_damage_distance_to_aabb(
+                origin,
+                mid,
+                [15.0, 15.0, height * 0.5],
+            );
+            if dist >= range {
+                continue;
+            }
+            let (_, yaw) = f.player.view();
+            let r = yaw.to_radians();
+            let right = [libm::sinf(r), -libm::cosf(r), 0.0];
+            let vis = gamemode_iw4::can_damage_player_vis_scale(
+                feet,
+                f.player.ps.view_height_current,
+                right,
+                origin,
+                |a, b| {
+                    let t = clip.trace(
+                        a,
+                        b,
+                        [0.0; 3],
+                        [0.0; 3],
+                        gamemode_iw4::G_CAN_DAMAGE_CONTENTS_MASK,
+                    );
+                    t.fraction >= 1.0 && t.startsolid == 0
+                },
+            );
+            let d = gamemode_iw4::radius_damage_amount(max, min, range, dist, vis);
+            if d <= 0 {
+                continue;
+            }
+            let dir: [f32; 3] = core::array::from_fn(|k| feet[k] - origin[k]);
+            let from = attacker.unwrap_or(v);
+            self.hurt(from, v, d, damage::hitloc::NONE, dir, now, out);
+            if !self.fighters[v].life.alive() {
+                let near = dist2(feet, origin) < anim_iw4::ANIM_DAMAGE_EXPLOSION_NEAR_DIST_SQ;
+                self.fighters[v].death.kind = if near { 2 } else { 1 };
             }
         }
     }
@@ -1842,6 +2056,97 @@ mod tests {
             lazy_traces * 4 < brute_traces,
             "lazy {lazy_traces} vs brute {brute_traces}"
         );
+    }
+
+    #[test]
+    fn objects_stop_bullets_and_their_explosions_kill() {
+        use crate::destructible::Objects;
+        use wpk::destructible::{CollBox, Explode, Instance, State, Type};
+        let clip = boxes(&[([-2000.0, -2000.0, -64.0], [2000.0, 2000.0, 0.0])]);
+        let mc = MapClip::new(&clip);
+        let spawns = [([0.0, 0.0, 0.0], 0.0), ([300.0, 0.0, 0.0], 180.0)];
+        let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+        let mut a = Arena::new(&mc, &spawns, 1, human, Rules::default(), |_| Some(rifle()));
+        let bot_at = a.fighters[1].player.ps.origin;
+        // A crate between the shooter and the bot: 30 health, then it blows up (300 near, 250 range).
+        let kind = Type {
+            splash_scale: 0.0,
+            states: alloc::vec![
+                State {
+                    health: 30,
+                    explode: Some(Explode {
+                        origin: [0.0; 3],
+                        lift: 0.0,
+                        range: 250.0,
+                        min_damage: 50.0,
+                        max_damage: 300.0,
+                        continue_damage: false,
+                    }),
+                    ..State::default()
+                },
+                State {
+                    health: -1,
+                    ..State::default()
+                },
+            ],
+        };
+        let crate_box = CollBox {
+            mins: [-20.0, -20.0, 0.0],
+            maxs: [20.0, 20.0, 80.0],
+            contents: 1,
+            surface_flags: 0,
+        };
+        a.objects = Objects::new(
+            alloc::vec![kind],
+            alloc::vec![alloc::vec![crate_box]],
+            &[Instance {
+                kind: 0,
+                origin: [bot_at[0] - 60.0, bot_at[1], 0.0],
+                axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            }],
+        );
+        let end = [bot_at[0] + 500.0, bot_at[1], 64.0];
+        let shot = Shot {
+            start: [bot_at[0] - 300.0, bot_at[1], 64.0],
+            end,
+            hit: true,
+            normal: [0.0; 3],
+            surface: 0,
+            pen_end: end,
+            layers: [(0.0, 0.0); crate::gun::MAX_LAYERS],
+            layer_count: 0,
+        };
+        let facts = *rifle().facts();
+        let mut ev = Vec::new();
+        // The crate takes the bullet: the bot is untouched.
+        a.bullet(0, &shot, &facts, 1000, &mut ev);
+        assert!(!ev.iter().any(|e| matches!(e, Event::Hit { .. })), "{ev:?}");
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, Event::Impact { flesh: false, .. }))
+        );
+        assert_eq!(a.fighters[1].life.health, 100);
+        // The rifle does 40: it breaks, and 0.1 s later blows up next to the bot, a kill for the shooter.
+        ev.clear();
+        a.update_objects(&mc, 1050, &mut ev);
+        assert!(!ev.iter().any(|e| matches!(e, Event::ObjectExploded { .. })));
+        a.update_objects(&mc, 1100, &mut ev);
+        assert!(
+            ev.iter().any(|e| matches!(e, Event::ObjectExploded { .. })),
+            "{ev:?}"
+        );
+        assert!(
+            ev.iter().any(|e| matches!(
+                e,
+                Event::Kill {
+                    attacker: 0,
+                    victim: 1
+                }
+            )),
+            "{ev:?}"
+        );
+        // The wreck keeps its model here, and so its box: it still stops bullets.
+        assert!(a.objects.ray(shot.start, shot.pen_end, MASK_SHOT).is_some());
     }
 
     #[test]

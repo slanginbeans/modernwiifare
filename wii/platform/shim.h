@@ -30,6 +30,30 @@ typedef struct {
     uint8_t connected, _pad;
 } mwf_pad; /* 12 bytes */
 
+/* Xbox 360 pad buttons (the USB report's bytes 2 and 3). */
+#define MWF_X360_UP 0x0001u
+#define MWF_X360_DOWN 0x0002u
+#define MWF_X360_LEFT 0x0004u
+#define MWF_X360_RIGHT 0x0008u
+#define MWF_X360_START 0x0010u
+#define MWF_X360_BACK 0x0020u
+#define MWF_X360_LS 0x0040u
+#define MWF_X360_RS 0x0080u
+#define MWF_X360_LB 0x0100u
+#define MWF_X360_RB 0x0200u
+#define MWF_X360_GUIDE 0x0400u
+#define MWF_X360_A 0x1000u
+#define MWF_X360_B 0x2000u
+#define MWF_X360_X 0x4000u
+#define MWF_X360_Y 0x8000u
+
+typedef struct {
+    uint16_t buttons;          /* held, MWF_X360_* */
+    uint8_t lt, rt;            /* triggers 0..255 */
+    int16_t lx, ly, rx, ry;    /* sticks, up and right positive */
+    uint8_t connected, _pad[3];
+} mwf_x360; /* 16 bytes */
+
 typedef struct {
     uint32_t arena1_lo, arena1_hi, arena2_lo, arena2_hi;
 } mwf_mem;
@@ -183,6 +207,12 @@ typedef struct { float x, y, z; uint32_t rgba; float s, t; } mwf_sprite_vert;
 void mwf_sprites(const float view[3][4], int32_t tex, uint32_t blend, const mwf_sprite_vert *v, uint32_t quads,
                  int32_t world);
 
+/* ---- USB pads (shim_usbpad.c, game only) ---- */
+/* Once per frame: notices a pad being unplugged, looks for a newly plugged one about once a second. */
+void mwf_x360_scan(void);
+/* The Xbox 360 wired pad's latest state (connected 0 when there is none). */
+void mwf_x360_read(mwf_x360 *out);
+
 /* Sound: ASND voices. `pcm`: mono 16-bit big-endian, 32-byte aligned, flushed, `bytes` a multiple of 32.
    Volumes 0..255. Returns the voice, or -1 when every voice is busy. */
 void mwf_snd_init(void);
@@ -190,6 +220,8 @@ int32_t mwf_snd_play(const void *pcm, uint32_t bytes, uint32_t rate, uint8_t vol
 /* The same for a 4-bit DSP ADPCM clip (`wpk::adpcm`, 32-byte aligned): decoded a piece at a time while it plays. */
 int32_t mwf_snd_play_adpcm(const void *clip, uint32_t bytes, uint32_t rate, uint8_t vol_l, uint8_t vol_r);
 void mwf_snd_stop_all(void);
+/* Sounds started so far by taking over the voice playing longest, because all were busy. */
+uint32_t mwf_snd_steals(void);
 /* Implemented by the game (Rust, `wpk::adpcm::decode`): decode up to `max` samples of `clip` from sample `start`,
    continuing from `hist` ([h1, h2], updated). Returns the samples written. Safe to call from the audio interrupt. */
 uint32_t mwf_adpcm_decode(const uint8_t *clip, uint32_t len, uint32_t start, int16_t *hist, int16_t *out,

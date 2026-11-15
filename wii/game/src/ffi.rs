@@ -2,18 +2,10 @@
 
 use core::ffi::c_char;
 
-pub const BTN_LEFT: u16 = 0x0001;
-pub const BTN_RIGHT: u16 = 0x0002;
-pub const BTN_DOWN: u16 = 0x0004;
-pub const BTN_UP: u16 = 0x0008;
-pub const BTN_Z: u16 = 0x0010;
-pub const BTN_L: u16 = 0x0040;
-pub const BTN_A: u16 = 0x0100;
-pub const BTN_X: u16 = 0x0400;
-pub const BTN_R: u16 = 0x0020;
-pub const BTN_B: u16 = 0x0200;
-pub const BTN_Y: u16 = 0x0800;
-pub const BTN_START: u16 = 0x1000;
+// The shim's `MWF_BTN_*` GameCube bits (one definition, in `game_core::controls::gc`).
+pub use game_core::controls::gc::{
+    A as BTN_A, B as BTN_B, DOWN as BTN_DOWN, START as BTN_START, UP as BTN_UP,
+};
 
 /// `mwf_ui_quad` (shim.h).
 #[repr(C)]
@@ -44,6 +36,23 @@ pub struct Pad {
     pub connected: u8,
     pub _pad: u8,
 }
+
+/// The shim's `mwf_x360`: an Xbox 360 wired pad over USB.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct X360 {
+    pub buttons: u16,
+    pub lt: u8,
+    pub rt: u8,
+    pub lx: i16,
+    pub ly: i16,
+    pub rx: i16,
+    pub ry: i16,
+    pub connected: u8,
+    pub _pad: [u8; 3],
+}
+
+const _: () = assert!(core::mem::size_of::<X360>() == 16);
 
 #[repr(C)]
 pub struct TexDesc {
@@ -80,6 +89,8 @@ unsafe extern "C" {
     pub fn mwf_us() -> u32;
     pub fn mwf_input_scan();
     pub fn mwf_pad_read(chan: i32, out: *mut Pad);
+    pub fn mwf_x360_scan();
+    pub fn mwf_x360_read(out: *mut X360);
     pub fn mwf_panic(msg: *const u8, len: usize) -> !;
     pub fn mwf_widescreen() -> i32;
 
@@ -109,6 +120,7 @@ unsafe extern "C" {
     pub fn mwf_snd_play(pcm: *const u8, bytes: u32, rate: u32, vol_l: u8, vol_r: u8) -> i32;
     pub fn mwf_snd_play_adpcm(clip: *const u8, bytes: u32, rate: u32, vol_l: u8, vol_r: u8) -> i32;
     pub fn mwf_snd_stop_all();
+    pub fn mwf_snd_steals() -> u32;
     pub fn mwf_view_begin(fovy_deg: f32, znear: f32, zfar: f32);
     pub fn mwf_world_view();
     pub fn mwf_world_tint(rgba: u32);
@@ -161,12 +173,36 @@ pub fn should_exit() -> bool {
     unsafe { mwf_should_exit() != 0 }
 }
 
-/// Scan the ports and return port 1.
-pub fn pad0() -> Pad {
-    let mut p = Pad::default();
+/// Scan the pads (once a frame): GameCube port 1 and the USB Xbox 360 pad.
+pub fn pads() -> (game_core::controls::GcPad, game_core::controls::X360Pad) {
+    let (mut p, mut x) = (Pad::default(), X360::default());
     unsafe {
         mwf_input_scan();
         mwf_pad_read(0, &mut p);
+        mwf_x360_scan();
+        mwf_x360_read(&mut x);
     }
-    p
+    (
+        game_core::controls::GcPad {
+            held: p.held,
+            down: p.down,
+            sx: p.sx,
+            sy: p.sy,
+            cx: p.cx,
+            cy: p.cy,
+            l: p.l,
+            r: p.r,
+            connected: p.connected != 0,
+        },
+        game_core::controls::X360Pad {
+            buttons: x.buttons,
+            lt: x.lt,
+            rt: x.rt,
+            lx: x.lx,
+            ly: x.ly,
+            rx: x.rx,
+            ry: x.ry,
+            connected: x.connected != 0,
+        },
+    )
 }

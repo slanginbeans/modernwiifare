@@ -79,11 +79,37 @@ Counter-UAV (a class killstreak, D-pad left): up as long as a UAV (`_uav.gsc`), 
 
 EMP: jams the enemies' radar as a Counter-UAV does, for `_emp.gsc`'s jam time (60 s in MW2's). Not yet: its HUD blackout and its effect on other killstreaks. Tactical Nuke: `_nuke.gsc`'s countdown on the HUD, then everyone dies (`nukeDeath`'s delay after it) and the match ends with its caller (their team) winning.
 
-Player characters: the other players are MW2's bodies for the map's factions (`CHAR`: each team's assault body and head, a low LOD so the Wii can skin several), animated by MW2's player animation script (`PSCR`, the user's `mp/playeranim.script` baked at convert time; clips `PANM` read in place from MEM2, bound by bone name at load). Each frame a player's movement type (IW4L's `footsteps_anim_move_type`), weapon (player-anim type and class), ADS, strafing and firing pick the script's first matching item; its animation plays on the legs, the torso or both, cross-fading over IW4's blend time. Firing, reload, melee and grenade throws play their event's torso animation for its duration; a death plays the death item matching the hit location, the direction the damage came from and whether an explosion did it, and the body lies there until the respawn. IW4's controller tags bend the spine to the aim pitch and turn the torso from the legs, which follow the view once it is 20 degrees away. Skinned on the CPU and drawn at the player's position, turned with the legs; the weapon it holds (the common pack's `GUNM`: its world model, read in place) is drawn on its `tag_weapon_right` while it lives. Players behind you aren't posed or skinned (their animation state still runs). Without characters in the pack, the placeholder boxes are drawn. Hit detection still uses the boxes.
+Player characters: the other players are MW2's bodies for the map's factions (`CHAR`: each team's assault body and head, a low LOD so the Wii can skin several; the head's vertices are in its own model space, so its bones, those it shares with the body too, unbind with the head's own bind poses and follow the body's), animated by MW2's player animation script (`PSCR`, the user's `mp/playeranim.script` baked at convert time; clips `PANM` read in place from MEM2, bound by bone name at load). Each frame a player's movement type (IW4L's `footsteps_anim_move_type`), weapon (player-anim type and class), ADS, strafing and firing pick the script's first matching item; its animation plays on the legs, the torso or both, cross-fading over IW4's blend time. Firing, reload, melee and grenade throws play their event's torso animation for its duration; a death plays the death item matching the hit location, the direction the damage came from and whether an explosion did it, and the body lies there until the respawn. IW4's controller tags bend the spine to the aim pitch and turn the torso from the legs, which follow the view once it is 20 degrees away. Skinned on the CPU and drawn at the player's position, turned with the legs; the weapon it holds (the common pack's `GUNM`: its world model, read in place) is drawn on its `tag_weapon_right` while it lives. Players behind you aren't posed or skinned (their animation state still runs). Without characters in the pack, the placeholder boxes are drawn. Hit detection still uses the boxes.
 
 The match HUD (`game_core::hud_mw2`) uses MW2's fonts and HUD images from `common.wpk` (`UIPK` icons: each weapon's `hudIcon` as `weapon:<name>`, the killstreak table's icons as `streak:<name>`, MW2's hitmarker `damage_feedback`): the weapon's icon, magazine and reserve and its name bottom right, the lethal and tactical grenades with their counts above them, the killstreak ready to call in on the right, the kill feed, scores (team or yours and the leader's), Domination's flags and the clock bottom left, MW2's hitmarker and a `+points` popup at the crosshair, notices and the nuke's countdown at the top, and the respawn countdown when dead. The positions are this build's, not MW2's `hud.menu` layout. Without the UI in the pack the plain HUD is drawn. `mwf-convert menu-preview <common.wpk>` renders it with sample content (`out/preview/menu_hud.png`).
 
-Options (OPTIONS on the main and pause menus, MW2's console Controls page; saved to `<app folder>/options.dat`): look sensitivity and aim-down-sight sensitivity (1-10, MW2's scale; 3 is the default), look inversion, target assist, button layout (Default, or Tactical: stance on D-pad right, melee on B), stick layout (Default, or Southpaw: move with the C-stick). Game Setup: game type, score and time limits, bots (0-7) and bot difficulty.
+**Xbox 360 wired pad (USB):** plug it into either USB port, before or during a match. Its light shows player 1 when
+the game has found it. Both pads can be used at once, and the 360 pad also drives the menus (D-pad or left stick, **A**
+accepts, **B** / **START** / **BACK** go back). It uses MW2's own 360 layouts (`game_core::controls`):
+
+| Button | Default | Tactical |
+|---|---|---|
+| **A** | jump / stand | jump / stand |
+| **B** | crouch, hold for prone | melee |
+| **X** | reload, hold to use, double tap for C4 | the same |
+| **Y** | switch weapon | switch weapon |
+| **LB** / **RB** | tactical / lethal grenade (hold to cook) | the same |
+| **LT** / **RT** | aim down sights / fire | the same |
+| left stick click | sprint | sprint |
+| right stick click | melee | crouch, hold for prone |
+| D-pad right | killstreak reward | the same |
+| **START** | pause | pause |
+| **BACK** + D-pad up / down | free fly / performance overlay (developer) | the same |
+
+The driver (`wii/platform/shim_usbpad.c`) needs IOS58, which the Homebrew Channel starts apps on. It finds pads by the
+360 pad's USB interface (class 0xFF, subclass 0x5D, protocol 0x01), so third-party wired pads work too, but it only
+opens devices from vendors that make them (Microsoft, Mad Catz, PDP, Hori, PowerA and others). That way it never
+touches the USB LAN adapter. It reads input reports in the background, and when the pad is unplugged it looks for one
+again about once a second. Triggers count as pulled past 30 of 255 (XInput's threshold), and the sticks go through
+the same learned range and IW4L dead zone as the GameCube's. Not handled yet: the wireless receiver and rumble.
+
+Options (OPTIONS on the main and pause menus, MW2's console Controls page; saved to `<app folder>/options.dat`): look sensitivity and aim-down-sight sensitivity (1-10, MW2's scale; 3 is the default), look inversion, target assist, button layout (Default, or Tactical: on the GameCube pad stance on D-pad right and melee on B; on the 360 pad stance
+on the right stick click and melee on B), stick layout (Default, or Southpaw: move with the C-stick). Game Setup: game type, score and time limits, bots (0-7) and bot difficulty.
 
 Debug menu (DEBUG on the main menu, and on the pause menu during a match; A changes a setting; saved to `<app folder>/debug.dat`):
 - Match: bots don't attack, bots frozen, god mode (no damage, no fall or out-of-world deaths), infinite ammo (magazine, reserve and grenades every frame), all killstreaks (every reward at the start of each life), primary weapon (any catalog weapon instead of the class's, no attachments; at the next spawn).
@@ -113,8 +139,10 @@ checks (or is from an older converter: convert again), orange = out of memory or
 The two weapon files of the spawned class load into MEM2 above the map (about 2 × 1.8 MiB) and are swapped when a
 spawn brings other weapons (MEM2 and texture handles released back to a mark taken after the map).
 The pack's GPU data (textures, vertices, display lists) is read into MEM2 and used in place; the sections decoded at
-load (visibility, cell tables, collision) are written last by the converter, read into a temporary MEM1 buffer,
-decoded into MEM1 and the buffer freed. `mwf-convert pack` prints the MEM2 part and warns above 44 MiB. Leaving a map
+load (visibility, cell tables, collision, walk graph) are written last by the converter, read into a temporary MEM1
+buffer, decoded into MEM1 and the buffer freed. Only the part before them stays in memory, so everything read in place
+(characters, destructibles, objectives) is written before them (the converter's self-check refuses a pack that
+doesn't) and read with `Pack::parse_prefix`. `mwf-convert pack` prints the MEM2 part and warns above 44 MiB. Leaving a map
 releases its MEM2 (bump allocator mark/release) and its textures.
 
 ## Structure
@@ -197,8 +225,21 @@ feed, and hits show MW2's hitmarker.
   bakes from the map's collision (`NAVG` in the pack, flooded out from the spawn points on a 48-unit grid) with A*
   routes, and jump when stuck. Not yet: mantling, ladders, doors, grenades, knifing, their weapon sounds, and other
   players blocking movement (players pass through each other).
-- **Bodies**: bots are drawn as shaded boxes, one per hit volume (skin-coloured head and neck), until the character
-  models are converted.
+- **Bodies**: MW2's character models (see "Player characters"); the shaded boxes, one per hit volume, only without
+  characters in the pack or with them turned off in the debug menu.
+- **Destructible objects** (`game_core::destructible`, map pack `DST*`): MW2's cars, electric boxes, air conditioners,
+  newspaper stands, copiers, fans and the like, placed as the map places them, with MW2's own models, health, effects
+  and explosions read from its `_destructible_types*.gsc` at convert time (ADR 0007). Their main body runs MW2's chain
+  of states: bullets do the weapon's damage at that range (four times for shotguns), explosions their damage times the
+  type's splash scale or 13 and less 0.4 × the distance (only while the state names a tag, as in MW2), melee only
+  where a state allows it; damage past a state's health carries on. A broken state plays its effects, starts its
+  repeating smoke or fire and its health drain (a burning car counts down by itself), and may explode 0.1 s later:
+  radius damage like a grenade's, from the last player who damaged it (that player gets the kills; with nobody, the
+  victim's own), which also reaches other objects (chain reactions). The model then becomes the next state's (the
+  wreck). Their collision boxes block movement and stop bullets (with an impact effect for the box's surface).
+  Not yet: separate parts (tires, glass, doors, hoods), pieces flying off, their own sounds (the frag's explosion
+  stands in), the destroy and idle animations (fans, chickens), light-grid lighting (drawn ×1), grenades bouncing off
+  them, the glass windows (`glass_large` brush models).
 - Spawns: the free-for-all spawn point furthest from everyone alive.
 - Maps converted before this need converting again for the walk graph; without one, bots stand and fight.
 
@@ -229,5 +270,8 @@ Placeholder until the death cam / killcam flow is ported (ADR 0007): the 3 s res
   vertices are the next performance steps.
 - Trace cost on Broadway: on the host one `pmove` on `mp_rust` takes about 20 µs, so a 750CL should stay well under
   a millisecond, but this is unmeasured.
+- Xbox 360 pad over USB: written against libogc's USBv5 API and the pad's documented report format, but not yet
+  run on a Wii. Check that the light comes on, that the menus and a match respond, and that system link over the USB
+  LAN adapter still works with the pad plugged in.
 - Sound from MEM2: ASND plays the clips in place from `common.wpk` in MEM2. If the gun is silent, the DSP may not
   reach MEM2 there, and the clips need copying to MEM1.

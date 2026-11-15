@@ -1058,11 +1058,19 @@ fn export_one(
     let tex_dir = PathBuf::from(format!("out/textures/{}", a.map));
     let (index, tables) = crate::convert_textures(a, &image, &label, &tex_dir, false)
         .map_err(|_| "texture conversion failed".to_owned())?;
-    let (collector, world) =
-        match crate::zone_textures::walk_with(&image, &tables, crate::pack::read_world) {
-            Ok((c, Ok(w))) => (c, w),
-            Ok((_, Err(e))) | Err(e) => return Err(format!("reading the world of {label}: {e}")),
-        };
+    let no_types = HashMap::new();
+    let dest_input = crate::pack::DestructibleInput {
+        types: &no_types,
+        index: &index,
+        tex_dir: &tex_dir,
+    };
+    // Destructible objects aren't exported: no types, so read_world builds none.
+    let (collector, world) = match crate::zone_textures::walk_with(&image, &tables, |s, l| {
+        crate::pack::read_world(s, l, &dest_input)
+    }) {
+        Ok((c, Ok(w))) => (c, w),
+        Ok((_, Err(e))) | Err(e) => return Err(format!("reading the world of {label}: {e}")),
+    };
     let links = &collector.links;
     let dir = out_root.join(&a.map);
     for sub in ["textures", "models"] {

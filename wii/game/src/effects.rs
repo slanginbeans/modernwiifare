@@ -1,5 +1,6 @@
 //! MW2's effects on the Wii (`common.wpk` `FXDF`, `game_core::fx`): bullet impacts by surface, explosions and muzzle
-//! flashes in the world, and the first-person muzzle flash in the gun's own space (it moves with the view).
+//! flashes in the world, and the first-person muzzle flash in the gun's own space (it moves with the view). The map
+//! pack's own effects (`DSFX`: what its destructible objects play) run beside them.
 
 use alloc::vec::Vec;
 
@@ -65,6 +66,8 @@ pub struct Effects {
     /// In the world, and in the first-person model's space.
     pub world: Fx,
     pub view: Fx,
+    /// The map's effects: definitions, textures, and those playing.
+    map: Option<(Vec<Effect<'static>>, Vec<i32>, Fx)>,
     order: Vec<(u8, u16, u16)>,
     verts: Vec<SpriteVert>,
     batches: Vec<Batch>,
@@ -87,6 +90,7 @@ impl Effects {
             textures: create_textures(&pack, wpk::tag::FX_TEXTURES, wpk::tag::FX_TEXTURE_DATA, gfx),
             world: Fx::new(0x2545_f491),
             view: Fx::new(0x9e37_79b9),
+            map: None,
             order: Vec::with_capacity(game_core::fx::MAX_PARTICLES),
             verts: Vec::with_capacity(game_core::fx::MAX_PARTICLES * 4),
             batches: Vec::with_capacity(64),
@@ -119,6 +123,35 @@ impl Effects {
         }
     }
 
+    /// Add the map pack's effects (`DSFX`; none in an older pack).
+    pub fn load_map(&mut self, map: &'static [u8], gfx: &mut impl Gfx) {
+        let Ok(pack) = wpk::Pack::parse_prefix(map) else {
+            return;
+        };
+        let Some(defs) = pack
+            .section(wpk::tag::DEST_FX)
+            .and_then(|s| wpk::fx::decode(s.data))
+        else {
+            return;
+        };
+        let textures = create_textures(
+            &pack,
+            wpk::tag::DEST_FX_TEXTURES,
+            wpk::tag::DEST_FX_TEXTURE_DATA,
+            gfx,
+        );
+        self.map = Some((defs, textures, Fx::new(0x7f4a_7c15)));
+    }
+
+    /// Play the map's effect `effect` in the world (NONE plays nothing).
+    pub fn play_map(&mut self, effect: u16, origin: [f32; 3], forward: [f32; 3], now: u32) {
+        if let Some((defs, _, fx)) = self.map.as_mut()
+            && effect != NONE
+        {
+            fx.play(defs, effect, origin, forward, now);
+        }
+    }
+
     /// Play `effect` in the first-person model's (eye) space.
     pub fn play_view(&mut self, effect: u16, origin: [f32; 3], forward: [f32; 3], now: u32) {
         if effect != NONE {
@@ -127,17 +160,25 @@ impl Effects {
     }
 
     fn draw(&mut self, gfx: &mut impl Gfx, view: &Mtx34, world: bool) {
-        for b in &self.batches {
-            let tex = self
-                .textures
-                .get(usize::from(b.texture))
-                .copied()
-                .unwrap_or(-1);
+        let textures = &self.textures;
+        Self::draw_batches(gfx, view, world, textures, &self.verts, &self.batches);
+    }
+
+    fn draw_batches(
+        gfx: &mut impl Gfx,
+        view: &Mtx34,
+        world: bool,
+        textures: &[i32],
+        verts: &[SpriteVert],
+        batches: &[Batch],
+    ) {
+        for b in batches {
+            let tex = textures.get(usize::from(b.texture)).copied().unwrap_or(-1);
             gfx.sprites(
                 view,
                 tex,
                 b.blend,
-                &self.verts[b.first..b.first + b.count],
+                &verts[b.first..b.first + b.count],
                 world,
             );
         }
@@ -145,6 +186,22 @@ impl Effects {
 
     /// Advance and draw the world's effects (after the world and the characters).
     pub fn draw_world(&mut self, gfx: &mut impl Gfx, cam: &Camera, now: u32) {
+        if let Some((defs, textures, fx)) = self.map.as_mut() {
+            fx.update(defs, now);
+            if fx.particles() > 0 {
+                fx.sprites(
+                    defs,
+                    now,
+                    cam.right(),
+                    cam.up(),
+                    cam.eye,
+                    &mut self.order,
+                    &mut self.verts,
+                    &mut self.batches,
+                );
+                Self::draw_batches(gfx, &cam.view(), true, textures, &self.verts, &self.batches);
+            }
+        }
         self.world.update(&self.defs, now);
         if self.world.particles() == 0 {
             return;

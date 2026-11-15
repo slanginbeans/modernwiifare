@@ -641,24 +641,32 @@ pub fn build_character(
     let mut parts: Vec<(usize, Vec<usize>)> = vec![(body, (0..bb.names.len()).collect())];
     if let Some(h) = head {
         let hb = read_bones(s, links, h)?;
+        // The head's vertices are in its own model space (its root at the origin), where its `baseMat` bind poses
+        // are. Each head bone the body also has follows the body's (a copy parented to it, unnamed so animations
+        // keep driving the body's); the head's own bones (the face) hang under them; all unbind with the head's
+        // bind poses.
         let mut map = Vec::with_capacity(hb.names.len());
         for i in 0..hb.names.len() {
-            if let Some(k) = names
-                .iter()
-                .position(|n| !n.is_empty() && *n == hb.names[i])
-            {
-                map.push(k);
-                continue;
-            }
             let (bq, bt) = hb.bind[i];
-            let parent = hb.parent[i].map(|p| map[p]);
+            let shared = names
+                .iter()
+                .position(|n| !n.is_empty() && *n == hb.names[i]);
+            let (parent, local_rot, local_trans, name) = match shared {
+                Some(k) => (Some(k), [0.0, 0.0, 0.0, 1.0], [0.0; 3], String::new()),
+                None => (
+                    hb.parent[i].map(|p| map[p]),
+                    hb.local_rot[i],
+                    hb.local_trans[i],
+                    hb.names[i].clone(),
+                ),
+            };
             vm.bones.push(Bone {
                 parent: parent.map_or(-1, |p| p as i16),
-                local_rot: hb.local_rot[i],
-                local_trans: hb.local_trans[i],
+                local_rot,
+                local_trans,
                 inv_bind: inverse_rigid(bq, bt),
             });
-            names.push(hb.names[i].clone());
+            names.push(name);
             map.push(vm.bones.len() - 1);
         }
         parts.push((h, map));
@@ -722,6 +730,39 @@ pub fn build_held(
     tex_dir: &Path,
     tex: &mut Textures,
 ) -> Result<wpk::held::Model, String> {
+    let limits = RigidLimits {
+        max_vertices: HELD_MAX_VERTICES,
+        texture_max: HELD_TEXTURE_MAX,
+        role: "held",
+    };
+    build_rigid(s, links, m, hide, &limits, index, tex_dir, tex).map(|(model, _)| model)
+}
+
+/// How detailed a rigid model is built.
+pub struct RigidLimits {
+    /// The first LOD at or under this many vertices is used (else the last).
+    pub max_vertices: usize,
+    /// Textures at most this many texels across.
+    pub texture_max: u32,
+    /// The texture report's role.
+    pub role: &'static str,
+}
+
+/// A model's bones in its bind pose (model space): name, origin and x axis.
+pub type Tags = Vec<(String, [f32; 3], [f32; 3])>;
+
+/// Model `m` as a rigid model in the [`wpk::held`] layout (see [`build_held`]) within `limits`, and its tags.
+#[allow(clippy::too_many_arguments)]
+pub fn build_rigid(
+    s: &ZoneStream<'_>,
+    links: &Links,
+    m: usize,
+    hide: &[String],
+    limits: &RigidLimits,
+    index: &[IndexEntry],
+    tex_dir: &Path,
+    tex: &mut Textures,
+) -> Result<(wpk::held::Model, Tags), String> {
     let sets = surface_sets(s, links);
     let bones = read_bones(s, links, m)?;
     let mut hidden = vec![false; bones.names.len()];
@@ -739,7 +780,7 @@ pub fn build_held(
         let (surfs, _) = read_surfaces(s, links, &sets, m, 0, &hidden, lod)?;
         let n: usize = surfs.iter().map(|x| x.verts.len()).sum();
         surfaces = surfs;
-        if n <= HELD_MAX_VERTICES {
+        if n <= limits.max_vertices {
             break;
         }
     }
@@ -766,8 +807,8 @@ pub fn build_held(
             .and_then(|img| files_by_image.get(&img))
         {
             Some(e) => {
-                tex.role = "held";
-                tex.add_file_capped(tex_dir, &e.file, Wrap::Repeat, HELD_TEXTURE_MAX)?
+                tex.role = limits.role;
+                tex.add_file_capped(tex_dir, &e.file, Wrap::Repeat, limits.texture_max)?
             }
             None => NONE,
         };
@@ -795,7 +836,16 @@ pub fn build_held(
             alpha_ref,
         });
     }
-    Ok(out)
+    let tags = bones
+        .names
+        .iter()
+        .zip(&bones.bind)
+        .map(|(n, (q, t))| {
+            let r = qmat(*q);
+            (n.clone(), *t, [r[0][0], r[1][0], r[2][0]])
+        })
+        .collect();
+    Ok((out, tags))
 }
 
 /// Player animations baked by bone name (`common.wpk`): each animation of `list` becomes a clip (an empty one when

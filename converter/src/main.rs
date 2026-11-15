@@ -24,11 +24,12 @@
 //!       and prints the chosen format, size and quality. Default output folder: out/textures.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod clip_report;
 mod collision;
+mod destructibles;
 mod export;
 mod export_map;
 mod fx;
@@ -67,8 +68,8 @@ const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <repor
      mwf-convert report <log file>...\n  \
      mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n      [--viewmodel <view.wpk> --anim <slot> --time <s>] [--character <common.wpk> --team 0|1
       [--pmove idle|run|walk|sprint|idlecr|...] [--ptype autorifle|pistol|...] [--pclass rifle|...]
-      [--pevent fireweapon|reload|death|...] [--paim <pitch>] [--pgun <n>] [--pturn <deg>]]
-      [--fxpack <common.wpk> --fx <n> --time <s>]\n  \
+      [--pevent fireweapon|reload|death|...] [--paim <pitch>] [--pgun <n>] [--pturn <deg>] [--pdist <units>]]
+      [--fxpack <common.wpk> --fx <n> --time <s>] [--dstate <n>]\n  \
      mwf-convert export <game folder> [--out <folder>]   (weapons and their sounds as plain files, for Slick Blasters)\n  \
      mwf-convert export-map <game folder> [--map <zone>|all] [--out <folder>] [--max-tris N] [--margin M] [--max-boxes N] [--column M] [--step M]   (a map as plain files, for Slick Blasters)\n  \
      mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask|minimap] [--out <folder>]";
@@ -962,6 +963,9 @@ fn run_common(args: &[String]) -> ExitCode {
             used_types,
             &has,
         );
+        if std::env::var_os("MWF_ANIM_DEBUG").is_some() {
+            player_anims::dump(&parsed);
+        }
         let anims = viewmodel::bake_player_anims(s, links, &parsed.anims);
         (views, failed, (anims, parsed), (held, held_tex))
     });
@@ -1407,6 +1411,8 @@ fn run_common(args: &[String]) -> ExitCode {
     ui_tex.role = "ui";
     let mut scripts = HashMap::new();
     let built = build_ui(&a, &mut ui_tex, &mut scripts);
+    // MW2's destructible types, kept for the map passes.
+    cache_destructible_scripts(&scripts);
     if let Some((u, _)) = &built {
         let count = |p: &str| u.icons.iter().filter(|(k, _)| k.starts_with(p)).count();
         println!(
@@ -1642,6 +1648,46 @@ fn stamp_of(a: &MapArgs, zones: &[&str]) -> stamp::Stamp {
     stamp::Stamp::of(&paths)
 }
 
+/// Where the common pass keeps MW2's destructible type scripts for the map passes (under `out/`, git-ignored).
+const DESTRUCTIBLE_CACHE: &str = "out/cache/destructibles";
+
+/// Save the destructible type scripts found in `scripts` to [`DESTRUCTIBLE_CACHE`].
+fn cache_destructible_scripts(scripts: &HashMap<String, String>) {
+    let dir = Path::new(DESTRUCTIBLE_CACHE);
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    for n in destructibles::SCRIPTS {
+        if let Some(text) = scripts.get(n) {
+            let _ = std::fs::write(dir.join(n.replace('/', "__")), text);
+        }
+    }
+}
+
+/// MW2's destructible types (`destructibles::parse`): from the scripts the common pass cached, else from `common_mp`
+/// (cached for the next map).
+fn destructible_types(a: &MapArgs) -> HashMap<String, destructibles::RawType> {
+    let dir = Path::new(DESTRUCTIBLE_CACHE);
+    let read = || -> Vec<String> {
+        destructibles::SCRIPTS
+            .iter()
+            .filter_map(|n| std::fs::read_to_string(dir.join(n.replace('/', "__"))).ok())
+            .collect()
+    };
+    let mut texts = read();
+    if texts.is_empty() {
+        if let Some(links) = walk_zone(a, "common_mp") {
+            cache_destructible_scripts(&links.scripts);
+        }
+        texts = read();
+    }
+    let types = destructibles::parse(&texts.iter().map(String::as_str).collect::<Vec<_>>());
+    if types.is_empty() {
+        eprintln!("no destructible types found: the map's destructibles are left out");
+    }
+    types
+}
+
 /// The player animations `common.wpk` carries: MW2's body animation for each player animation slot.
 fn run_pack_one(a: MapArgs) -> ExitCode {
     let out = a
@@ -1669,7 +1715,14 @@ fn run_pack_one(a: MapArgs) -> ExitCode {
         Ok(x) => x,
         Err(code) => return code,
     };
-    let walked = zone_textures::walk_with(&image, &tables, pack::read_world);
+    let dest_types = destructible_types(&a);
+    let dest_input = pack::DestructibleInput {
+        types: &dest_types,
+        index: &index,
+        tex_dir: &tex_dir,
+    };
+    let walked =
+        zone_textures::walk_with(&image, &tables, |s, l| pack::read_world(s, l, &dest_input));
     let (collector, world) = match walked {
         Ok((c, Ok(w))) => (c, w),
         Ok((_, Err(e))) | Err(e) => {
@@ -1771,6 +1824,7 @@ fn run_preview(args: &[String]) -> ExitCode {
     let (mut char_pack, mut char_team): (Option<PathBuf>, usize) = (None, 0);
     let mut char_shot = preview::CharacterShot::default();
     let (mut fx_index, mut fx_pack): (Option<u16>, Option<PathBuf>) = (None, None);
+    let mut dest_state = 0usize;
     // `--fxweapon <name>:<0 world flash | 1 view flash | 2 explosion>` picks the effect by weapon.
     let mut fx_weapon: Option<String> = None;
     // `--fximpact <IW4 impact type>:<surface type>` picks the impact table's effect.
@@ -1812,7 +1866,9 @@ fn run_preview(args: &[String]) -> ExitCode {
             "--paim" => char_shot.aim_pitch = value().parse().unwrap_or(0.0),
             "--pgun" => char_shot.gun = value().parse().ok(),
             "--pturn" => char_shot.turn = value().parse().unwrap_or(0.0),
+            "--pdist" => char_shot.distance = value().parse().unwrap_or(120.0),
             "--fx" => fx_index = value().parse().ok(),
+            "--dstate" => dest_state = value().parse().unwrap_or(0),
             "--fxweapon" => fx_weapon = Some(value()),
             "--fximpact" => fx_impact = Some(value()),
             "--fxpack" => fx_pack = Some(PathBuf::from(value())),
@@ -1876,6 +1932,7 @@ fn run_preview(args: &[String]) -> ExitCode {
         Some(i)
     });
     let view = preview::View {
+        destructible_state: dest_state,
         eye,
         yaw: view_yaw,
         pitch,
@@ -1888,6 +1945,11 @@ fn run_preview(args: &[String]) -> ExitCode {
                 common: b,
                 team: char_team,
                 time: anim_time,
+                distance: if char_shot.distance > 0.0 {
+                    char_shot.distance
+                } else {
+                    120.0
+                },
                 ..char_shot
             }),
         effect: fx_pack

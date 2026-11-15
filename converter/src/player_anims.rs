@@ -333,6 +333,51 @@ pub fn parse(script: &str, types: &str, used_types: u64, exists: &dyn Fn(&str) -
     out
 }
 
+/// Print the parsed script to stderr (`MWF_ANIM_DEBUG`; names the user's animations, so it stays on their machine).
+pub fn dump(p: &Parsed) {
+    let item = |it: &Item| {
+        let conds: Vec<String> = it
+            .conditions
+            .iter()
+            .map(|c| {
+                let n = ANIM_COND_NAMES.get(usize::from(c.index)).unwrap_or(&"?");
+                if c.bitflags {
+                    format!("{n}={:#x}", c.bits)
+                } else {
+                    format!("{n}={}", c.value)
+                }
+            })
+            .collect();
+        let cmds: Vec<String> = it
+            .commands
+            .iter()
+            .map(|c| {
+                let a = p.anims.get(usize::from(c.clip)).map_or("?", String::as_str);
+                format!("{}:{a} d{} b{}", c.part, c.duration_ms, c.blend_ms)
+            })
+            .collect();
+        format!("    [{}] -> {}", conds.join(", "), cmds.join("; "))
+    };
+    for (mt, items) in &p.script.moves {
+        eprintln!(
+            "move {}",
+            ANIM_MT_NAMES.get(usize::from(*mt)).unwrap_or(&"?")
+        );
+        for it in items {
+            eprintln!("{}", item(it));
+        }
+    }
+    for (ev, items) in &p.script.events {
+        eprintln!(
+            "event {}",
+            ANIM_ET_NAMES.get(usize::from(*ev)).unwrap_or(&"?")
+        );
+        for it in items {
+            eprintln!("{}", item(it));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
