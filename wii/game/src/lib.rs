@@ -27,6 +27,7 @@ use dpvs_iw4::WalkScratch;
 use game_core::arena::{self, Arena, Event};
 use game_core::camera::Camera;
 use game_core::collision::MapClip;
+use game_core::controls::{self, act};
 use game_core::fly::{self, PadInput};
 use game_core::gfx::{DrawState, Gfx, Mtx34, TexDesc};
 use game_core::gun::{Gun, GunInput, SpreadInput};
@@ -234,11 +235,13 @@ fn fail(colour: u32) -> Exit {
             ffi::mwf_frame_begin(&cam.view(), cam.fovy, 4.0, 100.0, colour);
             ffi::mwf_frame_end();
         }
-        let pad = ffi::pad0();
+        let (pad, x) = ffi::pads();
         if ffi::should_exit() {
             return Exit::Quit;
         }
-        if pad.down & ffi::BTN_START != 0 {
+        if pad.down & ffi::BTN_START != 0
+            || (x.connected && x.buttons & game_core::controls::x360::START != 0)
+        {
             return Exit::Menu;
         }
     }
@@ -1136,14 +1139,10 @@ fn run_map(
     let mut sticks = look::StickRange::default();
     let mut look_state = look::LookState::default();
     let mut look_settings = options.look();
-    // The button layout: Tactical swaps the stance button (B) and melee (D-pad right).
+    // The pads (GameCube, USB Xbox 360) to actions, with the button layout (Default / Tactical: `controls`).
     let tactical =
         |o: &game_core::options::Options| o.layout == game_core::options::layout::TACTICAL;
-    let (mut stance_btn, mut melee_btn) = if tactical(options) {
-        (ffi::BTN_RIGHT, ffi::BTN_B)
-    } else {
-        (ffi::BTN_B, ffi::BTN_RIGHT)
-    };
+    let mut mapper = controls::Mapper::default();
     let mut aim_targets: Vec<look::AimTarget> = Vec::with_capacity(bots);
     // The current field of view over the hip one (look speed and aim assist scale with the zoom).
     let mut hip_fov_scale = 1.0f32;
@@ -1187,7 +1186,8 @@ fn run_map(
         let msec = now.wrapping_sub(last).clamp(1, 100);
         last = now;
         let dt = msec as f32 / 1000.0;
-        let pad = ffi::pad0();
+        let (gc_pad, x360_pad) = ffi::pads();
+        let ctl = mapper.map(&gc_pad, &x360_pad, tactical(options));
         // The debug settings, every frame (the pause menu's debug page can change them).
         if let Some(a) = arena.as_mut() {
             a.god_mode = debug.god_mode;
@@ -1211,13 +1211,13 @@ fn run_map(
             g.refill_ammo();
         }
         // Z + D-pad down: the performance overlay (D-pad down alone is the tactical grenade).
-        if pad.down & ffi::BTN_DOWN != 0 && pad.held & ffi::BTN_Z != 0 {
+        if ctl.pressed(act::OVERLAY) {
             show_overlay = !show_overlay;
         }
         if ffi::should_exit() {
             return Exit::Quit;
         }
-        if pad.down & ffi::BTN_START != 0 {
+        if ctl.pressed(act::PAUSE) {
             unsafe { ffi::mwf_snd_stop_all() };
             devlog::event(now, "pause", format_args!(""));
             stick_event(&stick_max, &trigger_max, now);
@@ -1254,11 +1254,6 @@ fn run_map(
                     front::options_menu(gfx, input, options);
                     front::save_options(options);
                     look_settings = options.look();
-                    (stance_btn, melee_btn) = if tactical(options) {
-                        (ffi::BTN_RIGHT, ffi::BTN_B)
-                    } else {
-                        (ffi::BTN_B, ffi::BTN_RIGHT)
-                    };
                 }
                 front::Pause::Debug => {
                     use game_core::debug::Action;
@@ -1354,15 +1349,16 @@ fn run_map(
             continue;
         }
         // Y: the other weapon (MW2's console layout).
-        if pad.down & ffi::BTN_Y != 0 && !flying && life.alive() && arsenal.switch() {
+        if ctl.pressed(act::SWITCH) && !flying && life.alive() && arsenal.switch() {
             devlog::event(
                 now,
                 "switch_request",
                 format_args!("from={}", arsenal.active),
             );
         }
-        // D-pad left: call in the newest killstreak reward (MW2's console uses the D-pad for it too).
-        if pad.down & ffi::BTN_LEFT != 0
+        // Call in the newest killstreak reward (D-pad right on the 360 pad, as MW2's action slot 4; D-pad left on the
+        // GameCube pad).
+        if ctl.pressed(act::KILLSTREAK)
             && life.alive()
             && let Some(r) = rewards.pop()
         {
@@ -1396,8 +1392,8 @@ fn run_map(
             }
             devlog::event(now, "killstreak", format_args!("used={r}"));
         }
-        // Z + D-pad up: free fly (D-pad up alone throws the lethal grenade).
-        if pad.down & ffi::BTN_UP != 0 && pad.held & ffi::BTN_Z != 0 && clip.is_some() {
+        // Free fly (Z + D-pad up on the GameCube pad, BACK + D-pad up on the 360 pad).
+        if ctl.pressed(act::FLY) && clip.is_some() {
             flying = !flying;
             if !flying {
                 // Drop the player where the camera is, facing the same way.
@@ -1409,11 +1405,15 @@ fn run_map(
                 }
             }
         }
-        for (m, v) in stick_max.iter_mut().zip([pad.sx, pad.sy, pad.cx, pad.cy]) {
+        for (m, v) in
+            stick_max
+                .iter_mut()
+                .zip([ctl.stick_l.0, ctl.stick_l.1, ctl.stick_r.0, ctl.stick_r.1])
+        {
             *m = (*m).max(v.saturating_abs());
         }
-        trigger_max[0] = trigger_max[0].max(pad.l);
-        trigger_max[1] = trigger_max[1].max(pad.r);
+        trigger_max[0] = trigger_max[0].max(ctl.triggers.0);
+        trigger_max[1] = trigger_max[1].max(ctl.triggers.1);
         // Player steps due this frame (60 Hz, at most 6 = 100 ms).
         tick_acc3 += msec * 3;
         let player_ticks = (tick_acc3 / 50).min(6);
@@ -1422,14 +1422,14 @@ fn run_map(
         // Sticks: learned range, IW4L's radial dead zone; the main stick as IW4 move amounts.
         let (main_stick, c_stick) = {
             let (m, c) = (
-                sticks.normalize(0, pad.sx, pad.sy),
-                sticks.normalize(1, pad.cx, pad.cy),
+                sticks.normalize(0, ctl.stick_l.0, ctl.stick_l.1),
+                sticks.normalize(1, ctl.stick_r.0, ctl.stick_r.1),
             );
             // Southpaw: move with the C-stick, look with the main stick.
             if options.southpaw { (c, m) } else { (m, c) }
         };
         let (forward, right) = look::to_move(main_stick);
-        let ads_held = pad.held & ffi::BTN_L != 0 || pad.l > 128;
+        let ads_held = ctl.held(act::ADS);
         // A thrown knife in reach: X (MW2's use / reload button) picks it up instead of reloading.
         let knife_near = match (arena.as_ref(), clip.as_ref()) {
             (Some(a), Some(c)) if life.alive() && !flying => a.knife_in_reach(c, 0, |w| {
@@ -1437,7 +1437,7 @@ fn run_map(
             }),
             _ => None,
         };
-        let x_held = pad.held & ffi::BTN_X != 0;
+        let x_held = ctl.held(act::USE);
         let reload_held = x_held && knife_near.is_none();
         // C4: X pressed, let go within 0.5 s, pressed again within 0.5 s detonates it.
         match (x_held, x_down_ms) {
@@ -1582,16 +1582,16 @@ fn run_map(
                             forward,
                             right,
                             look: look_delta,
-                            jump: pad.held & ffi::BTN_A != 0,
+                            jump: ctl.held(act::JUMP),
                             // B: tap to crouch, hold to go prone (MW2's console stance button).
                             stance: stance_button.update(
-                                pad.held & stance_btn != 0,
+                                ctl.held(act::STANCE),
                                 !p.on_ground(),
                                 now as i32,
                             ),
-                            sprint: pad.held & ffi::BTN_Z != 0,
+                            sprint: ctl.held(act::SPRINT),
                             ads: ads_held,
-                            fire: pad.held & ffi::BTN_R != 0 || pad.r > 100,
+                            fire: ctl.held(act::FIRE),
                             reload: reload_held,
                         },
                         &weapon_move,
@@ -1623,7 +1623,7 @@ fn run_map(
                     let a = arsenal.active;
                     let switch_to = arsenal.switch_target();
                     // Melee lunges at the enemy in reach (IW4L's charge target, sent with the melee press).
-                    let melee_charge = match (arena.as_ref(), pad.held & melee_btn != 0) {
+                    let melee_charge = match (arena.as_ref(), ctl.held(act::MELEE)) {
                         (Some(ar), true) => ar.melee_charge_target(c, 0),
                         _ => None,
                     };
@@ -1642,13 +1642,13 @@ fn run_map(
                             c,
                             tick_ms,
                             &GunInput {
-                                fire: pad.held & ffi::BTN_R != 0 || pad.r > 100,
+                                fire: ctl.held(act::FIRE),
                                 reload: reload_held,
-                                // D-pad right: melee (MW2's console melee is a stick click; the pad has none).
-                                melee: pad.held & melee_btn != 0,
-                                // D-pad up: lethal grenade, D-pad down: tactical (held to cook, as the button).
-                                frag: pad.held & ffi::BTN_UP != 0 && pad.held & ffi::BTN_Z == 0,
-                                smoke: pad.held & ffi::BTN_DOWN != 0 && pad.held & ffi::BTN_Z == 0,
+                                // Melee: the right stick click (360, Default) or D-pad right (GameCube).
+                                melee: ctl.held(act::MELEE),
+                                // Lethal and tactical grenades, held to cook (RB / LB; D-pad up / down).
+                                frag: ctl.held(act::FRAG),
+                                smoke: ctl.held(act::TACTICAL),
                                 pm_flags: p.ps.pm_flags,
                                 perks: p.ps.perks,
                                 switch_to,
@@ -1805,13 +1805,13 @@ fn run_map(
             _ => fly::update(
                 &mut cam,
                 &PadInput {
-                    sx: pad.sx,
-                    sy: pad.sy,
-                    cx: pad.cx,
-                    cy: pad.cy,
-                    l: pad.l,
-                    r: pad.r,
-                    fast: pad.held & ffi::BTN_B != 0,
+                    sx: ctl.stick_l.0,
+                    sy: ctl.stick_l.1,
+                    cx: ctl.stick_r.0,
+                    cy: ctl.stick_r.1,
+                    l: ctl.triggers.0,
+                    r: ctl.triggers.1,
+                    fast: ctl.held(act::FLY_FAST),
                 },
                 dt,
             ),

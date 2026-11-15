@@ -24,6 +24,7 @@ pub mod bot;
 pub mod camera;
 pub mod character;
 pub mod collision;
+pub mod controls;
 pub mod damage;
 pub mod debug;
 pub mod dom;

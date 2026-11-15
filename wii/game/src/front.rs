@@ -18,26 +18,48 @@ use wpk::classes::{Catalog, Loadout};
 use crate::{AppPath, Shim, ffi};
 
 /// Edge-triggered pad input for menus (the stick acts like the D-pad, one line per push).
+/// Either pad drives the menus: the GameCube pad, or the USB Xbox 360 pad (D-pad or left stick, A accepts, B /
+/// START / BACK go back).
 #[derive(Default)]
 pub struct Input {
     held_y: i8,
+    prev_x360: u16,
 }
 
 impl Input {
     pub fn poll(&mut self) -> Nav {
-        let pad = ffi::pad0();
-        let stick = if pad.sy > 60 {
+        use game_core::controls::{x360, x360_axis};
+        let (pad, x) = ffi::pads();
+        let xy = if x.connected { x360_axis(x.ly) } else { 0 };
+        let sy = if pad.sy.saturating_abs() >= xy.saturating_abs() {
+            pad.sy
+        } else {
+            xy
+        };
+        let stick = if sy > 60 {
             1
-        } else if pad.sy < -60 {
+        } else if sy < -60 {
             -1
         } else {
             0
         };
+        let xd = if x.connected {
+            x.buttons & !self.prev_x360
+        } else {
+            0
+        };
+        self.prev_x360 = if x.connected { x.buttons } else { 0 };
         let nav = Nav {
-            up: pad.down & ffi::BTN_UP != 0 || (stick == 1 && self.held_y != 1),
-            down: pad.down & ffi::BTN_DOWN != 0 || (stick == -1 && self.held_y != -1),
-            accept: pad.down & ffi::BTN_A != 0,
-            back: pad.down & (ffi::BTN_B | ffi::BTN_START) != 0 || ffi::should_exit(),
+            up: pad.down & ffi::BTN_UP != 0
+                || xd & x360::UP != 0
+                || (stick == 1 && self.held_y != 1),
+            down: pad.down & ffi::BTN_DOWN != 0
+                || xd & x360::DOWN != 0
+                || (stick == -1 && self.held_y != -1),
+            accept: pad.down & ffi::BTN_A != 0 || xd & x360::A != 0,
+            back: pad.down & (ffi::BTN_B | ffi::BTN_START) != 0
+                || xd & (x360::B | x360::START | x360::BACK) != 0
+                || ffi::should_exit(),
         };
         self.held_y = stick;
         nav
