@@ -50,6 +50,32 @@ bytes and give a per-asset breakdown, and fall back to `zone/english/`.
 **Verdict:** pass. Rough Wii pressure for one map is ~45 MiB of world, model and collision data plus ~44 MiB of
 textures and sound before downsizing. That feeds Spike C (`docs/budgets.md`).
 
+## First game test round (2026-11-15)
+Two `mwf_game` matches on the user's Wii, build `cfb39c57`, five bots, default class, 4:3, logs summarised with
+`mwf-convert report`. No crashes. The numbers below are what the logs show. The logs themselves are not committed.
+
+| | `mp_rust` (FFA, 308 s, 11,136 frames) | `mp_terminal` (109 s, 3,228 frames) |
+|---|---|---|
+| Load | 2.4 s | 4.4 s |
+| Free at start | MEM1 20.7 MB, MEM2 43.7 MB | same |
+| Free in play | MEM1 15.9 MB, MEM2 19.7 MB | MEM1 12.7 MB, **MEM2 2.75 MB** |
+| Frame p50 / p90 / p99 | 25.5 / 28.3 / 32.0 ms (~39 fps) | 31.8 / 44.5 / 57.5 ms (~31 fps) |
+| Frames over 16.7 / 33.3 ms | 99.9% / 0.6% | 98.2% / 35.4% |
+| Average CPU / GPU wait | 10.4 / 15.0 ms: **GPU-bound** | 25.7 / 6.0 ms: **CPU-bound** |
+| Biggest CPU cost | bots 2.8 ms (spikes to 195 ms) | world submission 18.9 ms (up to 42 ms) |
+| Gameplay events | 44 kills, 31 hits, 20 explosions, 5 killstreaks | 2 kills, 1 grenade, 1 melee |
+
+Findings and what was done:
+- **Bot-respawn spikes** (`mp_rust`: 47 frames over 33 ms, the worst 129-195 ms, nearly all in the arena's bot
+  step outside the think / move / gun timers): the spawn choice re-ran every spawn's sight traces on every
+  comparison. Fixed by `arena::best_spawn` (lazy traces, same picks).
+- **AUTO draw distance did nothing on `mp_terminal`**: it only shrank for GPU-bound frames. It now also shrinks
+  when world submission is the frame's CPU cost.
+- **`mp_terminal` MEM2 is tight**: 2.75 MB free in play. Watch class changes (weapon files) on the biggest maps.
+- **Characters** cost 8-16 ms of CPU with several bodies in view (`bod`).
+- **Stick range** seen: main stick up to ~106, C-stick ~91, triggers ~210 (of 255).
+- Weapon switching: repeated Y presses were the tester double-tapping; switching worked normally.
+
 ## Spike B: system link discovery
 | Field | Result |
 |---|---|
