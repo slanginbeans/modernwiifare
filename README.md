@@ -16,6 +16,12 @@ changed; it finds your `Call of Duty Modern Warfare 2` folder next to this one, 
 in **`dist\apps\mwf_game`**. Copy that one folder into the SD card's `apps` folder.
 It needs devkitPro with "Wii Development" ticked (it offers to install Rust for you), or Docker Desktop.
 `build.bat noupdate` skips the update, `build.bat nodata` the conversion, and `build.bat clean` deletes the output.
+Switches combine (`build.bat noupdate nodata`).
+
+**Prefer a window?** Double-click **`builder.bat`**. It has the same switches as checkboxes (update, convert game data,
+slim weapon files, reconvert everything, world detail), your game and devkitPro folders, an option to copy
+`mwf_game` straight to the SD card, a live build log, and Build / Clean / Stop / Test report buttons. It remembers
+your settings in `out\builder-settings.json`.
 
 On Linux/macOS with Docker: `./build.sh`. No installs at all: download `modernwiifare-sd-card` from the newest
 **ci** run under the repo's Actions tab.

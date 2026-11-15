@@ -29,17 +29,33 @@ rem    build.bat           update, then build, package and convert what changed
 rem    build.bat noupdate  the same without updating
 rem    build.bat nodata    build and package only (no game data step)
 rem    build.bat clean     delete build output
+rem  Switches combine (build.bat noupdate nodata). nopause: don't wait for a key at the end.
+rem  MWF_SLIM_VIEWS=1: smaller weapon files. MWF_CONVERT_FLAGS: extra converter switches.
+rem  builder.bat: the same switches in a window.
 rem ---------------------------------------------------------------------------
 setlocal
 cd /d "%~dp0"
 
 set "TARGET=package"
 set "UPDATE=1"
-if /i "%~1"=="clean" set "TARGET=clean"
-if /i "%~1"=="clean" set "UPDATE=0"
-if /i "%~1"=="noupdate" set "UPDATE=0"
 set "DATA=1"
-if /i "%~1"=="nodata" set "DATA=0"
+rem Wait for a key at the end only when double-clicked (no arguments).
+set "PAUSE=1"
+if not "%~1"=="" set "PAUSE=0"
+rem Any number of switches, in any order (builder.bat passes several).
+for %%A in (%*) do (
+    if /i "%%~A"=="clean" set "TARGET=clean"
+    if /i "%%~A"=="clean" set "UPDATE=0"
+    if /i "%%~A"=="noupdate" set "UPDATE=0"
+    if /i "%%~A"=="nodata" set "DATA=0"
+    if /i "%%~A"=="nopause" set "PAUSE=0"
+    if /i "%%~A"=="showargs" set "SHOWARGS=1"
+)
+if defined SHOWARGS (
+    echo TARGET=%TARGET% UPDATE=%UPDATE% DATA=%DATA% PAUSE=%PAUSE% CONVERT_FLAGS=%MWF_CONVERT_FLAGS%
+    endlocal
+    exit /b 0
+)
 
 rem ---- 1. update from the repo ----------------------------------------------
 if "%UPDATE%"=="0" goto build
@@ -141,12 +157,18 @@ if not errorlevel 1 exit /b 0
 echo.
 echo [rust] Rust isn't installed. It's needed to build the game code.
 echo        It installs into your user folder ^(%USERPROFILE%\.cargo^), no admin needed.
+rem builder.bat's "Allow downloading missing tools" sets MWF_ASSUME_YES=1 (it has no console to answer in).
+if "%MWF_ASSUME_YES%"=="1" (
+    echo [rust] Installing ^(allowed by MWF_ASSUME_YES^).
+    goto rust_yes
+)
 choice /c YN /m "[rust] Install Rust now"
 if errorlevel 2 (
     echo [rust] Not installing. Get it later from https://rustup.rs and run build.bat again.
     exit /b 1
 )
 rem The GNU host toolchain brings its own linker, so Visual Studio isn't needed.
+:rust_yes
 set "RUSTUP_INIT=%TEMP%\rustup-init.exe"
 echo [rust] Downloading the Rust installer...
 curl -sSfL -o "%RUSTUP_INIT%" https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-gnu/rustup-init.exe
@@ -181,7 +203,8 @@ echo.
 echo [data] Converting what changed from: %GAME%
 echo        ^(everything the first time: about 10 minutes; up-to-date packs are skipped^)
 rem The converter builds for x86_64-pc-windows-gnullvm with llvm-mingw (tools\mwf-convert.ps1 sets that up).
-powershell -NoProfile -ExecutionPolicy Bypass -File "tools\mwf-convert.ps1" pack "%GAME%" --map all
+rem MWF_CONVERT_FLAGS: extra converter switches (builder.bat: --force, --simplify <ratio>).
+powershell -NoProfile -ExecutionPolicy Bypass -File "tools\mwf-convert.ps1" pack "%GAME%" --map all %MWF_CONVERT_FLAGS%
 if errorlevel 1 echo [data] Some conversions failed ^(see above^). Copying what was made.
 if not exist "out\packs\" exit /b 0
 set "APP=dist\apps\mwf_game"
@@ -224,7 +247,7 @@ if /i "%TARGET%"=="package" (
     echo Cleaned.
 )
 echo.
-if "%~1"=="" pause
+if "%PAUSE%"=="1" pause
 endlocal
 exit /b 0
 
@@ -232,6 +255,6 @@ exit /b 0
 echo.
 echo Build failed. See the messages above.
 echo.
-if "%~1"=="" pause
+if "%PAUSE%"=="1" pause
 endlocal
 exit /b 1

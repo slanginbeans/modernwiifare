@@ -65,6 +65,27 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Builder window (parse + self-test, no window shown)
+        shell: powershell
+        run: |
+          $e = $null
+          foreach ($f in 'tools\builder-gui.ps1', 'tools\mwf-convert.ps1') {
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$null, [ref]$e)
+            if ($e) { $e | ForEach-Object { "$f`:$($_.Extent.StartLineNumber): $($_.Message)" }; exit 1 }
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools\builder-gui.ps1 -SelfTest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: build.bat switch parsing (dry run)
+        shell: cmd
+        run: |
+          call build.bat showargs noupdate nodata > args.txt
+          type args.txt
+          findstr /c:"TARGET=package UPDATE=0 DATA=0 PAUSE=0" args.txt || exit /b 1
+          call build.bat showargs clean > args.txt
+          findstr /c:"TARGET=clean UPDATE=0 DATA=1 PAUSE=0" args.txt || exit /b 1
+          set MWF_CONVERT_FLAGS=--force
+          call build.bat nodata showargs > args.txt
+          findstr /c:"UPDATE=1 DATA=0 PAUSE=0 CONVERT_FLAGS=--force" args.txt || exit /b 1
       - run: rustup show active-toolchain || rustup toolchain install
       - run: cargo test -p mwf_convert
       - name: inventory.bat end to end (dummy folder, no game data)
