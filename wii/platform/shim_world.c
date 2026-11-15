@@ -786,6 +786,83 @@ void mwf_hud_rects(const int16_t (*r)[4], uint32_t count, uint32_t rgba) {
     }
 }
 
+/* ---- effect sprites ---------------------------------------------------------------------------------------- */
+
+void mwf_sprites(const float view[3][4], int32_t tex, uint32_t blend, const mwf_sprite_vert *v, uint32_t quads,
+                 int32_t world) {
+    if (quads == 0) return;
+    int has_tex = tex >= 0 && tex < tex_count;
+    int has_plane = has_tex && tex_has_alpha[tex];
+    mode = MODE_NONE; /* the next world, view or HUD draw sets its own state up again */
+    world_base = NULL;
+    if (world) {
+        /* Additive sprites aren't fogged: fog would add its colour. */
+        fog_world(blend != MWF_BLEND_ADD);
+        GX_LoadProjectionMtx(world_proj, GX_PERSPECTIVE);
+        GX_SetViewport(0, 0, mwf_rmode->fbWidth, mwf_rmode->efbHeight, VIEW_DEPTH, 1.0f);
+    } else {
+        fog_world(0);
+    }
+    GX_LoadPosMtxImm((f32(*)[4])view, GX_PNMTX0);
+    GX_SetCurrentMtx(GX_PNMTX0);
+    GX_ClearVtxDesc();
+    GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
+    GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+    GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+    GX_SetVtxAttrFmt(GX_VTXFMT7, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GX_SetVtxAttrFmt(GX_VTXFMT7, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+    GX_SetVtxAttrFmt(GX_VTXFMT7, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+    GX_SetNumChans(1);
+    GX_SetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHTNULL, GX_DF_NONE, GX_AF_NONE);
+    GX_SetNumTexGens(1);
+    GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
+    u8 st = GX_TEVSTAGE0;
+    if (has_tex) {
+        GX_LoadTexObj(&tex_obj[tex], GX_TEXMAP0);
+        GX_SetTevOrder(st, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
+        GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_TEXC, GX_CC_RASC, GX_CC_ZERO);
+        GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_TEXA, GX_CA_RASA, GX_CA_ZERO);
+    } else {
+        GX_SetTevOrder(st, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+        GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_RASC);
+        GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_RASA);
+    }
+    stage_ops(st, GX_CS_SCALE_1);
+    st++;
+    if (has_plane) {
+        GX_LoadTexObj(&tex_alpha[tex], GX_TEXMAP2);
+        GX_SetTevOrder(st, GX_TEXCOORD0, GX_TEXMAP2, GX_COLOR0A0);
+        GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_CPREV);
+        GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_TEXA, GX_CA_RASA, GX_CA_ZERO);
+        stage_ops(st, GX_CS_SCALE_1);
+        st++;
+    }
+    GX_SetNumTevStages(st);
+    if (blend == MWF_BLEND_ADD)
+        GX_SetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_ONE, GX_LO_CLEAR);
+    else if (blend == MWF_BLEND_MULTIPLY)
+        GX_SetBlendMode(GX_BM_BLEND, GX_BL_DSTCLR, GX_BL_ZERO, GX_LO_CLEAR);
+    else
+        GX_SetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_CLEAR);
+    GX_SetAlphaCompare(GX_GREATER, 0, GX_AOP_AND, GX_ALWAYS, 0);
+    GX_SetZCompLoc(GX_TRUE);
+    GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_FALSE);
+    GX_SetCullMode(GX_CULL_NONE);
+    while (quads > 0) {
+        uint32_t n = quads > 16383 ? 16383 : quads;
+        GX_Begin(GX_QUADS, GX_VTXFMT7, (u16)(n * 4));
+        for (uint32_t i = 0; i < n * 4; i++) {
+            const mwf_sprite_vert *a = &v[i];
+            GX_Position3f32(a->x, a->y, a->z);
+            GX_Color4u8((u8)(a->rgba >> 24), (u8)(a->rgba >> 16), (u8)(a->rgba >> 8), (u8)a->rgba);
+            GX_TexCoord2f32(a->s, a->t);
+        }
+        GX_End();
+        v += n * 4;
+        quads -= n;
+    }
+}
+
 /* Solid boxes in world space (placeholder bodies): box i is mins b[i][0..3], maxs b[i][3..6], colour rgba[i];
    faces shaded by direction (top brightest). Depth tested against the world. Call after the world, before the
    first-person model. */

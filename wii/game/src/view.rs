@@ -219,6 +219,13 @@ impl View {
         }
     }
 
+    /// The gun's `tag_flash` in eye space (origin, forward), from the last draw.
+    pub fn muzzle_eye(&self) -> Option<([f32; 3], [f32; 3])> {
+        let eye = self.last_eye.as_ref()?;
+        let m = vmod::mul(eye, self.world.get(usize::from(self.vm.flash_bone))?);
+        Some(([m[0][3], m[1][3], m[2][3]], [m[0][0], m[1][0], m[2][0]]))
+    }
+
     /// Where the gun's `tag_flash` is on the 640 × 480 HUD, from the last draw.
     pub fn muzzle_screen(&self, aspect: f32) -> Option<[f32; 2]> {
         let eye = self.last_eye.as_ref()?;

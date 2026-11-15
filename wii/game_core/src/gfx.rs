@@ -13,6 +13,15 @@ pub struct TexDesc {
     pub wrap: u8,
 }
 
+/// One effect sprite vertex (`mwf_sprite_vert`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(C)]
+pub struct SpriteVert {
+    pub pos: [f32; 3],
+    pub rgba: u32,
+    pub uv: [f32; 2],
+}
+
 /// GPU state for one world draw (see `wpk::records::{Blend, Cull}` for the values).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DrawState {
@@ -53,6 +62,11 @@ pub trait Gfx {
     fn call_dl(&mut self, dl: &[u8]);
     /// One sky face: 4 corners `[x, y, z, s, t]` around the eye, drawn with the rotation-only view.
     fn sky_face(&mut self, view_rot: &Mtx34, corners: &[[f32; 5]; 4], tex: i32);
+    /// Effect sprites: quads (4 vertices each) with texture `tex` (or -1) and blend `blend` (`records::Blend`),
+    /// positions mapped by `view` to the eye; `world`: in the world's projection (else the first-person model's).
+    fn sprites(&mut self, view: &Mtx34, tex: i32, blend: u8, verts: &[SpriteVert], world: bool) {
+        let _ = (view, tex, blend, verts, world);
+    }
     /// Solid screen-space rectangles (640×480, origin top left) over everything drawn so far.
     fn hud_rects(&mut self, rects: &[crate::hud::Rect], rgba: u32);
     fn frame_end(&mut self);

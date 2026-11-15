@@ -2,8 +2,9 @@
 //! low LOD), drawn rigidly at the character's `tag_weapon_right`. Read in place: the vertex arrays and display lists
 //! are what GX reads.
 //!
-//! `GUNM` (one blob, offsets from its start, 32-aligned): `u32 count`, then per model a 24-byte header
-//! `u32 vertices, u32 positions offset, u32 attributes offset, u16 draws, u16 0, u32 draws offset, u32 0`, the
+//! `GUNM` (one blob, offsets from its start, 32-aligned): `u32 count`, then per model a 48-byte header
+//! `u32 vertices, u32 positions offset, u32 attributes offset, u16 draws, u16 0, u32 draws offset, u32 0,
+//! f32 × 3 tag_flash origin, f32 × 3 tag_flash forward` (model space), the
 //! draws (12 bytes each: `u32 display list offset, u32 length, u16 texture (GTEX index or NONE), u8 blend,
 //! u8 alpha ref`), then the data: positions (f32 x, y, z in the model's space: x forward, z up, origin at
 //! `tag_origin`), attributes (u32 RGBA, f32 u, f32 v), display lists (GX vertex format 6: POS, CLR0, TEX0 indexed
@@ -21,6 +22,8 @@ pub struct Model {
     /// (RGBA, UV) per vertex.
     pub attributes: Vec<(u32, [f32; 2])>,
     pub draws: Vec<Draw>,
+    /// `tag_flash`: where the muzzle is and which way it points (model space).
+    pub flash: [[f32; 3]; 2],
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -41,9 +44,9 @@ pub fn encode(models: &[Model]) -> Vec<u8> {
     let mut b = Vec::new();
     b.u32(models.len() as u32);
     let headers = b.len();
-    b.zeros(models.len() * 24);
+    b.zeros(models.len() * HEADER);
     for (mi, m) in models.iter().enumerate() {
-        let h = headers + mi * 24;
+        let h = headers + mi * HEADER;
         let draws = b.len();
         b.zeros(m.draws.len() * 12);
         align(&mut b);
@@ -75,9 +78,15 @@ pub fn encode(models: &[Model]) -> Vec<u8> {
         be::put_u32(&mut b, h + 8, attr as u32);
         be::put_u16(&mut b, h + 12, m.draws.len() as u16);
         be::put_u32(&mut b, h + 16, draws as u32);
+        for (k, v) in m.flash.iter().flatten().enumerate() {
+            be::put_u32(&mut b, h + 24 + k * 4, v.to_bits());
+        }
     }
     b
 }
+
+/// Bytes of a model header.
+const HEADER: usize = 48;
 
 /// The models of a `GUNM` section, in place.
 #[derive(Clone, Copy, Debug)]
@@ -89,6 +98,8 @@ pub struct Guns<'a> {
 /// One model: its vertex arrays and draws.
 #[derive(Clone, Copy, Debug)]
 pub struct GunRef<'a> {
+    /// `tag_flash` origin and forward (model space).
+    pub flash: [[f32; 3]; 2],
     pub vertices: usize,
     pub positions: &'a [u8],
     pub attributes: &'a [u8],
@@ -113,7 +124,7 @@ impl<'a> Guns<'a> {
             return None;
         }
         let count = be::u32(b, 0) as usize;
-        if b.len() < 4 + count * 24 {
+        if b.len() < 4 + count * HEADER {
             return None;
         }
         let g = Guns { b, count };
@@ -138,7 +149,7 @@ impl<'a> Guns<'a> {
         if i >= self.count {
             return None;
         }
-        let h = 4 + i * 24;
+        let h = 4 + i * HEADER;
         let n = be::u32(self.b, h) as usize;
         let (pos, attr) = (
             be::u32(self.b, h + 4) as usize,
@@ -147,7 +158,9 @@ impl<'a> Guns<'a> {
         let draws = usize::from(be::u16(self.b, h + 12));
         let draws_at = be::u32(self.b, h + 16) as usize;
         self.b.get(draws_at..draws_at + draws * 12)?;
+        let f = |k: usize| be::f32(self.b, h + 24 + k * 4);
         Some(GunRef {
+            flash: [[f(0), f(1), f(2)], [f(3), f(4), f(5)]],
             vertices: n,
             positions: self.b.get(pos..pos + n * 12)?,
             attributes: self.b.get(attr..attr + n * 12)?,
@@ -199,12 +212,14 @@ mod tests {
                 },
                 Draw::default(),
             ],
+            flash: [[1.0, 2.0, 3.0], [0.0, 1.0, 0.0]],
         };
         let b = encode(&[m.clone(), Model::default()]);
         let g = Guns::parse(&b).unwrap();
         assert_eq!(g.len(), 2);
         let r = g.model(0).unwrap();
         assert_eq!(r.vertices, 3);
+        assert_eq!(r.flash, m.flash);
         assert_eq!(r.positions.as_ptr() as usize % 32, b.as_ptr() as usize % 32);
         assert_eq!(be::f32(r.positions, 12), 4.0);
         assert_eq!(be::f32(r.attributes, 8), 1.0);

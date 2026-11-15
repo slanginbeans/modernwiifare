@@ -67,6 +67,15 @@ unsafe extern "C" {
     pub fn mwf_view_arrays_indexed(positions: *const u8, attributes: *const u8);
     pub fn mwf_pos_matrix_slot(m: *const [[f32; 4]; 3], slot: u32);
     pub fn mwf_fog(on: i32, start: f32, end: f32, rgba: u32);
+    /// Effect sprites (`mwf_sprite_vert`: x, y, z, rgba, s, t), 4 vertices a quad.
+    pub fn mwf_sprites(
+        view: *const [[f32; 4]; 3],
+        tex: i32,
+        blend: u32,
+        v: *const u8,
+        quads: u32,
+        world: i32,
+    );
 
     pub fn mwf_net_init(ip: *mut u8, mask: *mut u8, gw: *mut u8) -> i32;
     pub fn mwf_udp_open(port: u16, broadcast_opt_result: *mut i32, bind_result: *mut i32) -> i32;

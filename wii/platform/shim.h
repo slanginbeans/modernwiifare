@@ -175,6 +175,14 @@ void mwf_ui_verts(int32_t tex, const mwf_ui_vert *v, uint32_t quads);
    0xRRGGBBAA, boxes with alpha under 255 blended over the rest without depth writes. */
 void mwf_draw_boxes(const float view[3][4], const float (*b)[6], const uint32_t *rgba, uint32_t count);
 
+/* Effect sprites: quads (4 vertices each, any winding) with a texture (or -1: white) times the vertex colour, and
+   the texture's alpha plane when it has one. blend: MWF_BLEND_* (blend, add or multiply). Depth tested, not written,
+   no culling. world != 0: in the world (its projection, fog); 0: in the first-person model's space (after a
+   mwf_view_begin: the projection set then). `view` maps the positions to the eye. */
+typedef struct { float x, y, z; uint32_t rgba; float s, t; } mwf_sprite_vert;
+void mwf_sprites(const float view[3][4], int32_t tex, uint32_t blend, const mwf_sprite_vert *v, uint32_t quads,
+                 int32_t world);
+
 /* Sound: ASND voices. `pcm`: mono 16-bit big-endian, 32-byte aligned, flushed, `bytes` a multiple of 32.
    Volumes 0..255. Returns the voice, or -1 when every voice is busy. */
 void mwf_snd_init(void);

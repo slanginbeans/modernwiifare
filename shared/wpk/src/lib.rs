@@ -21,6 +21,7 @@ pub mod anim_script;
 pub mod be;
 pub mod classes;
 pub mod clip;
+pub mod fx;
 pub mod held;
 pub mod nav;
 pub mod player_anim;
@@ -84,6 +85,12 @@ pub mod tag {
     pub const HELD_INDEX: Tag = *b"GUNI";
     pub const HELD_TEXTURES: Tag = *b"GTEX";
     pub const HELD_TEXTURE_DATA: Tag = *b"GTXD";
+    /// Effects (`fx`): definitions, each weapon's, the impact table, textures.
+    pub const FX_DEFS: Tag = *b"FXDF";
+    pub const FX_WEAPONS: Tag = *b"FXWP";
+    pub const FX_IMPACTS: Tag = *b"FXIM";
+    pub const FX_TEXTURES: Tag = *b"FTEX";
+    pub const FX_TEXTURE_DATA: Tag = *b"FTXD";
     /// Static model vertices (`WorldVertex`, model space, lightmap UV unused).
     pub const MODEL_VERTICES: Tag = *b"MVTX";
     /// Static model surfaces (`BatchRecord` over `MVTX`; display lists in `WDLS`).

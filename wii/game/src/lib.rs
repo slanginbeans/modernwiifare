@@ -13,6 +13,7 @@ extern crate alloc;
 mod arsenal;
 mod character;
 mod devlog;
+mod effects;
 mod ffi;
 mod front;
 mod rt;
@@ -100,6 +101,25 @@ impl Gfx for Shim {
     }
     fn hud_rects(&mut self, rects: &[game_core::hud::Rect], rgba: u32) {
         unsafe { ffi::mwf_hud_rects(rects.as_ptr(), rects.len() as u32, rgba) }
+    }
+    fn sprites(
+        &mut self,
+        view: &Mtx34,
+        tex: i32,
+        blend: u8,
+        verts: &[game_core::gfx::SpriteVert],
+        world: bool,
+    ) {
+        unsafe {
+            ffi::mwf_sprites(
+                view,
+                tex,
+                u32::from(blend),
+                verts.as_ptr(),
+                (verts.len() / 4) as u32,
+                i32::from(world),
+            )
+        }
     }
     fn frame_end(&mut self) {
         self.gpu_wait_us = unsafe { ffi::mwf_frame_end() };
@@ -869,6 +889,8 @@ fn run_map(
     };
     // The players' bodies (none with an older pack: placeholder boxes then).
     let mut characters = character::Characters::load(bytes, common, |i| world.texture(i), gfx);
+    // MW2's effects (none with an older pack: placeholder flashes then).
+    let mut effects = effects::Effects::load(common, gfx);
     let mut poses: Vec<character::Pose> = Vec::with_capacity(bots);
     let clip: Option<MapClip<'_>> = clip_data.as_ref().map(MapClip::new);
     devlog::event(
@@ -1695,6 +1717,14 @@ fn run_map(
                         }
                         if let Some(s) = shot.as_ref() {
                             last_shot_ms = Some(now);
+                            // The first-person muzzle flash, in the gun's own (eye) space.
+                            if let (Some(fx), Some(v)) =
+                                (effects.as_mut(), arsenal.views[arsenal.active].as_ref())
+                                && let Some((o, f)) = v.muzzle_eye()
+                            {
+                                let e = fx.weapon(g.weapon_index(), effects::VIEW_FLASH);
+                                fx.play_view(e, o, f, now);
+                            }
                             shot_trails[next_trail] = (Some((s.start, s.pen_end)), now);
                             next_trail = (next_trail + 1) % shot_trails.len();
                             if let Some(a) = arena.as_mut() {
@@ -1848,6 +1878,28 @@ fn run_map(
                         );
                     }
                 }
+                Event::Impact {
+                    origin,
+                    normal,
+                    surface,
+                    flesh,
+                    impact_type,
+                } => {
+                    if let Some(fx) = effects.as_mut() {
+                        let e = fx.impact(impact_type, surface, flesh);
+                        fx.play(e, origin, normal, now);
+                    }
+                }
+                Event::BotFired { bot } => {
+                    if let (Some(fx), Some(ch), Some(a)) =
+                        (effects.as_mut(), characters.as_ref(), arena.as_ref())
+                        && let Some((o, f)) = ch.muzzle(bot)
+                        && let Some(g) = a.fighters.get(bot).and_then(|b| b.gun.as_ref())
+                    {
+                        let e = fx.weapon(g.weapon_index(), effects::WORLD_FLASH);
+                        fx.play(e, o, f, now);
+                    }
+                }
                 Event::GrenadeBounce { origin, weapon } => {
                     if let Some(w) = world_sounds.as_mut() {
                         w.play_at(
@@ -1858,7 +1910,11 @@ fn run_map(
                         );
                     }
                 }
-                Event::Explosion { origin, weapon } => {
+                Event::Explosion {
+                    origin,
+                    weapon,
+                    surface,
+                } => {
                     if let Some(w) = world_sounds.as_mut() {
                         w.play_at(
                             equip_sound(weapon, wpk::weapon::equip_sound::EXPLODE),
@@ -1867,8 +1923,26 @@ fn run_map(
                             cam.right(),
                         );
                     }
-                    blasts[next_blast] = (Some(origin), now);
-                    next_blast = (next_blast + 1) % blasts.len();
+                    // MW2's explosion effect (the weapon's own, else the impact table's for its impact type and
+                    // the surface), or the placeholder flash without one.
+                    let impact_type =
+                        wpk::records::get::<wpk::weapon::WeaponRecord>(weapons, weapon as usize)
+                            .map_or(0, |r| r.combat.impact_type);
+                    let effect = effects.as_ref().map_or(wpk::records::NONE, |fx| {
+                        match fx.weapon(weapon, effects::EXPLOSION) {
+                            wpk::records::NONE => fx.impact(impact_type, surface, false),
+                            e => e,
+                        }
+                    });
+                    match effects.as_mut() {
+                        Some(fx) if effect != wpk::records::NONE => {
+                            fx.play(effect, origin, [0.0, 0.0, 1.0], now);
+                        }
+                        _ => {
+                            blasts[next_blast] = (Some(origin), now);
+                            next_blast = (next_blast + 1) % blasts.len();
+                        }
+                    }
                     devlog::event(now, "explosion", format_args!(""));
                 }
                 Event::Kill { attacker, victim } => {
@@ -2086,6 +2160,10 @@ fn run_map(
                 )
             };
         }
+        // MW2's effects in the world (impacts, explosions, the others' muzzle flashes).
+        if let Some(fx) = effects.as_mut() {
+            fx.draw_world(gfx, &cam, now);
+        }
         sections[section::BODIES] = lap(&mut mark);
         if !flying
             && life.alive()
@@ -2099,9 +2177,11 @@ fn run_map(
                 .unwrap_or_default();
             v.draw(gfx, g, &p.ps, &fpv, dt, now);
             v.play_notes();
-            // Muzzle flash for 50 ms after a shot: a placeholder additive-looking glow at the gun's tag_flash until
-            // MW2's view flash effect is converted.
-            if last_shot_ms.is_some_and(|t| now.wrapping_sub(t) < 50)
+            // The first-person muzzle flash: MW2's view flash effect; without effects, a placeholder glow for
+            // 50 ms after a shot.
+            if let Some(fx) = effects.as_mut() {
+                fx.draw_view(gfx, now);
+            } else if last_shot_ms.is_some_and(|t| now.wrapping_sub(t) < 50)
                 && let Some([x, y]) = v.muzzle_screen(aspect)
             {
                 let (x, y) = (x as i16, y as i16);

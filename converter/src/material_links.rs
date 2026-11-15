@@ -202,11 +202,27 @@ impl SlotMap {
     }
 }
 
+/// One element of an effect as the zone has it (for `fx.rs`): IW4L's view of its definition, whether it loops, its
+/// sprite atlas, raw velocity and visual-state samples (little endian), its materials (sprites) or child effects
+/// (runners).
+#[derive(Clone, Debug)]
+pub struct FxElemCapture {
+    pub view: fx_iw4::FxElemDefView,
+    pub looping: bool,
+    pub atlas: [u8; 8],
+    pub vel: Vec<u8>,
+    pub vis: Vec<u8>,
+    pub materials: Vec<usize>,
+    pub runners: Vec<String>,
+}
+
 /// An effect's sound aliases and the effects it starts (runners, impact / death / emitted effects).
 #[derive(Default)]
 struct FxSounds {
     sounds: Vec<String>,
     children: Vec<String>,
+    /// Its looping and one-shot elements (emitted ones left out).
+    elems: Vec<FxElemCapture>,
     /// The effect's looping life (IW4 `msecLoopingLife`; 0: none).
     looping_life_ms: i32,
     /// Its sight-blocking elements (smoke).
@@ -331,6 +347,10 @@ pub struct Links {
     last_fx_name: Option<String>,
     /// Each weapon's IW4 impact type (parallel to `weapons`).
     pub weapon_impact_types: Vec<i32>,
+    /// Each weapon's effects: world muzzle flash, first-person flash, explosion (parallel to `weapons`).
+    pub weapon_fx: Vec<[Option<String>; 3]>,
+    /// IW4's impact table (`FxImpactTable`): rows by impact type, effects by surface type then flesh.
+    pub impact_table: Vec<[Option<String>; wpk::fx::IMPACT_COLUMNS]>,
     /// Each weapon's bullet penetration (parallel to `weapons`).
     pub weapon_pen: Vec<wpk::weapon::PenRecord>,
     /// Each weapon's HUD icon material (`hudIcon`; parallel to `weapons`).
@@ -590,6 +610,12 @@ impl Links {
             .and_then(|slot| self.fx_slots.get(&slot))
             .and_then(|n| self.fx_sound(n, FX_DEPTH));
         self.weapon_impact_types.push(w.impact_type);
+        let fx = |slot: Option<Ptr>| slot.and_then(|slot| self.fx_slots.get(&slot)).cloned();
+        self.weapon_fx.push([
+            fx(w.world_flash_slot),
+            fx(w.view_flash_slot),
+            fx(w.explosion_slot),
+        ]);
         let hud_icon = w
             .hud_icon_slot
             .and_then(|slot| self.material_name(slot))
@@ -846,6 +872,12 @@ impl Links {
                 if let Some(b) = fx_blocker(s, p, i < g.looping_count.max(0) as usize) {
                     fx.blockers.push(b);
                 }
+                let looping = i < g.looping_count.max(0) as usize;
+                if i < (g.looping_count.max(0) + g.one_shot_count.max(0)) as usize
+                    && let Some(e) = self.fx_elem(s, p, looping)
+                {
+                    fx.elems.push(e);
+                }
                 let (Ok(ty), Ok(n)) = (s.u8_at(p, 176), s.u8_at(p, 177)) else {
                     continue;
                 };
@@ -882,6 +914,106 @@ impl Links {
         };
         self.fx_defs.entry(own.clone()).or_insert(fx);
         self.last_fx_name = Some(own);
+    }
+
+    /// The impact table (`capture_impact_fx`): each entry an effect pointer, inline (its slot) or a reference.
+    pub fn impact_table(&mut self, s: &ZoneStream<'_>, g: &fastfile_iw4::FxImpactTableGeometry) {
+        let ptr = s.pointer_bytes();
+        for row in 0..g.row_count {
+            let base = g.entries.at(row * wpk::fx::IMPACT_COLUMNS * ptr);
+            let entry: [Option<String>; wpk::fx::IMPACT_COLUMNS] = std::array::from_fn(|k| {
+                let slot = base.at(k * ptr);
+                self.fx_slots
+                    .get(&slot)
+                    .cloned()
+                    .or_else(|| match s.ptr_at(slot, 0) {
+                        Ok(fastfile_iw4::ZonePtr::Offset(q)) => self
+                            .fx_slots
+                            .get(&q)
+                            .or_else(|| self.fx_slots.get(&s.resolve_alias(q)))
+                            .cloned(),
+                        _ => None,
+                    })
+            });
+            self.impact_table.push(entry);
+        }
+    }
+
+    /// Element `p` of an effect (see [`FxElemCapture`]); `None` when unreadable.
+    fn fx_elem(&self, s: &ZoneStream<'_>, p: Ptr, looping: bool) -> Option<FxElemCapture> {
+        use asset_iw4::size as sz;
+        let x64 = s.wire_format() == fastfile_iw4::Iw4WireFormat::X64;
+        let raw = s.slice_at(p, 0, s.layout(sz::FX_ELEM_DEF, 288)).ok()?;
+        let view = if x64 {
+            fx_iw4::elem_def_view_x64(raw)?
+        } else {
+            fx_iw4::elem_def_view(raw)?
+        };
+        let atlas: [u8; 8] = raw
+            .get(fx_iw4::FX_ELEM_ATLAS_OFF..fx_iw4::FX_ELEM_ATLAS_OFF + 8)?
+            .try_into()
+            .ok()?;
+        let array = |field: usize, count: usize, stride: usize| -> Vec<u8> {
+            match s.ptr_at(p, field) {
+                Ok(fastfile_iw4::ZonePtr::Offset(a)) => s
+                    .slice_at(s.resolve_alias(a), 0, count * stride)
+                    .map(<[u8]>::to_vec)
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            }
+        };
+        let vel = array(
+            s.layout(0xb4, 184),
+            usize::from(view.vel_interval_count) + 1,
+            sz::FX_ELEM_VEL_STATE_SAMPLE,
+        );
+        let vis = array(
+            s.layout(0xb8, 192),
+            usize::from(view.vis_state_interval_count) + 1,
+            sz::FX_ELEM_VIS_STATE_SAMPLE,
+        );
+        // Visuals: one inline, or an array of them.
+        let field = p.at(s.layout(0xbc, 200));
+        let slots: Vec<Ptr> = match view.visual_count {
+            0 => Vec::new(),
+            1 => vec![field],
+            n => match s.ptr_at(field, 0) {
+                Ok(fastfile_iw4::ZonePtr::Offset(a)) => {
+                    let a = s.resolve_alias(a);
+                    (0..usize::from(n))
+                        .map(|k| a.at(k * s.layout(sz::FX_ELEM_VISUALS, 8)))
+                        .collect()
+                }
+                _ => Vec::new(),
+            },
+        };
+        let (mut materials, mut runners) = (Vec::new(), Vec::new());
+        for slot in slots {
+            if view.elem_type == sz::fx_elem::RUNNER {
+                if let Ok(fastfile_iw4::ZonePtr::Offset(q)) = s.ptr_at(slot, 0)
+                    && let Ok(n) = s.cstr(s.resolve_alias(q))
+                    && !n.is_empty()
+                {
+                    runners.push(n.to_ascii_lowercase());
+                }
+            } else if let Some(m) = self.materials.resolve(slot) {
+                materials.push(m);
+            }
+        }
+        Some(FxElemCapture {
+            view,
+            looping,
+            atlas,
+            vel,
+            vis,
+            materials,
+            runners,
+        })
+    }
+
+    /// Effect `name`'s elements (lower case), if the zone had it.
+    pub fn fx_elems(&self, name: &str) -> Option<&[FxElemCapture]> {
+        self.fx_defs.get(name).map(|f| f.elems.as_slice())
     }
 
     /// The sight blockers of effect `name` and its children, each with its effect's looping life.

@@ -96,8 +96,8 @@ Footsteps: each player's bob cycle wrapping is a step (IW4L), sounding `step_<ga
 Grenades: your class's frag-type equipment (frag, semtex) is thrown through IW4L's offhand states (pull back, cook
 while held, throw) and flies as IW4L's sim flies it (throw speed, gravity, the weapon's per-surface bounce, the fuse;
 `WEQP` in `common.wpk`); the blast hurts everyone in reach, the thrower too, by IW4L's falloff and line-of-sight
-scaling. Bots throw frags at enemies they see at grenade range. Grenades and blasts show as placeholder boxes until
-the projectile models and explosion effects are converted. Their sounds play in the world (pull back, throw, the bounce once it hits hard enough, the explosion), panned and faded by the alias's distances. Semtex sticks where
+scaling. Bots throw frags at enemies they see at grenade range. Grenades show as placeholder boxes until the projectile
+models are converted; their explosions are MW2's effects (below). Their sounds play in the world (pull back, throw, the bounce once it hits hard enough, the explosion), panned and faded by the alias's distances. Semtex sticks where
 it lands. Special grenades: the flashbang blinds by distance and where you look (IW4L's flashbang amounts, then
 `_flashgrenades.gsc`'s duration; a white-out by the shock file's fade times; flashed bots see nothing); the stun
 grenade's shock caps how fast you can turn (its `.shock` file's look control: 75°/s in MW2's, easing off over its last two seconds; the stick doesn't take the file's mouse sensitivity scale) and slows movement for `2 + 4 × closeness` seconds (`_weapons.gsc`). Teammates' flashes and stuns
@@ -142,8 +142,18 @@ bullet leaves in a random direction inside it, and the crosshair ticks sit on th
 Recoil is IW4L's model with each weapon's own kick numbers (`KICK` in `common.wpk`): every shot kicks the view
 (capped at 8°, settling over ~80 ms springs; later shots follow the kicked view, so the gun climbs as in MW2) and
 the viewmodel (gun kick within the weapon's maximum pitch / yaw).
-A shot shows a muzzle flash for 50 ms at the gun's `tag_flash`: a placeholder glow in two HUD rectangles, until
-MW2's view flash effect (FxEffectDef) is converted.
+Effects (`effects.rs`, `game_core::fx`, the common pack's `FXDF`): MW2's own effect definitions, played as IW4
+plays their one-shot elements (count, delay and life ranges, spawn origin and sphere / cylinder offsets, the local
+and world velocity graphs, gravity) and drawn as textured sprites whose size, colour and alpha follow the elements'
+visual-state samples through IW4L's `fx_iw4::evaluate_*` (billboards, oriented sprites, tails, clouds; runners start
+their child effects). Bullets that strike the world play the impact table's effect for the weapon's impact type and
+the surface type; bullets that strike a player, its flesh effect. Explosions play the weapon's explosion effect, or
+the impact table's for its impact type and the surface below. The other players' shots play their weapon's world
+flash at the held gun's `tag_flash`; yours plays its view flash in the first-person model's space (it moves with
+the view). Sprites are depth-tested, not depth-written: multiply first, then alpha blend, then additive. Not yet:
+looping elements (lingering smoke, fire), decals and impact marks, models (shells, debris models), lights, trails,
+screen distortion, collision. Without effects in the pack the old placeholders show (a glow for your flash, a box
+for explosions).
 Sounds: the gun plays MW2's player-view sounds through libogc's ASND mixer (16 voices): fire, empty click, reload
 and raise from the weapon's events, and the reload's clip-out / clip-in / chamber sounds from the first-person
 animation's notetracks (mapped through the weapon's `notetrackSoundMap`). Each play picks a variant, volume and

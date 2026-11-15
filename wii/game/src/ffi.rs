@@ -114,6 +114,15 @@ unsafe extern "C" {
     pub fn mwf_view_arrays_indexed(positions: *const u8, attributes: *const u8);
     pub fn mwf_pos_matrix_slot(m: *const Mtx34, slot: u32);
     pub fn mwf_fog(on: i32, start: f32, end: f32, rgba: u32);
+    /// Effect sprites, 4 vertices a quad (`mwf_sprite_vert`).
+    pub fn mwf_sprites(
+        view: *const Mtx34,
+        tex: i32,
+        blend: u32,
+        v: *const game_core::gfx::SpriteVert,
+        quads: u32,
+        world: i32,
+    );
     pub fn mwf_view_arrays(positions: *const u8, attributes: *const u8);
     pub fn mwf_mem2_mark() -> u32;
     pub fn mwf_mem2_release(mark: u32);

@@ -28,6 +28,7 @@ pub mod damage;
 pub mod debug;
 pub mod dom;
 pub mod fly;
+pub mod fx;
 pub mod gfx;
 pub mod grenade;
 pub mod gun;
