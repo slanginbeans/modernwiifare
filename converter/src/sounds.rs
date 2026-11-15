@@ -242,6 +242,54 @@ pub struct Bank {
     clips: HashMap<String, (u32, u32, u32)>,
     /// Aliases asked for that had nothing playable.
     pub missing: usize,
+    /// Clips above this rate are resampled down to it (`--slim-views`: 32 kHz, which keeps everything up to 16 kHz).
+    pub max_rate: Option<u32>,
+}
+
+/// The `--slim-views` sound rate.
+pub const SLIM_RATE: u32 = 32_000;
+
+/// Mono 16-bit big-endian PCM resampled from `from` Hz down to `to` Hz, band-limited: a Blackman-windowed sinc low-pass
+/// just under the new Nyquist frequency, normalised so a constant signal keeps its level.
+pub fn resample_be(pcm: &[u8], from: u32, to: u32) -> Vec<u8> {
+    if to >= from || to == 0 {
+        return pcm.to_vec();
+    }
+    let input: Vec<f64> = pcm
+        .chunks_exact(2)
+        .map(|b| f64::from(i16::from_be_bytes([b[0], b[1]])))
+        .collect();
+    if input.is_empty() {
+        return Vec::new();
+    }
+    let ratio = f64::from(from) / f64::from(to);
+    // Cutoff as a fraction of the input rate: 95% of the output's Nyquist.
+    let fc = 0.5 / ratio * 0.95;
+    // Filter half-width: 16 output samples, in input samples.
+    let half = (16.0 * ratio).ceil();
+    let n_out = ((input.len() as f64) / ratio).floor().max(1.0) as usize;
+    let mut out = Vec::with_capacity(n_out * 2);
+    for i in 0..n_out {
+        let center = i as f64 * ratio;
+        let lo = (center - half).ceil().max(0.0) as usize;
+        let hi = ((center + half).floor() as usize).min(input.len() - 1);
+        let (mut acc, mut wsum) = (0.0, 0.0);
+        for (k, &v) in input.iter().enumerate().take(hi + 1).skip(lo) {
+            let x = k as f64 - center;
+            let sinc = if x.abs() < 1e-12 {
+                2.0 * fc
+            } else {
+                (2.0 * std::f64::consts::PI * fc * x).sin() / (std::f64::consts::PI * x)
+            };
+            let p = std::f64::consts::PI * x / half;
+            let window = 0.42 + 0.5 * p.cos() + 0.08 * (2.0 * p).cos();
+            acc += v * sinc * window;
+            wsum += sinc * window;
+        }
+        let s = if wsum.abs() > 1e-12 { acc / wsum } else { 0.0 };
+        out.extend_from_slice(&(s.round().clamp(-32768.0, 32767.0) as i16).to_be_bytes());
+    }
+    out
 }
 
 impl Bank {
@@ -252,8 +300,15 @@ impl Bank {
         }
         let pcm = capture.loaded.get(loaded)?;
         let mut mono = to_mono_be(pcm)?;
+        let mut rate = pcm.rate;
+        if let Some(max) = self.max_rate
+            && rate > max
+        {
+            mono = resample_be(&mono, rate, max);
+            rate = max;
+        }
         mono.resize(mono.len().div_ceil(32) * 32, 0);
-        let c = (self.data.len() as u32, mono.len() as u32, pcm.rate);
+        let c = (self.data.len() as u32, mono.len() as u32, rate);
         self.data.extend_from_slice(&mono);
         self.clips.insert(loaded.to_owned(), c);
         Some(c)
@@ -388,6 +443,59 @@ pub fn weapon_sounds(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `secs` of a sine at `hz`, amplitude `amp`, as mono 16-bit big-endian at `rate`.
+    fn tone(hz: f64, rate: u32, secs: f64, amp: f64) -> Vec<u8> {
+        let n = (f64::from(rate) * secs) as usize;
+        (0..n)
+            .flat_map(|i| {
+                let v = amp * (2.0 * std::f64::consts::PI * hz * i as f64 / f64::from(rate)).sin();
+                (v.round() as i16).to_be_bytes()
+            })
+            .collect()
+    }
+
+    /// Peak level and zero crossings of big-endian samples, ignoring `edge` samples at each end.
+    fn peak_and_crossings(pcm: &[u8], edge: usize) -> (f64, usize) {
+        let s: Vec<f64> = pcm
+            .chunks_exact(2)
+            .map(|b| f64::from(i16::from_be_bytes([b[0], b[1]])))
+            .collect();
+        let s = &s[edge..s.len() - edge];
+        let peak = s.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let crossings = s
+            .windows(2)
+            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+            .count();
+        (peak, crossings)
+    }
+
+    #[test]
+    fn resampling_keeps_audible_tones_and_drops_what_cannot_fit() {
+        // 1 kHz at 44.1 kHz -> 32 kHz: same pitch, same level, the right length.
+        let src = tone(1000.0, 44_100, 0.5, 20_000.0);
+        let out = resample_be(&src, 44_100, 32_000);
+        assert_eq!(out.len() / 2, (src.len() / 2) * 32_000 / 44_100);
+        let (peak, crossings) = peak_and_crossings(&out, 64);
+        assert!((peak - 20_000.0).abs() < 400.0, "peak {peak}");
+        // 1 kHz over (0.5 s minus the trimmed edges) has ~2 crossings per cycle.
+        let secs = (out.len() / 2 - 128) as f64 / 32_000.0;
+        let want = 2.0 * 1000.0 * secs;
+        assert!(
+            (crossings as f64 - want).abs() <= 2.0,
+            "{crossings} crossings, want ~{want}"
+        );
+
+        // 20 kHz can't exist at 32 kHz: it must be filtered out, not folded down to an audible 12 kHz.
+        let high = resample_be(&tone(20_000.0, 48_000, 0.25, 20_000.0), 48_000, 32_000);
+        let (peak, _) = peak_and_crossings(&high, 64);
+        assert!(peak < 600.0, "20 kHz leaked through at {peak}");
+
+        // At or below the target rate: untouched.
+        let low = tone(440.0, 22_050, 0.1, 10_000.0);
+        assert_eq!(resample_be(&low, 22_050, 32_000), low);
+        assert_eq!(resample_be(&low, 32_000, 32_000), low);
+    }
 
     #[test]
     fn stereo_16_bit_becomes_mono_big_endian() {

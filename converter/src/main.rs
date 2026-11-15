@@ -13,7 +13,7 @@
 //!       Converts every texture (GfxImage) of one map zone to Wii `.gxt` files, taking pixels from the zone or
 //!       from main/*.iwd, and writes a content-free report.json beside them. Default folder: out/textures/<zone>.
 //!       --verbose prints one line per texture (with its name) to the console only.
-//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force]
+//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views]
 //!       Builds the Wii pack of one map: its textures (as `textures` does), lightmaps, materials, world geometry as
 //!       display lists, skybox and spawns. Default output: out/packs/<zone>.wpk (+ a content-free .json report).
 //!   mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw <deg> --pitch <deg>] [--out <file.png>]
@@ -58,7 +58,7 @@ const SHARED_TABLES_ZONE: &str = "code_post_gfx_mp";
 const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <report.json>]\n  \
      mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]\n  \
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
-     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force]\n  \
+     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views]\n  \
      mwf-convert report <log file>...\n  \
      mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n      [--viewmodel <view.wpk> --anim <slot> --time <s>] [--character <common.wpk> --team 0|1
       [--pmove idle|run|walk|sprint|idlecr|...] [--ptype autorifle|pistol|...] [--pclass rifle|...]
@@ -229,6 +229,19 @@ struct MapArgs {
     force: bool,
     /// World mesh simplification (`--simplify <ratio>`, `--simplify-error <units>`).
     quality: simplify::WorldQuality,
+    /// Smaller weapon files (`--slim-views`, or `MWF_SLIM_VIEWS=1`): keyframed clips with i16 translations, no
+    /// texture mips, sounds at 32 kHz. Off by default while it's tested on hardware.
+    slim_views: bool,
+}
+
+/// `MWF_SLIM_VIEWS` set to 1 / true / yes / on.
+fn slim_views_env() -> bool {
+    std::env::var("MWF_SLIM_VIEWS").is_ok_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
@@ -237,11 +250,16 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
     let mut zone: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
     let mut force = false;
+    let mut slim_views = slim_views_env();
     let mut quality = simplify::WorldQuality::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         if a == "--force" {
             force = true;
+            continue;
+        }
+        if a == "--slim-views" {
+            slim_views = true;
             continue;
         }
         let target = match a.as_str() {
@@ -278,6 +296,7 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
         out,
         force,
         quality,
+        slim_views,
     })
 }
 
@@ -499,6 +518,9 @@ fn run_pack(args: &[String]) -> ExitCode {
         if a.force {
             common_args.push("--force".to_owned());
         }
+        if a.slim_views {
+            common_args.push("--slim-views".to_owned());
+        }
         if run_common(&common_args) != ExitCode::SUCCESS {
             failed.push("common");
         }
@@ -668,7 +690,13 @@ fn run_common(args: &[String]) -> ExitCode {
     let mut zones = vec!["common_mp", SOUND_ZONE];
     zones.extend(CLASS_ZONES);
     zones.extend(ui_capture::UI_ZONES);
-    let st = stamp_of(&a, &zones);
+    let st = stamp_of(&a, &zones).with("slim-views", a.slim_views);
+    if a.slim_views {
+        println!(
+            "common: slim weapon files (keyframed clips, no gun mips, sounds at {} Hz)",
+            sounds::SLIM_RATE
+        );
+    }
     let views_there = std::fs::read_dir(&view_dir).is_ok_and(|mut d| d.next().is_some());
     if !a.force && views_there && st.up_to_date(&out) {
         println!(
@@ -733,6 +761,7 @@ fn run_common(args: &[String]) -> ExitCode {
                 }
             }
             let mut tex = pack::Textures::default();
+            tex.base_level_only = a.slim_views;
             match viewmodel::build(s, links, w, &index, &tex_dir, &mut tex) {
                 Ok((vm, report)) => {
                     let view = &links.weapon_views[w];
@@ -1185,6 +1214,7 @@ fn run_common(args: &[String]) -> ExitCode {
     let count = views.len();
     for mut v in views {
         let mut bank = sounds::Bank::default();
+        bank.max_rate = a.slim_views.then_some(sounds::SLIM_RATE);
         let snd = sounds::weapon_sounds(&capture, &mut bank, &v.sounds, &v.notes);
         let w = weapons.iter().position(|x| x.name() == v.name).unwrap_or(0);
         let mut b = wpk::PackBuilder::new(&v.base);
@@ -1195,7 +1225,12 @@ fn run_common(args: &[String]) -> ExitCode {
         );
         b.section(wpk::tag::TEXTURE_DATA, 0, std::mem::take(&mut v.tex.data));
         // `count` = the weapon's record index in WEAP.
-        b.section(wpk::tag::VIEWMODEL, w as u32, v.vm.encode());
+        let view_blob = if a.slim_views {
+            v.vm.encode_compact(wpk::view::Tolerance::SLIM)
+        } else {
+            v.vm.encode()
+        };
+        b.section(wpk::tag::VIEWMODEL, w as u32, view_blob);
         b.section(wpk::tag::WEAPON_SOUNDS, w as u32, snd.encode());
         b.section(
             wpk::tag::SOUND_ALIASES,
