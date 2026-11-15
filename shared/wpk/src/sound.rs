@@ -1,5 +1,6 @@
 //! Sounds in `common.wpk`: alias lists (one MW2 sound alias each, a random variant per play), their variants, mono
-//! 16-bit big-endian PCM, and each first-person weapon's event and notetrack sounds.
+//! 16-bit big-endian PCM (or 4-bit DSP ADPCM when `SNDD`'s count is [`crate::adpcm::SNDD_ADPCM`]), and each
+//! first-person weapon's event and notetrack sounds.
 //!
 //! - `SNDA`: [`AliasRecord`] per alias list, its variants a run of `SNDV`.
 //! - `SNDV`: [`VariantRecord`]: a clip in `SNDD` with its volume and pitch ranges (IW4 `snd_alias_t`).
@@ -55,7 +56,7 @@ impl Record for AliasRecord {
 pub struct VariantRecord {
     /// Byte offset of the clip in `SNDD` (32-byte aligned).
     pub data_off: u32,
-    /// Bytes of the clip, padded to a multiple of 32.
+    /// Bytes of the clip, padded to a multiple of 32 (an ADPCM clip: header and frames, [`crate::adpcm`]).
     pub data_len: u32,
     /// Sample rate, Hz.
     pub rate: u32,

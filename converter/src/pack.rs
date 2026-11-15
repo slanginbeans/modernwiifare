@@ -396,6 +396,8 @@ pub struct PackReport {
     pub collision: crate::collision::ClipReport,
     pub static_models: StaticModelReport,
     pub visibility: VisReport,
+    /// Where `TXDA` goes: by use, format and size (`tex_report`).
+    pub texture_breakdown: crate::tex_report::Breakdown,
     pub content_hash: String,
 }
 
@@ -441,6 +443,10 @@ pub(crate) struct Textures {
     /// Keep only level 0 of each file (`--slim-views`: the first-person gun sits at the camera, so its smaller mips
     /// go unused; GX then samples it without mipmapping).
     pub(crate) base_level_only: bool,
+    /// What the next textures added are for (the pack report's texture breakdown; "" = other).
+    pub(crate) role: &'static str,
+    /// The use of each record (`role` when it was added).
+    pub(crate) roles: Vec<&'static str>,
 }
 
 impl Textures {
@@ -462,6 +468,7 @@ impl Textures {
             ),
             None => (0, 0, 0),
         };
+        self.roles.push(self.role);
         self.records.push(TextureRecord {
             format: c.format.gx_id(),
             levels: c.levels as u8,
@@ -627,6 +634,7 @@ pub fn build(
 
     // Lightmaps first: lightmap index -> texture index.
     let mut lightmap_tex: Vec<u16> = Vec::new();
+    tex.role = "lightmap";
     for i in 0..world.lightmap_count {
         let t = match lightmap(images, i).as_ref() {
             Some(img) => {
@@ -660,7 +668,10 @@ pub fn build(
                 .colour_image(m)
                 .and_then(|img| files_by_image.get(&img))
             {
-                Some(entries) => tex.add_file(tex_dir, &entries[0].file, Wrap::Repeat)?,
+                Some(entries) => {
+                    tex.role = entries[0].role;
+                    tex.add_file(tex_dir, &entries[0].file, Wrap::Repeat)?
+                }
                 None => {
                     report.materials_without_texture += 1;
                     NONE
@@ -1061,6 +1072,7 @@ pub fn build(
     let mut skybox = None;
     if let Some(entries) = sky_image.and_then(|img| files_by_image.get(&img)) {
         let mut faces = [NONE; 6];
+        tex.role = "sky";
         for e in entries {
             if let Some(i) = crate::pixel_decode::CUBE_FACES
                 .iter()
@@ -1091,7 +1103,10 @@ pub fn build(
         .and_then(|m| links.colour_image(m))
         .and_then(|img| files_by_image.get(&img))
         .and_then(|entries| entries.first())
-        .map(|e| tex.add_file(tex_dir, &e.file, Wrap::Clamp))
+        .map(|e| {
+            tex.role = "minimap";
+            tex.add_file(tex_dir, &e.file, Wrap::Clamp)
+        })
         .transpose()?
         .and_then(|texture| minimap_frame(&entities, links.compass_max_range, texture));
     report.minimap = minimap.is_some();
@@ -1122,6 +1137,7 @@ pub fn build(
                         .and_then(|img| files_by_image.get(&img))
                         .and_then(|v| v.first())
                     {
+                        tex.role = "character";
                         surf.texture = tex.add_file(tex_dir, &e.file, records::Wrap::Repeat)?;
                     }
                 }
@@ -1138,6 +1154,7 @@ pub fn build(
         Ok(_) => {}
         Err(e) => eprintln!("warning: no player characters: {e}"),
     }
+    report.texture_breakdown = crate::tex_report::breakdown(&tex.records, &tex.roles);
     let mut b = wpk::PackBuilder::new(map);
     b.section(wpk::tag::STAMP, 0, stamp.encode());
     b.section(
@@ -1530,6 +1547,7 @@ pub fn render_text(r: &PackReport) -> String {
 ",
         c.brushes, c.planes, c.nodes, c.leaves, c.mesh_triangles, c.brush_models
     ));
+    s.push_str(&crate::tex_report::render_text(&r.texture_breakdown));
     s
 }
 

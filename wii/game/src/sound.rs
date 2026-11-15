@@ -1,5 +1,6 @@
 //! Sound playback on the Wii: alias lists from `common.wpk` (`wpk::sound`) played on ASND voices, the clips read in
-//! place from the pack in MEM2 (flushed when it was loaded).
+//! place from the pack in MEM2 (flushed when it was loaded). DSP ADPCM clips (`--adpcm`) are decoded a piece at a
+//! time into two small PCM buffers per voice while they play (the shim's voice callback, [`mwf_adpcm_decode`]).
 //!
 //! Each play picks a variant by its probability weight and a volume and pitch in the alias's ranges, as IW4 does.
 //! Player-view sounds play at the listener; world sounds ([`Sounds::play_at`]) fade with distance between the alias's
@@ -17,17 +18,48 @@ pub struct Sounds<'a> {
     aliases: &'a [u8],
     variants: &'a [u8],
     data: &'a [u8],
+    /// The clips are DSP ADPCM (`SNDD`'s count, `--adpcm`), not 16-bit PCM.
+    adpcm: bool,
     rng: u32,
+}
+
+/// The shim's voice callback decodes ADPCM clips through this (`wpk::adpcm::decode`), in the audio interrupt.
+///
+/// # Safety
+/// `clip` must point to `len` readable bytes, `hist` to two `i16`, `out` to `max` writable `i16`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mwf_adpcm_decode(
+    clip: *const u8,
+    len: u32,
+    start: u32,
+    hist: *mut i16,
+    out: *mut i16,
+    max: u32,
+) -> u32 {
+    if clip.is_null() || hist.is_null() || out.is_null() {
+        return 0;
+    }
+    // SAFETY: the caller guarantees the three regions (the shim passes a clip of the pack and its own buffers).
+    let (clip, hist, out) = unsafe {
+        (
+            core::slice::from_raw_parts(clip, len as usize),
+            &mut *hist.cast::<[i16; 2]>(),
+            core::slice::from_raw_parts_mut(out, max as usize),
+        )
+    };
+    wpk::adpcm::decode(clip, start, hist, out) as u32
 }
 
 impl<'a> Sounds<'a> {
     /// The sounds of the common pack, or `None` when it has none.
     pub fn load(common: &'a [u8]) -> Option<Sounds<'a>> {
         let pack = wpk::Pack::parse(common, false).ok()?;
+        let data = pack.section(wpk::tag::SOUND_DATA)?;
         Some(Sounds {
             aliases: pack.section(wpk::tag::SOUND_ALIASES)?.data,
             variants: pack.section(wpk::tag::SOUND_VARIANTS)?.data,
-            data: pack.section(wpk::tag::SOUND_DATA)?.data,
+            data: data.data,
+            adpcm: data.count == wpk::adpcm::SNDD_ADPCM,
             rng: 0x9e37_79b9,
         })
     }
@@ -128,8 +160,13 @@ impl<'a> Sounds<'a> {
         }
         let level = |x: f32| (x.clamp(0.0, 1.0) * 255.0) as u8;
         let rate = (v.rate as f32 * pitch.clamp(0.25, 4.0)) as u32;
+        let play = if self.adpcm {
+            ffi::mwf_snd_play_adpcm
+        } else {
+            ffi::mwf_snd_play
+        };
         unsafe {
-            ffi::mwf_snd_play(
+            play(
                 clip.as_ptr(),
                 clip.len() as u32,
                 rate,

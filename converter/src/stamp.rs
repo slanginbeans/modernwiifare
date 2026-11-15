@@ -29,7 +29,8 @@ use std::path::{Path, PathBuf};
 /// tracks may carry key frames.
 /// 30: the weapons in the characters' hands (`GUNM`, `GUNI`, `GTEX`, `GTXD`).
 /// 31: effects (`FXDF`, `FXWP`, `FXIM`, `FTEX`, `FTXD`); `GUNM` models carry `tag_flash`.
-pub const REVISION: u32 = 31;
+/// 32: pack reports with a texture breakdown and `common.json`; `--adpcm` sounds.
+pub const REVISION: u32 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

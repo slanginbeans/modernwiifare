@@ -13,7 +13,7 @@
 //!       Converts every texture (GfxImage) of one map zone to Wii `.gxt` files, taking pixels from the zone or
 //!       from main/*.iwd, and writes a content-free report.json beside them. Default folder: out/textures/<zone>.
 //!       --verbose prints one line per texture (with its name) to the console only.
-//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl]
+//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--adpcm]
 //!       Builds the Wii pack of one map: its textures (as `textures` does), lightmaps, materials, world geometry as
 //!       display lists, skybox and spawns. Default output: out/packs/<zone>.wpk (+ a content-free .json report).
 //!   mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw <deg> --pitch <deg>] [--out <file.png>]
@@ -23,7 +23,7 @@
 //!       Converts one PNG to a Wii texture (`.gxt`) plus a `_preview.png` of what the Wii shows,
 //!       and prints the chosen format, size and quality. Default output folder: out/textures.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -44,6 +44,7 @@ mod simplify;
 mod sounds;
 mod stamp;
 mod static_models;
+mod tex_report;
 mod texture;
 mod ui_bake;
 mod ui_capture;
@@ -59,7 +60,7 @@ const SHARED_TABLES_ZONE: &str = "code_post_gfx_mp";
 const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <report.json>]\n  \
      mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]\n  \
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
-     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl]\n  \
+     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--adpcm]\n  \
      mwf-convert report <log file>...\n  \
      mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n      [--viewmodel <view.wpk> --anim <slot> --time <s>] [--character <common.wpk> --team 0|1
       [--pmove idle|run|walk|sprint|idlecr|...] [--ptype autorifle|pistol|...] [--pclass rifle|...]
@@ -240,6 +241,9 @@ struct MapArgs {
     /// Map packs: u8 display-list indices for batches of at most 256 vertices, and no colour index where every
     /// vertex is white (`--small-dl`, or `MWF_SMALL_DL=1`). Off by default while it's tested on hardware.
     small_dl: bool,
+    /// Sounds (`common.wpk` and the weapon files) as 4-bit DSP ADPCM, 3.5x smaller than 16-bit PCM, decoded on the
+    /// Wii as they play (`--adpcm`, or `MWF_ADPCM=1`). Off by default while it's tested on hardware.
+    adpcm: bool,
 }
 
 /// Environment variable `name` set to 1 / true / yes / on.
@@ -266,6 +270,7 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
     let mut slim_views = slim_views_env();
     let mut tiled_uv = env_on("MWF_TILED_UV");
     let mut small_dl = env_on("MWF_SMALL_DL");
+    let mut adpcm = env_on("MWF_ADPCM");
     let mut quality = simplify::WorldQuality::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -283,6 +288,10 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
         }
         if a == "--small-dl" {
             small_dl = true;
+            continue;
+        }
+        if a == "--adpcm" {
+            adpcm = true;
             continue;
         }
         let target = match a.as_str() {
@@ -322,6 +331,7 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
         slim_views,
         tiled_uv,
         small_dl,
+        adpcm,
     })
 }
 
@@ -546,6 +556,9 @@ fn run_pack(args: &[String]) -> ExitCode {
         if a.slim_views {
             common_args.push("--slim-views".to_owned());
         }
+        if a.adpcm {
+            common_args.push("--adpcm".to_owned());
+        }
         if run_common(&common_args) != ExitCode::SUCCESS {
             failed.push("common");
         }
@@ -715,12 +728,17 @@ fn run_common(args: &[String]) -> ExitCode {
     let mut zones = vec!["common_mp", SOUND_ZONE];
     zones.extend(CLASS_ZONES);
     zones.extend(ui_capture::UI_ZONES);
-    let st = stamp_of(&a, &zones).with("slim-views", a.slim_views);
+    let st = stamp_of(&a, &zones)
+        .with("slim-views", a.slim_views)
+        .with("adpcm", a.adpcm);
     if a.slim_views {
         println!(
             "common: slim weapon files (keyframed clips, no gun mips, sounds at {} Hz)",
             sounds::SLIM_RATE
         );
+    }
+    if a.adpcm {
+        println!("common: sounds as 4-bit DSP ADPCM");
     }
     let views_there = std::fs::read_dir(&view_dir).is_ok_and(|mut d| d.next().is_some());
     if !a.force && views_there && st.up_to_date(&out) {
@@ -915,6 +933,7 @@ fn run_common(args: &[String]) -> ExitCode {
     let fpvs: Vec<_> = extra.iter().map(|e| e.3).collect();
     // Thrown weapons' world sounds (explosions, bounces, pull back, throw) in the common pack's own bank.
     let mut world_bank = sounds::Bank::default();
+    world_bank.adpcm = a.adpcm;
     let equips: Vec<_> = extra
         .iter()
         .map(|e| {
@@ -1051,9 +1070,10 @@ fn run_common(args: &[String]) -> ExitCode {
         world_bank.variants.len() as u32,
         wpk::records::encode(&world_bank.variants),
     );
+    let world_sounds = world_bank.report();
     b.section(
         wpk::tag::SOUND_DATA,
-        0,
+        sounds::data_count(&world_bank),
         std::mem::take(&mut world_bank.data),
     );
     // Player animations by bone name.
@@ -1256,6 +1276,7 @@ fn run_common(args: &[String]) -> ExitCode {
     b.section(wpk::tag::CLASSES, 0, catalog.encode());
     // Menus: MW2's fonts and baked screens, with their textures.
     let mut ui_tex = pack::Textures::default();
+    ui_tex.role = "ui";
     let mut scripts = HashMap::new();
     let built = build_ui(&a, &mut ui_tex, &mut scripts);
     if let Some((u, _)) = &built {
@@ -1315,6 +1336,14 @@ fn run_common(args: &[String]) -> ExitCode {
     if !write_file(&out, &bytes) {
         return ExitCode::FAILURE;
     }
+    let mut report = CommonReport {
+        pack_bytes: bytes.len() as u64,
+        sections: section_sizes(&bytes),
+        sounds: world_sounds,
+        textures: tex_report::breakdown(&held_tex.records, &held_tex.roles),
+        ..CommonReport::default()
+    };
+    report.textures.merge(&ui_tex.records, &ui_tex.roles);
     println!(
         "Modern Wiifare common pack: {} weapons, {:.2} MiB -> {}",
         weapons.len(),
@@ -1325,9 +1354,11 @@ fn run_common(args: &[String]) -> ExitCode {
     // carries it).
     let (mut total, mut variants, mut missing_sounds, mut missing_clips) = (0usize, 0, 0, 0);
     let count = views.len();
+    let views_report = &mut report.views;
     for mut v in views {
         let mut bank = sounds::Bank::default();
         bank.max_rate = a.slim_views.then_some(sounds::SLIM_RATE);
+        bank.adpcm = a.adpcm;
         let snd = sounds::weapon_sounds(&capture, &mut bank, &v.sounds, &v.notes);
         let w = weapons.iter().position(|x| x.name() == v.name).unwrap_or(0);
         let mut b = wpk::PackBuilder::new(&v.base);
@@ -1355,12 +1386,22 @@ fn run_common(args: &[String]) -> ExitCode {
             bank.variants.len() as u32,
             wpk::records::encode(&bank.variants),
         );
-        b.section(wpk::tag::SOUND_DATA, 0, std::mem::take(&mut bank.data));
+        views_report.sounds.merge(&bank.report());
+        views_report.textures.merge(&v.tex.records, &v.tex.roles);
+        b.section(
+            wpk::tag::SOUND_DATA,
+            sounds::data_count(&bank),
+            std::mem::take(&mut bank.data),
+        );
         let bytes = b.finish();
         if !write_file(&view_dir.join(format!("{}.wpk", v.base)), &bytes) {
             return ExitCode::FAILURE;
         }
         total += bytes.len();
+        views_report.files += 1;
+        for (k, v) in section_sizes(&bytes) {
+            *views_report.sections.entry(k).or_default() += v;
+        }
         variants += bank.variants.len();
         missing_sounds += bank.missing;
         missing_clips += v.report.missing_clips;
@@ -1370,7 +1411,59 @@ fn run_common(args: &[String]) -> ExitCode {
         total as f64 / (1024.0 * 1024.0),
         view_dir.display()
     );
-    ExitCode::SUCCESS
+    report.views.bytes = total as u64;
+    print!(
+        "common pack {}weapon files {}",
+        tex_report::render_text(&report.textures),
+        tex_report::render_text(&report.views.textures)
+    );
+    for (what, s) in [
+        ("common", &report.sounds),
+        ("weapon files", &report.views.sounds),
+    ] {
+        println!(
+            "{what} sounds ({}): {} clips, {:.0} s, {:.2} MiB",
+            s.encoding,
+            s.clips,
+            s.seconds,
+            s.bytes as f64 / (1024.0 * 1024.0)
+        );
+    }
+    write_json(&out.with_extension("json"), &report)
+}
+
+/// What `common.wpk` and the weapon files hold (content-free: sizes and counts, no names). Written beside the pack.
+#[derive(Default, serde::Serialize)]
+struct CommonReport {
+    pack_bytes: u64,
+    sections: BTreeMap<String, u64>,
+    /// Held weapons' and menus' textures.
+    textures: tex_report::Breakdown,
+    /// The world sounds (footsteps, explosions, throws).
+    sounds: sounds::BankReport,
+    views: ViewFilesReport,
+}
+
+/// All `views/<weapon>.wpk` together.
+#[derive(Default, serde::Serialize)]
+struct ViewFilesReport {
+    files: usize,
+    bytes: u64,
+    sections: BTreeMap<String, u64>,
+    textures: tex_report::Breakdown,
+    sounds: sounds::BankReport,
+}
+
+/// Each section's bytes by tag (summed when a tag repeats).
+fn section_sizes(bytes: &[u8]) -> BTreeMap<String, u64> {
+    let mut m = BTreeMap::new();
+    if let Ok(p) = wpk::Pack::parse(bytes, false) {
+        for (t, len) in p.section_sizes() {
+            *m.entry(String::from_utf8_lossy(&t).into_owned())
+                .or_default() += len as u64;
+        }
+    }
+    m
 }
 
 /// A first-person weapon read from `common_mp`, written to its own file once its sounds are known.

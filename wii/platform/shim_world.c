@@ -591,7 +591,78 @@ int32_t mwf_snd_play(const void *pcm, uint32_t bytes, uint32_t rate, uint8_t vol
     return voice;
 }
 
+/* DSP ADPCM clips (`--adpcm`): ASND only mixes PCM, so each voice playing one gets two PCM buffers that the voice
+   callback refills (decoding with the game's `mwf_adpcm_decode`, `wpk::adpcm`) while the other plays. The callback
+   runs in the audio interrupt: decoding is integer-only, about 2048 samples per call. */
+#define ADPCM_BUF_SAMPLES 2048
+typedef struct {
+    const uint8_t *clip; /* NULL: not an ADPCM voice, or nothing left to queue */
+    uint32_t len;
+    uint32_t pos; /* next sample to decode */
+    int16_t hist[2];
+    uint8_t next; /* buffer the next decode goes to */
+} adpcm_voice;
+static adpcm_voice adpcm_voices[MAX_SND_VOICES];
+static int16_t adpcm_pcm[MAX_SND_VOICES][2][ADPCM_BUF_SAMPLES] ATTRIBUTE_ALIGN(32);
+
+/* Decode the next piece of voice `v`'s clip into buffer `b`; its byte length (padded to 32), or 0 at the end. */
+static uint32_t adpcm_fill(s32 v, uint8_t b) {
+    adpcm_voice *a = &adpcm_voices[v];
+    int16_t *out = adpcm_pcm[v][b];
+    uint32_t n = mwf_adpcm_decode(a->clip, a->len, a->pos, a->hist, out, ADPCM_BUF_SAMPLES);
+    if (n == 0)
+        return 0;
+    a->pos += n;
+    uint32_t bytes = (n * 2 + 31) & ~31u;
+    if (bytes > n * 2)
+        memset((uint8_t *)out + n * 2, 0, bytes - n * 2);
+    DCFlushRange(out, bytes);
+    return bytes;
+}
+
+/* ASND voice callback: queue the next piece while the current one plays. */
+static void adpcm_more(s32 v) {
+    if (v < 0 || v >= MAX_SND_VOICES)
+        return;
+    adpcm_voice *a = &adpcm_voices[v];
+    if (!a->clip || !ASND_TestVoiceBufferReady(v))
+        return;
+    uint32_t bytes = adpcm_fill(v, a->next);
+    if (bytes == 0) {
+        a->clip = NULL;
+        return;
+    }
+    ASND_AddVoice(v, adpcm_pcm[v][a->next], (s32)bytes);
+    a->next ^= 1;
+}
+
+int32_t mwf_snd_play_adpcm(const void *clip, uint32_t bytes, uint32_t rate, uint8_t vol_l, uint8_t vol_r) {
+    s32 voice = ASND_GetFirstUnusedVoice();
+    if (voice < 0 || voice >= MAX_SND_VOICES)
+        return -1;
+    u32 level = IRQ_Disable();
+    adpcm_voice *a = &adpcm_voices[voice];
+    a->clip = (const uint8_t *)clip;
+    a->len = bytes;
+    a->pos = 0;
+    a->hist[0] = a->hist[1] = 0;
+    a->next = 0;
+    uint32_t first = adpcm_fill(voice, 0);
+    a->next = 1;
+    s32 ok = first ? ASND_SetVoice(voice, VOICE_MONO_16BIT, (s32)rate, 0, adpcm_pcm[voice][0], (s32)first, vol_l, vol_r,
+                                   adpcm_more)
+                   : SND_INVALID;
+    if (ok != SND_OK)
+        a->clip = NULL;
+    IRQ_Restore(level);
+    return ok == SND_OK ? voice : -1;
+}
+
 void mwf_snd_stop_all(void) {
+    u32 level = IRQ_Disable();
+    for (s32 v = 0; v < MAX_SND_VOICES; v++)
+        adpcm_voices[v].clip = NULL;
+    IRQ_Restore(level);
     for (s32 v = 0; v < MAX_SND_VOICES; v++)
         ASND_StopVoice(v);
 }
