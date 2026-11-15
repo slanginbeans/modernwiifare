@@ -35,31 +35,31 @@ const D3D_A8R8G8B8: u32 = 21;
 /// Grid cell size for splitting world batches (IW4 units; 1 unit = 1 inch).
 pub const CELL: f32 = 1024.0;
 /// IW4 sort keys of sky materials.
-const SORT_SKY: u8 = 2;
-const SORT_SKYBOX: u8 = 3;
+pub(crate) const SORT_SKY: u8 = 2;
+pub(crate) const SORT_SKYBOX: u8 = 3;
 
 /// One GfxSurface.
 #[derive(Clone, Copy, Debug)]
-struct Surface {
-    material: Option<usize>,
-    lightmap: u8,
-    first_vertex: u32,
-    vertex_count: u16,
-    tri_count: u16,
-    base_index: u32,
+pub(crate) struct Surface {
+    pub(crate) material: Option<usize>,
+    pub(crate) lightmap: u8,
+    pub(crate) first_vertex: u32,
+    pub(crate) vertex_count: u16,
+    pub(crate) tri_count: u16,
+    pub(crate) base_index: u32,
 }
 
 /// What the converter reads from the zone's GfxWorld and MapEnts.
 pub struct WorldData {
-    vertices: Vec<WorldVertex>,
-    indices: Vec<u16>,
-    surfaces: Vec<Surface>,
+    pub(crate) vertices: Vec<WorldVertex>,
+    pub(crate) indices: Vec<u16>,
+    pub(crate) surfaces: Vec<Surface>,
     /// Lightmap pages the world uses (surfaces index `0..lightmap_count`).
-    lightmap_count: usize,
-    entity_string: String,
+    pub(crate) lightmap_count: usize,
+    pub(crate) entity_string: String,
     /// Collision, or why it could not be read.
-    clip: Result<wpk::clip::Clip, String>,
-    models: crate::static_models::StaticModels,
+    pub(crate) clip: Result<wpk::clip::Clip, String>,
+    pub(crate) models: crate::static_models::StaticModels,
     vis: crate::visibility::WorldVis,
     /// The player characters, allies then axis (surfaces carry material indices until `build`), or why not.
     characters: Result<Vec<(wpk::view::ViewModel, Vec<String>)>, String>,
@@ -163,7 +163,7 @@ pub fn read_world(s: &ZoneStream<'_>, links: &Links) -> Result<WorldData, String
 /// Lightmap `i` as an RGBA8 image of `(page0 + page1) / 2`, from the zone image IW4 names `*lightmap<i>_secondary`.
 /// (The GfxWorld lightmap array points at these images, which load earlier in the zone; IW4L records the pair only
 /// when the image loads inline, so the converter finds them in its image list by IW4's fixed name.)
-fn lightmap(images: &[ZoneImage], i: usize) -> Option<Image> {
+pub(crate) fn lightmap(images: &[ZoneImage], i: usize) -> Option<Image> {
     let name = format!("*lightmap{i}_secondary");
     let img = images.iter().find(|img| img.name == name)?;
     if img.d3d_format != D3D_A8R8G8B8 || img.height % 2 != 0 || img.payload.is_empty() {
@@ -1448,7 +1448,7 @@ pub fn build(
 
 /// Merge vertices identical in every attribute (exact bits) and drop unused ones, keeping first-use order; returns
 /// how many fewer vertices there are. The triangles are the same, so what is drawn does not change.
-fn weld(verts: &mut Vec<WorldVertex>, tris: &mut [u16]) -> usize {
+pub(crate) fn weld(verts: &mut Vec<WorldVertex>, tris: &mut [u16]) -> usize {
     let key = |v: &WorldVertex| {
         (
             v.pos.map(f32::to_bits),

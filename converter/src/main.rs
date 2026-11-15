@@ -29,6 +29,8 @@ use std::process::ExitCode;
 
 mod clip_report;
 mod collision;
+mod export;
+mod export_map;
 mod fx;
 mod inventory;
 mod light_grid;
@@ -67,6 +69,8 @@ const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <repor
       [--pmove idle|run|walk|sprint|idlecr|...] [--ptype autorifle|pistol|...] [--pclass rifle|...]
       [--pevent fireweapon|reload|death|...] [--paim <pitch>] [--pgun <n>] [--pturn <deg>]]
       [--fxpack <common.wpk> --fx <n> --time <s>]\n  \
+     mwf-convert export <game folder> [--out <folder>]   (weapons and their sounds as plain files, for Slick Blasters)\n  \
+     mwf-convert export-map <game folder> [--map <zone>|all] [--out <folder>] [--max-tris N] [--margin M] [--max-boxes N] [--column M] [--step M]   (a map as plain files, for Slick Blasters)\n  \
      mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask|minimap] [--out <folder>]";
 
 /// IW4L's `ZoneStream` keeps the latest record of every asset type inline, so walking a zone needs far more stack than
@@ -151,6 +155,8 @@ fn run(args: &[String]) -> ExitCode {
         },
         Some("preview") => run_preview(&args[1..]),
         Some("texture") => run_texture(&args[1..]),
+        Some("export") => export::run(&args[1..]),
+        Some("export-map") => export_map::run(&args[1..]),
         Some("-h" | "--help") | None => {
             println!("{USAGE}");
             ExitCode::SUCCESS

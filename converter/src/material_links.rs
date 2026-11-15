@@ -325,6 +325,9 @@ pub struct Links {
     weapon_world_names: HashMap<String, BTreeSet<usize>>,
     /// Weapon names, in load order (`Owner::Weapon` indexes this).
     pub weapons: Vec<String>,
+    /// Each weapon's decoded definition as the zone stores it (parallel to `weapons`); `export` writes its
+    /// handling numbers out for other tools.
+    pub weapon_geometry: Vec<fastfile_iw4::WeaponGeometry>,
     /// Combat numbers of each weapon (parallel to `weapons`).
     pub weapon_combat: Vec<weapon_iw4::CapturedCombatInput>,
     /// Recoil of each weapon (parallel to `weapons`).
@@ -556,6 +559,7 @@ impl Links {
         // The driver set `Owner::Weapon(n)` for this entry, n = the weapon count before it.
         let index = self.weapons.len();
         self.weapons.push(w.name.and_then(text).unwrap_or_default());
+        self.weapon_geometry.push(w);
         self.weapon_combat.push(crate::weapons::captured(&w));
         self.weapon_kick.push(crate::weapons::kick(&w));
         self.weapon_moves.push(crate::weapons::moves(&w));
