@@ -63,6 +63,10 @@ pub struct DebugSettings {
     pub model_detail: u8,
     /// The map's own fog (MW2's `setExpFog`); a shortened draw distance fogs regardless.
     pub map_fog: bool,
+    // Feel comparisons (default off: the pinned IW4L's values).
+    /// Recoil kick at the amplitudes of IW4L's `major-overhaul` branch (camera 0.040, gun 0.030: twice the pinned
+    /// revision's 0.020 / 0.015), to compare against the user's copy before adopting it.
+    pub kick_x2: bool,
 }
 
 impl Default for DebugSettings {
@@ -87,6 +91,7 @@ impl Default for DebugSettings {
             draw_distance: 0,
             model_detail: 0,
             map_fog: true,
+            kick_x2: false,
         }
     }
 }
@@ -113,11 +118,12 @@ pub enum Item {
     ModelDetail,
     MapFog,
     Sound,
+    KickAmplitude,
     ResetDefaults,
 }
 
 /// The debug page's lines (the bot count and difficulty are in Game Setup).
-pub const ITEMS: [Item; 18] = [
+pub const ITEMS: [Item; 19] = [
     Item::BotsPassive,
     Item::BotsFrozen,
     Item::GodMode,
@@ -135,6 +141,7 @@ pub const ITEMS: [Item; 18] = [
     Item::ModelDetail,
     Item::MapFog,
     Item::Sound,
+    Item::KickAmplitude,
     Item::ResetDefaults,
 ];
 
@@ -160,6 +167,7 @@ impl Item {
             Item::ModelDetail => "MODEL DETAIL",
             Item::MapFog => "MAP FOG",
             Item::Sound => "SOUND",
+            Item::KickAmplitude => "RECOIL KICK",
             Item::ResetDefaults => "RESET TO DEFAULTS",
         }
     }
@@ -209,6 +217,11 @@ impl DebugSettings {
             Item::ModelDetail => String::from(MODEL_DETAIL[self.detail_index()].1),
             Item::MapFog => on_off(self.map_fog),
             Item::Sound => on_off(self.sound),
+            Item::KickAmplitude => String::from(if self.kick_x2 {
+                "IW4L NEW (X2)"
+            } else {
+                "IW4L PINNED"
+            }),
             Item::ResetDefaults => return None,
         })
     }
@@ -250,6 +263,7 @@ impl DebugSettings {
             }
             Item::MapFog => flip(&mut self.map_fog),
             Item::Sound => flip(&mut self.sound),
+            Item::KickAmplitude => flip(&mut self.kick_x2),
             Item::ResetDefaults => *self = DebugSettings::default(),
         }
     }
@@ -261,6 +275,11 @@ impl DebugSettings {
 
     fn detail_index(&self) -> usize {
         usize::from(self.model_detail) % MODEL_DETAIL.len()
+    }
+
+    /// What the recoil kick's amplitudes are multiplied by ([`DebugSettings::kick_x2`]).
+    pub fn kick_scale(&self) -> f32 {
+        if self.kick_x2 { 2.0 } else { 1.0 }
     }
 
     /// The static-model LOD distance scale.
@@ -299,6 +318,7 @@ impl DebugSettings {
             self.world_models,
             self.sound,
             self.map_fog,
+            self.kick_x2,
         ];
         let bits = flags
             .iter()
@@ -340,6 +360,8 @@ impl DebugSettings {
             world_models: f(11),
             sound: f(12),
             map_fog: if v2 { f(13) } else { defaults.map_fog },
+            // A bit older files never set: off.
+            kick_x2: f(14),
             draw_distance: if v2 {
                 b[9] % DRAW_DISTANCES.len() as u8
             } else {
@@ -447,5 +469,14 @@ mod tests {
         d.cycle(Item::ModelDetail, 0);
         assert!(d.lod_scale() > 1.0);
         assert!(s.skill().reaction_ms > 0);
+        // The kick switch: off by default, doubles when on, survives a save.
+        let mut k = DebugSettings::default();
+        assert_eq!(k.kick_scale(), 1.0);
+        k.cycle(Item::KickAmplitude, 0);
+        assert_eq!(k.kick_scale(), 2.0);
+        assert_eq!(
+            DebugSettings::decode(&k.encode()).unwrap().kick_scale(),
+            2.0
+        );
     }
 }
