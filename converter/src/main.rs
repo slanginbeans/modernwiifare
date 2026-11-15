@@ -13,7 +13,7 @@
 //!       Converts every texture (GfxImage) of one map zone to Wii `.gxt` files, taking pixels from the zone or
 //!       from main/*.iwd, and writes a content-free report.json beside them. Default folder: out/textures/<zone>.
 //!       --verbose prints one line per texture (with its name) to the console only.
-//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--adpcm] [--slim-anims]
+//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--small-props] [--adpcm] [--slim-anims]
 //!       Builds the Wii pack of one map: its textures (as `textures` does), lightmaps, materials, world geometry as
 //!       display lists, skybox and spawns. Default output: out/packs/<zone>.wpk (+ a content-free .json report).
 //!   mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw <deg> --pitch <deg>] [--out <file.png>]
@@ -60,7 +60,7 @@ const SHARED_TABLES_ZONE: &str = "code_post_gfx_mp";
 const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <report.json>]\n  \
      mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]\n  \
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
-     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--adpcm] [--slim-anims]\n  \
+     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--small-props] [--adpcm] [--slim-anims]\n  \
      mwf-convert report <log file>...\n  \
      mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n      [--viewmodel <view.wpk> --anim <slot> --time <s>] [--character <common.wpk> --team 0|1
       [--pmove idle|run|walk|sprint|idlecr|...] [--ptype autorifle|pistol|...] [--pclass rifle|...]
@@ -241,6 +241,9 @@ struct MapArgs {
     /// Map packs: u8 display-list indices for batches of at most 256 vertices, and no colour index where every
     /// vertex is white (`--small-dl`, or `MWF_SMALL_DL=1`). Off by default while it's tested on hardware.
     small_dl: bool,
+    /// Map packs: small props start at their second level of detail (`--small-props`, or `MWF_SMALL_PROPS=1`;
+    /// `pack::first_lod`). Off by default while it's tested on hardware.
+    small_props: bool,
     /// Player animations in `common.wpk` cut to the frames interpolation can't rebuild within
     /// `wpk::player_anim::SLIM` (`--slim-anims`, or `MWF_SLIM_ANIMS=1`). Off by default while it's tested on hardware.
     slim_anims: bool,
@@ -273,6 +276,7 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
     let mut slim_views = slim_views_env();
     let mut tiled_uv = env_on("MWF_TILED_UV");
     let mut small_dl = env_on("MWF_SMALL_DL");
+    let mut small_props = env_on("MWF_SMALL_PROPS");
     let mut adpcm = env_on("MWF_ADPCM");
     let mut slim_anims = env_on("MWF_SLIM_ANIMS");
     let mut quality = simplify::WorldQuality::default();
@@ -292,6 +296,10 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
         }
         if a == "--small-dl" {
             small_dl = true;
+            continue;
+        }
+        if a == "--small-props" {
+            small_props = true;
             continue;
         }
         if a == "--adpcm" {
@@ -339,6 +347,7 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
         slim_views,
         tiled_uv,
         small_dl,
+        small_props,
         adpcm,
         slim_anims,
     })
@@ -1561,7 +1570,8 @@ fn run_pack_one(a: MapArgs) -> ExitCode {
         None => stamp_of(&a, &[&a.map, "code_post_gfx_mp"]),
     }
     .with("tiled-uv", a.tiled_uv)
-    .with("small-dl", a.small_dl);
+    .with("small-dl", a.small_dl)
+    .with("small-props", a.small_props);
     if !a.force && st.up_to_date(&out) {
         println!("{}: up to date ({})", a.map, out.display());
         return ExitCode::SUCCESS;
@@ -1595,6 +1605,7 @@ fn run_pack_one(a: MapArgs) -> ExitCode {
         &pack::Options {
             tiled_uv: a.tiled_uv,
             small_dl: a.small_dl,
+            small_props: a.small_props,
         },
     ) {
         Ok(x) => x,

@@ -32,7 +32,7 @@ never run (supersedes 0002)
   `pack <game folder> --map <zone>|all`: map packs `out/packs/<map>.wpk`; `all` also writes `common.wpk` (weapons,
   classes, rules, menus, characters) and `views/<weapon>.wpk`. `common`: those alone. `--slim-views` (or
   `MWF_SLIM_VIEWS=1`): smaller weapon files, off by default (`docs/pack.md`, "Slim weapon files").
-  `--tiled-uv` / `--small-dl` (`MWF_TILED_UV`, `MWF_SMALL_DL`): smaller map packs, off by default (`docs/pack.md`,
+  `--tiled-uv` / `--small-dl` / `--small-props` (`MWF_TILED_UV`, `MWF_SMALL_DL`, `MWF_SMALL_PROPS`): smaller map packs, off by default (`docs/pack.md`,
   "Smaller map packs"; the Wii side is `mwf_world_desc` in the shim, called before every world draw).
   `--adpcm` (`MWF_ADPCM`): sounds as 4-bit DSP ADPCM (`shared/wpk/src/adpcm.rs`), decoded while they play by the shim's
   ASND voice callback; off by default (`docs/pack.md`, "ADPCM sounds"). `--slim-anims` (`MWF_SLIM_ANIMS`): keyframed

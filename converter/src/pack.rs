@@ -431,6 +431,10 @@ pub struct StaticModelReport {
     pub unreadable_why: BTreeMap<String, usize>,
     pub unlit: usize,
     pub surfaces_without_material: usize,
+    /// `--small-props`: models packed from their LOD 1, and the LOD 0 vertices / triangles left out.
+    pub small_props: usize,
+    pub small_prop_vertices_dropped: usize,
+    pub small_prop_triangles_dropped: u64,
 }
 
 /// Texture data accumulated into `TXDA`.
@@ -602,6 +606,52 @@ pub struct Options {
     /// u8 display-list indices for batches of at most 256 vertices, no colour index where every vertex is white
     /// ([`wpk::quant::dl_flags`]).
     pub small_dl: bool,
+    /// Small props start at their second level of detail ([`first_lod`]).
+    pub small_props: bool,
+}
+
+/// With `--small-props`, models at most this big (bounding radius in units, at their largest placement scale) leave
+/// out their most detailed level: about 80 cm across, so bottles, cans, debris, small boxes and fittings.
+pub const SMALL_PROP_RADIUS: f32 = 32.0;
+
+fn lod_triangles(l: &crate::static_models::ModelLod) -> usize {
+    l.surfaces
+        .iter()
+        .filter(|s| s.material.is_some())
+        .map(|s| s.indices.len() / 3)
+        .sum()
+}
+
+/// The first level of detail to pack for a model: 1 when `small_props` is on, the model is small (its LOD 0 bounds,
+/// times `max_scale`, within [`SMALL_PROP_RADIUS`]) and its LOD 1 has triangles, fewer than LOD 0. The packed LODs
+/// keep IW4's switch distances, so LOD 1 then draws from the camera out to its own distance; nothing changes on the
+/// Wii. Otherwise 0.
+pub(crate) fn first_lod(
+    lods: &[crate::static_models::ModelLod],
+    max_scale: f32,
+    small_props: bool,
+) -> usize {
+    if !small_props || lods.len() < 2 {
+        return 0;
+    }
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for v in lods[0].surfaces.iter().flat_map(|s| &s.vertices) {
+        for k in 0..3 {
+            lo[k] = lo[k].min(v.pos[k]);
+            hi[k] = hi[k].max(v.pos[k]);
+        }
+    }
+    if lo[0] > hi[0] {
+        return 0;
+    }
+    let radius = (0..3)
+        .map(|k| (hi[k] - lo[k]) * 0.5)
+        .map(|h| h * h)
+        .sum::<f32>()
+        .sqrt()
+        * max_scale.max(1.0);
+    let (t0, t1) = (lod_triangles(&lods[0]), lod_triangles(&lods[1]));
+    usize::from(radius <= SMALL_PROP_RADIUS && t1 > 0 && t1 < t0)
 }
 
 /// Build the pack bytes for one map. `index` / `tex_dir`: the textures `convert_zone` wrote for this zone.
@@ -915,7 +965,28 @@ pub fn build(
         unlit: sm.unlit,
         ..StaticModelReport::default()
     };
-    for (&m, lods) in &sm.meshes {
+    // Each model's largest placement scale (a small model placed big is not small).
+    let mut max_scale: HashMap<usize, f32> = HashMap::new();
+    for inst in &sm.instances {
+        let e = max_scale.entry(inst.model).or_insert(0.0);
+        *e = e.max(inst.scale);
+    }
+    for (&m, all_lods) in &sm.meshes {
+        let skip = first_lod(
+            all_lods,
+            max_scale.get(&m).copied().unwrap_or(1.0),
+            opts.small_props,
+        );
+        if skip > 0 {
+            r.small_props += 1;
+            r.small_prop_vertices_dropped += all_lods[0]
+                .surfaces
+                .iter()
+                .map(|s| s.vertices.len())
+                .sum::<usize>();
+            r.small_prop_triangles_dropped += lod_triangles(&all_lods[0]) as u64;
+        }
+        let lods = &all_lods[skip..];
         // One origin for every surface of every LOD of the model (no cracks between its surfaces).
         let (mut blo, mut bhi) = ([f32::MAX; 3], [f32::MIN; 3]);
         for v in lods
@@ -1536,6 +1607,12 @@ pub fn render_text(r: &PackReport) -> String {
         m.instances, m.models, m.surfaces, m.vertices, m.triangles, m.placed_triangles, m.unresolved,
         m.unreadable, m.unlit, m.surfaces_without_material
     ));
+    if m.small_props > 0 {
+        s.push_str(&format!(
+            "small props from LOD 1: {} models ({} vertices, {} triangles of LOD 0 left out)\n",
+            m.small_props, m.small_prop_vertices_dropped, m.small_prop_triangles_dropped
+        ));
+    }
     let v = &r.visibility;
     s.push_str(&format!(
         "visibility: {} cells, {} portals; always drawn: {} batches, {} instances\n",
@@ -1676,5 +1753,61 @@ mod tests {
         assert_eq!((img.width, img.height), (1, 1));
         assert_eq!(img.pixels[0], [50, 40, 30, 255]);
         assert!(lightmap_from_secondary(2, 2, &bgra).is_none());
+    }
+
+    #[test]
+    fn small_props_start_at_lod_1() {
+        use crate::static_models::{ModelLod, ModelSurface};
+        // A cube of half-size `h` as `tris` triangles (positions only matter for the bounds).
+        let lod = |h: f32, tris: usize, dist: f32| ModelLod {
+            dist,
+            surfaces: vec![ModelSurface {
+                material: Some(0),
+                vertices: [[-h, -h, -h], [h, h, h], [h, -h, h]]
+                    .iter()
+                    .map(|&pos| WorldVertex {
+                        pos,
+                        rgba: !0,
+                        uv: [0.0; 2],
+                        lm: [0; 2],
+                    })
+                    .collect(),
+                indices: (0..tris).flat_map(|_| [0u16, 1, 2]).collect(),
+            }],
+        };
+        let small = [lod(10.0, 200, 300.0), lod(10.0, 40, 1500.0)];
+        assert_eq!(first_lod(&small, 1.0, false), 0);
+        assert_eq!(first_lod(&small, 1.0, true), 1);
+        // Placed three times bigger it is no longer small (radius 10·√3·3 ≈ 52).
+        assert_eq!(first_lod(&small, 3.0, true), 0);
+        // Big models, single-LOD models and LOD 1s that aren't lighter keep LOD 0.
+        assert_eq!(
+            first_lod(&[lod(40.0, 200, 300.0), lod(40.0, 40, 0.0)], 1.0, true),
+            0
+        );
+        assert_eq!(first_lod(&small[..1], 1.0, true), 0);
+        assert_eq!(
+            first_lod(&[lod(10.0, 50, 300.0), lod(10.0, 50, 0.0)], 1.0, true),
+            0
+        );
+        assert_eq!(
+            first_lod(&[lod(10.0, 50, 300.0), lod(10.0, 0, 0.0)], 1.0, true),
+            0
+        );
+        // The kept LODs still pick by IW4's distances: LOD 1 from the camera to its own switch distance.
+        let rec = |lods: &[ModelLod]| records::ModelRecord {
+            centre: [0.0; 3],
+            radius: 1.0,
+            lod_count: lods.len() as u8,
+            lods: std::array::from_fn(|i| records::ModelLod {
+                first_surface: i as u32,
+                surface_count: 1,
+                dist: lods.get(i).map_or(0.0, |l| l.dist),
+            }),
+        };
+        let r = rec(&small[first_lod(&small, 1.0, true)..]);
+        assert_eq!(r.lod_for(10.0).map(|l| l.first_surface), Some(0));
+        assert_eq!(r.lod_for(1499.0).map(|l| l.first_surface), Some(0));
+        assert!(r.lod_for(1600.0).is_none());
     }
 }

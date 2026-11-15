@@ -85,8 +85,8 @@ ignores the section.
 | `SNDD` | – | mono 16-bit big-endian PCM, each clip 32-byte aligned and padded to 32 (ASND DMA). Section `count` 1 (`wpk::adpcm::SNDD_ADPCM`, `--adpcm`): 4-bit DSP ADPCM clips instead (below) |
 
 ### Smaller map packs (toggles, off by default)
-Two switches on `pack` (or in `builder.bat`), each folded into the map pack's stamp so turning it on or off rebuilds the
-maps:
+Three switches on `pack` (or in `builder.bat`), each folded into the map pack's stamp so turning it on or off rebuilds
+the maps:
 - **`--tiled-uv`** (`MWF_TILED_UV=1`): a batch that doesn't fit fixed-point vertices because one connected piece
   spans 128 or more texture repeats (wide tiled floors, roads, walls) is split into UV tiles
   (`wpk::quant::quantize_tiled`, 96 repeats, else 32, else 8). Each tile gets its own whole-number UV shift. Vertices
@@ -98,6 +98,13 @@ maps:
   shim's `mwf_world_desc` then feeds the colour channel a white register). A display-list vertex costs 8 bytes in the
   old layout, 6 without colour, 4 with u8 indices, 3 with both. The report counts `dl_idx8_batches` and
   `dl_no_color_batches`.
+
+- **`--small-props`** (`MWF_SMALL_PROPS=1`): a static model whose LOD 0 fits in a 32-unit radius (about 80 cm
+  across, at its largest placement scale) and whose LOD 1 has fewer triangles is packed from LOD 1
+  (`pack::first_lod`). The packed LODs keep IW4's switch distances, and the Wii picks the first LOD whose distance is
+  past the camera, so LOD 1 draws from the camera out to its own switch distance. The runtime doesn't change. The
+  report counts `small_props` and the LOD 0 vertices and triangles left out. To check on hardware: props seen up
+  close (on tables, at your feet) looking blocky.
 
 Older packs have `flags` 0 and draw exactly as before.
 
