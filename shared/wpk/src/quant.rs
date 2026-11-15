@@ -64,11 +64,21 @@ impl Record for CompactVertex {
     }
 }
 
+/// Display-list layout flags in [`QuantRecord::flags`] (0 in older packs: four u16 indices per vertex).
+pub mod dl_flags {
+    /// Indices are u8 (the batch has at most 256 vertices).
+    pub const IDX8: u8 = 1;
+    /// No colour index: every vertex colour is white, so the renderer uses a white colour register instead.
+    pub const NO_COLOR: u8 = 2;
+}
+
 /// How a batch's vertices are stored: its GX vertex format and, for compact vertices, the origin to add.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct QuantRecord {
     /// [`crate::records::WORLD_VTXFMT`] (float, `WVTX` / `MVTX`) or one of the compact formats (`WVTQ` / `MVTQ`).
     pub vtxfmt: u8,
+    /// [`dl_flags`]: how the batch's display list indexes its vertices.
+    pub flags: u8,
     pub origin: [f32; 3],
 }
 
@@ -82,12 +92,14 @@ impl Record for QuantRecord {
     const LEN: usize = 16;
     fn write(&self, o: &mut Vec<u8>) {
         o.u8(self.vtxfmt);
-        o.zeros(3);
+        o.u8(self.flags);
+        o.zeros(2);
         self.origin.iter().for_each(|&v| o.f32(v));
     }
     fn read(b: &[u8]) -> Self {
         QuantRecord {
             vtxfmt: b[0],
+            flags: b[1],
             origin: [be::f32(b, 4), be::f32(b, 8), be::f32(b, 12)],
         }
     }
@@ -192,6 +204,119 @@ pub fn quantize(
     Some((vtxfmt, out))
 }
 
+/// Why a batch stays in floats after [`quantize_tiled`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatReason {
+    /// A vertex is more than 4096 units from the batch origin.
+    Position,
+    /// A single triangle spans too many texture repeats for any compact UV format.
+    TriangleUv,
+    /// Splitting into UV tiles would need more than 65,536 vertices.
+    TooManyVertices,
+}
+
+/// UV tile sizes [`quantize_tiled`] tries, in texture repeats (even whole numbers, so tile shifts are whole numbers).
+/// Larger tiles duplicate fewer vertices; smaller ones leave room for wider triangles (a vertex sits at most half a
+/// tile plus its triangle's span from the tile centre, which must stay under 128 repeats).
+pub const UV_TILES: [f32; 3] = [96.0, 32.0, 8.0];
+
+/// [`quantize`] for batches whose connected pieces span too many texture repeats (large tiled floors, roads, walls):
+/// triangles are grouped into tiles ([`UV_TILES`]) by their UV centre, each tile gets its own whole-number UV
+/// shift, and a vertex used by triangles in several tiles is duplicated per tile (same position; UVs differing by
+/// whole numbers sample the same with repeat wrapping, so no seams). Returns the vertex format, the vertices and the
+/// triangles re-indexed to them.
+pub fn quantize_tiled(
+    verts: &[WorldVertex],
+    tris: &[u16],
+    origin: [f32; 3],
+) -> Result<(u8, Vec<CompactVertex>, Vec<u16>), FloatReason> {
+    let mut last = Err(FloatReason::TriangleUv);
+    for tile in UV_TILES {
+        last = quantize_tiles_of(verts, tris, origin, tile);
+        if last != Err(FloatReason::TriangleUv) {
+            break;
+        }
+    }
+    last
+}
+
+fn quantize_tiles_of(
+    verts: &[WorldVertex],
+    tris: &[u16],
+    origin: [f32; 3],
+    tile_size: f32,
+) -> Result<(u8, Vec<CompactVertex>, Vec<u16>), FloatReason> {
+    let step = (1u32 << POS_FRAC) as f32;
+    let fits = |x: f32| (-32768.0..=32767.0).contains(&x);
+    if verts
+        .iter()
+        .any(|v| !(0..3).all(|k| fits(libm::roundf((v.pos[k] - origin[k]) * step))))
+    {
+        return Err(FloatReason::Position);
+    }
+    // Tile of each triangle, and its shift (the tile's centre: a whole number).
+    let mut map: alloc::collections::BTreeMap<(u16, i32, i32), u16> =
+        alloc::collections::BTreeMap::new();
+    let mut out_verts: Vec<(u16, [f32; 2])> = Vec::new();
+    let mut out_tris = Vec::with_capacity(tris.len());
+    for t in tris.chunks_exact(3) {
+        let c: [f32; 2] = core::array::from_fn(|k| {
+            t.iter().map(|&i| verts[usize::from(i)].uv[k]).sum::<f32>() / 3.0
+        });
+        let tile = c.map(|x| libm::floorf(x / tile_size) as i32);
+        let shift = tile.map(|x| x as f32 * tile_size + tile_size * 0.5);
+        for &i in t {
+            let key = (i, tile[0], tile[1]);
+            let n = match map.get(&key) {
+                Some(&n) => n,
+                None => {
+                    if out_verts.len() > usize::from(u16::MAX) {
+                        return Err(FloatReason::TooManyVertices);
+                    }
+                    let n = out_verts.len() as u16;
+                    out_verts.push((i, shift));
+                    map.insert(key, n);
+                    n
+                }
+            };
+            out_tris.push(n);
+        }
+    }
+    let reach = out_verts
+        .iter()
+        .map(|&(i, s)| {
+            let uv = verts[usize::from(i)].uv;
+            (uv[0] - s[0]).abs().max((uv[1] - s[1]).abs())
+        })
+        .fold(0.0f32, f32::max);
+    let vtxfmt = if reach < 7.99 {
+        VTXFMT_UV12
+    } else if reach < 31.99 {
+        VTXFMT_UV10
+    } else if reach < 127.99 {
+        VTXFMT_UV8
+    } else {
+        return Err(FloatReason::TriangleUv);
+    };
+    let uv_scale = (1u32 << uv_frac(vtxfmt)) as f32;
+    let mut out = Vec::with_capacity(out_verts.len());
+    for &(i, shift) in &out_verts {
+        let v = &verts[usize::from(i)];
+        let p: [f32; 3] = core::array::from_fn(|k| libm::roundf((v.pos[k] - origin[k]) * step));
+        let t: [f32; 2] = core::array::from_fn(|k| libm::roundf((v.uv[k] - shift[k]) * uv_scale));
+        if !t.iter().all(|&x| fits(x)) {
+            return Err(FloatReason::TriangleUv);
+        }
+        out.push(CompactVertex {
+            pos: p.map(|x| x as i16),
+            rgba: v.rgba,
+            uv: t.map(|x| x as i16),
+            lm: v.lm,
+        });
+    }
+    Ok((vtxfmt, out, out_tris))
+}
+
 /// Back to floats (the reference renderer; UVs come back shifted by the batch's whole-number offset).
 pub fn dequantize(v: &CompactVertex, q: &QuantRecord) -> WorldVertex {
     let step = 1.0 / (1u32 << POS_FRAC) as f32;
@@ -230,6 +355,7 @@ mod tests {
                 q,
                 &QuantRecord {
                     vtxfmt: VTXFMT_UV12,
+                    flags: 0,
                     origin: o,
                 },
             )
@@ -266,6 +392,7 @@ mod tests {
             &q[0],
             &QuantRecord {
                 vtxfmt: fmt,
+                flags: 0,
                 origin: [0.0; 3],
             },
         );
@@ -293,5 +420,99 @@ mod tests {
         q[0].write(&mut b);
         assert_eq!(b.len(), CompactVertex::LEN);
         assert_eq!(CompactVertex::read(&b), q[0]);
+    }
+
+    /// A flat floor of `n` × `n` quads, `size` units each, its texture repeating once per `per` units.
+    fn floor(n: usize, size: f32, per: f32) -> (Vec<WorldVertex>, Vec<u16>) {
+        let mut v = Vec::new();
+        for y in 0..=n {
+            for x in 0..=n {
+                let p = [x as f32 * size, y as f32 * size, 0.0];
+                v.push(vtx(p, [p[0] / per, p[1] / per]));
+            }
+        }
+        let mut t = Vec::new();
+        let w = (n + 1) as u16;
+        for y in 0..n as u16 {
+            for x in 0..n as u16 {
+                let (a, b, c, d) = (
+                    y * w + x,
+                    y * w + x + 1,
+                    (y + 1) * w + x,
+                    (y + 1) * w + x + 1,
+                );
+                t.extend_from_slice(&[a, b, c, b, d, c]);
+            }
+        }
+        (v, t)
+    }
+
+    #[test]
+    fn tiled_quantize_fits_wide_floors_without_seams() {
+        // 40 × 40 quads of 100 units, the texture repeating every 8 units: one connected piece spanning 500 repeats.
+        let (v, t) = floor(40, 100.0, 8.0);
+        let origin = snap_origin([2000.0, 2000.0, 0.0]);
+        assert!(
+            quantize(&v, &t, origin, false).is_none(),
+            "the plain path must fail for this test"
+        );
+        let (fmt, q, tris) = quantize_tiled(&v, &t, origin).unwrap();
+        assert_eq!(tris.len(), t.len());
+        assert!(
+            q.len() >= v.len() && q.len() < v.len() * 2,
+            "{} vertices from {}",
+            q.len(),
+            v.len()
+        );
+        let rec = QuantRecord {
+            vtxfmt: fmt,
+            flags: 0,
+            origin,
+        };
+        let step = 1.0 / f32::from(1u16 << uv_frac(fmt));
+        for (old, new) in t.chunks_exact(3).zip(tris.chunks_exact(3)) {
+            // Same corners, same positions; UVs shifted by one whole number per triangle (same texels).
+            let mut shift: Option<[f32; 2]> = None;
+            for (&a, &b) in old.iter().zip(new) {
+                let (o, n) = (v[usize::from(a)], dequantize(&q[usize::from(b)], &rec));
+                for k in 0..3 {
+                    assert!((o.pos[k] - n.pos[k]).abs() <= 1.0 / 16.0);
+                }
+                let d = [o.uv[0] - n.uv[0], o.uv[1] - n.uv[1]];
+                for dk in d {
+                    assert!((dk - libm::roundf(dk)).abs() <= step, "uv off by {dk}");
+                }
+                let r = d.map(libm::roundf);
+                assert_eq!(
+                    *shift.get_or_insert(r),
+                    r,
+                    "a triangle's corners must share one shift"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tiled_quantize_reports_why_it_cannot() {
+        // A single triangle spanning 300 repeats.
+        let v = vec![
+            vtx([0.0; 3], [0.0, 0.0]),
+            vtx([1.0, 0.0, 0.0], [300.0, 0.0]),
+            vtx([0.0, 1.0, 0.0], [0.0, 1.0]),
+        ];
+        assert_eq!(
+            quantize_tiled(&v, &[0, 1, 2], [0.0; 3]),
+            Err(FloatReason::TriangleUv)
+        );
+        // A vertex 5000 units from the origin.
+        let v = vec![
+            vtx([5000.0, 0.0, 0.0], [0.0, 0.0]),
+            vtx([0.0; 3], [0.0, 0.0]),
+            vtx([1.0; 3], [0.0, 0.0]),
+        ];
+        assert_eq!(
+            quantize_tiled(&v, &[0, 1, 2], [0.0; 3]),
+            Err(FloatReason::Position)
+        );
     }
 }

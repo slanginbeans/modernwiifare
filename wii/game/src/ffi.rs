@@ -132,6 +132,7 @@ unsafe extern "C" {
     pub fn mwf_world_arrays(vertices: *const u8, stride: u32);
     pub fn mwf_world_state(s: *const DrawState);
     pub fn mwf_pos_matrix(m: *const Mtx34);
+    pub fn mwf_world_desc(flags: u8);
     pub fn mwf_call_dl(dl: *const u8, len: u32);
     pub fn mwf_sky_face(view_rot: *const Mtx34, corners: *const [[f32; 5]; 4], tex: i32);
     pub fn mwf_hud_rects(rects: *const [i16; 4], count: u32, rgba: u32);

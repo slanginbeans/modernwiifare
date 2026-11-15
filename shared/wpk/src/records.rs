@@ -334,15 +334,29 @@ pub fn world_display_list(tris: &[u16]) -> Vec<u8> {
 
 /// [`world_display_list`] in vertex format `vtxfmt` (the float world format or a compact one, `crate::quant`).
 pub fn world_display_list_fmt(tris: &[u16], vtxfmt: u8) -> Vec<u8> {
-    let mut dl = Vec::with_capacity(tris.len() * 2 * WORLD_DL_ATTRS + 32);
+    world_display_list_layout(tris, vtxfmt, crate::strips::DlLayout::WORLD)
+}
+
+/// [`world_display_list_fmt`] in `layout` (u8 indices need every index under 256).
+pub fn world_display_list_layout(
+    tris: &[u16],
+    vtxfmt: u8,
+    layout: crate::strips::DlLayout,
+) -> Vec<u8> {
+    let mut dl = Vec::with_capacity(tris.len() * layout.vertex_bytes() + 32);
     // Largest multiple of 3 that fits the u16 vertex count.
     const MAX: usize = 65535 / 3 * 3;
     for chunk in tris.chunks(MAX) {
         dl.u8(gx_triangles(vtxfmt));
         dl.u16(chunk.len() as u16);
         for &i in chunk {
-            for _ in 0..WORLD_DL_ATTRS {
-                dl.u16(i);
+            for _ in 0..layout.attrs {
+                if layout.idx8 {
+                    debug_assert!(i < 256, "u8 display-list index {i}");
+                    dl.u8(i as u8);
+                } else {
+                    dl.u16(i);
+                }
             }
         }
     }

@@ -47,6 +47,9 @@ pub trait Gfx {
     }
     /// Load the position matrix for the following draws (the view, or view x a model's placement).
     fn pos_matrix(&mut self, m: &Mtx34);
+    /// The vertex layout of the next display lists ([`wpk::quant::dl_flags`]: u8 indices, no colour index). 0 is the
+    /// default layout (four u16 indices). Kept until changed; renderers may skip a repeat.
+    fn world_desc(&mut self, _flags: u8) {}
     fn call_dl(&mut self, dl: &[u8]);
     /// One sky face: 4 corners `[x, y, z, s, t]` around the eye, drawn with the rotation-only view.
     fn sky_face(&mut self, view_rot: &Mtx34, corners: &[[f32; 5]; 4], tex: i32);

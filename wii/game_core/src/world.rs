@@ -658,6 +658,7 @@ impl<'a> World<'a> {
         // polygon offset level, vertex origin); the view alone is loaded by frame_begin.
         let float = QuantRecord {
             vtxfmt: records::WORLD_VTXFMT,
+            flags: 0,
             origin: [0.0; 3],
         };
         let mut last_base = (false, false, u32::MAX);
@@ -730,6 +731,9 @@ impl<'a> World<'a> {
                 }
                 last_state = Some(s);
             }
+            // How this batch's display list indexes its vertices (u8 indices, no colour; 0 in older packs). The
+            // renderer skips the change when it matches the last one.
+            gfx.world_desc(q.flags);
             gfx.call_dl(&self.dls[b.dl_off as usize..(b.dl_off + b.dl_len) as usize]);
             stats.batches += 1;
             stats.triangles += b.tri_count;

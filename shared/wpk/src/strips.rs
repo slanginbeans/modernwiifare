@@ -146,20 +146,63 @@ pub fn display_list_fmt(tris: &[u16], vtxfmt: u8) -> Vec<u8> {
     strips_display_list(&stripify(tris), vtxfmt)
 }
 
+/// How a display list indexes its vertices: `attrs` indexed attributes per vertex (each the same index; the first is
+/// the position's), as u16 or, for batches of at most 256 vertices, u8.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DlLayout {
+    pub attrs: usize,
+    pub idx8: bool,
+}
+
+impl DlLayout {
+    /// The world layout of older packs: position, colour, UV and lightmap UV as u16 indices.
+    pub const WORLD: DlLayout = DlLayout {
+        attrs: WORLD_DL_ATTRS,
+        idx8: false,
+    };
+
+    /// The world layout a batch's [`crate::quant::dl_flags`] describe.
+    pub const fn from_flags(flags: u8) -> DlLayout {
+        DlLayout {
+            attrs: if flags & crate::quant::dl_flags::NO_COLOR != 0 {
+                WORLD_DL_ATTRS - 1
+            } else {
+                WORLD_DL_ATTRS
+            },
+            idx8: flags & crate::quant::dl_flags::IDX8 != 0,
+        }
+    }
+
+    /// Bytes per vertex in the display list.
+    pub const fn vertex_bytes(self) -> usize {
+        self.attrs * if self.idx8 { 1 } else { 2 }
+    }
+}
+
 /// A display list of `st` (strips may hold repeated-vertex "swap" triangles: zero area, nothing drawn).
 pub fn strips_display_list(st: &Strips, vtxfmt: u8) -> Vec<u8> {
-    strips_display_list_attrs(st, vtxfmt, WORLD_DL_ATTRS)
+    strips_display_list_layout(st, vtxfmt, DlLayout::WORLD)
 }
 
 /// [`strips_display_list`] for a vertex format with `attrs` indexed attributes (each the same u16 index).
 pub fn strips_display_list_attrs(st: &Strips, vtxfmt: u8, attrs: usize) -> Vec<u8> {
+    strips_display_list_layout(st, vtxfmt, DlLayout { attrs, idx8: false })
+}
+
+/// [`strips_display_list`] in `layout`. With u8 indices every index must be under 256.
+pub fn strips_display_list_layout(st: &Strips, vtxfmt: u8, layout: DlLayout) -> Vec<u8> {
     let mut dl = Vec::new();
     let put = |dl: &mut Vec<u8>, op: u8, verts: &[u16]| {
         dl.u8(op);
         dl.u16(verts.len() as u16);
         for &i in verts {
-            for _ in 0..attrs {
-                dl.u16(i);
+            for _ in 0..layout.attrs {
+                if layout.idx8 {
+                    debug_assert!(i < 256, "u8 display-list index {i}");
+                    dl.u8(i as u8);
+                } else {
+                    dl.u16(i);
+                }
             }
         }
     };
@@ -185,11 +228,17 @@ pub fn strips_display_list_attrs(st: &Strips, vtxfmt: u8, attrs: usize) -> Vec<u
 
 /// Decode a world display list (lists and strips) to triangles in GX winding.
 pub fn dl_triangles(dl: &[u8]) -> Vec<[u16; 3]> {
-    dl_triangles_attrs(dl, WORLD_DL_ATTRS)
+    dl_triangles_layout(dl, DlLayout::WORLD)
 }
 
 /// [`dl_triangles`] for a vertex format with `attrs` u16 indices per vertex (the first is the position's).
 pub fn dl_triangles_attrs(dl: &[u8], attrs: usize) -> Vec<[u16; 3]> {
+    dl_triangles_layout(dl, DlLayout { attrs, idx8: false })
+}
+
+/// [`dl_triangles`] in `layout`.
+pub fn dl_triangles_layout(dl: &[u8], layout: DlLayout) -> Vec<[u16; 3]> {
+    let vb = layout.vertex_bytes();
     let mut out = Vec::new();
     let mut i = 0;
     while i + 3 <= dl.len() {
@@ -201,8 +250,12 @@ pub fn dl_triangles_attrs(dl: &[u8], attrs: usize) -> Vec<[u16; 3]> {
         let c = usize::from(u16::from_be_bytes([dl[i + 1], dl[i + 2]]));
         let verts: Vec<u16> = (0..c)
             .map(|v| {
-                let at = i + 3 + v * 2 * attrs;
-                u16::from_be_bytes([dl[at], dl[at + 1]])
+                let at = i + 3 + v * vb;
+                if layout.idx8 {
+                    u16::from(dl[at])
+                } else {
+                    u16::from_be_bytes([dl[at], dl[at + 1]])
+                }
             })
             .collect();
         if op & 0xF8 == 0x98 {
@@ -210,7 +263,7 @@ pub fn dl_triangles_attrs(dl: &[u8], attrs: usize) -> Vec<[u16; 3]> {
         } else {
             out.extend(verts.chunks_exact(3).map(|t| [t[0], t[1], t[2]]));
         }
-        i += 3 + c * 2 * attrs;
+        i += 3 + c * vb;
     }
     out
 }
@@ -244,6 +297,11 @@ pub fn same_triangles(
 
 /// Vertices a world display list sends to the GPU (what the vertex pipeline transforms).
 pub fn dl_vertex_count(dl: &[u8]) -> usize {
+    dl_vertex_count_layout(dl, DlLayout::WORLD)
+}
+
+/// [`dl_vertex_count`] in `layout`.
+pub fn dl_vertex_count_layout(dl: &[u8], layout: DlLayout) -> usize {
     let (mut i, mut n) = (0, 0);
     while i + 3 <= dl.len() {
         if dl[i] == 0 {
@@ -252,7 +310,7 @@ pub fn dl_vertex_count(dl: &[u8]) -> usize {
         }
         let c = usize::from(u16::from_be_bytes([dl[i + 1], dl[i + 2]]));
         n += c;
-        i += 3 + c * 2 * WORLD_DL_ATTRS;
+        i += 3 + c * layout.vertex_bytes();
     }
     n
 }
@@ -322,5 +380,61 @@ mod tests {
         assert_eq!(dl.len() % 32, 0);
         assert_eq!(dl[0], 0x98);
         assert_eq!(dl_vertex_count(&dl), stripify(&grid(4, 1)).vertex_count());
+    }
+
+    #[test]
+    fn layouts_round_trip_and_shrink() {
+        use crate::quant::dl_flags::{IDX8, NO_COLOR};
+        // A 9 × 9 grid of quads (100 vertices): fits u8 indices.
+        let mut tris = Vec::new();
+        for y in 0..9u16 {
+            for x in 0..9u16 {
+                let (a, b, c, d) = (
+                    y * 10 + x,
+                    y * 10 + x + 1,
+                    (y + 1) * 10 + x,
+                    (y + 1) * 10 + x + 1,
+                );
+                tris.extend_from_slice(&[a, b, c, b, d, c]);
+            }
+        }
+        let st = stripify(&tris);
+        let want = || tris.chunks_exact(3).map(|t| [t[0], t[1], t[2]]);
+        let old = strips_display_list(&st, 3);
+        assert_eq!(
+            old,
+            strips_display_list_layout(&st, 3, DlLayout::from_flags(0)),
+            "flags 0 is the old layout"
+        );
+        for flags in [IDX8, NO_COLOR, IDX8 | NO_COLOR] {
+            let layout = DlLayout::from_flags(flags);
+            let dl = strips_display_list_layout(&st, 3, layout);
+            assert!(
+                same_triangles(dl_triangles_layout(&dl, layout).into_iter(), want()),
+                "flags {flags}"
+            );
+            assert_eq!(dl_vertex_count_layout(&dl, layout), dl_vertex_count(&old));
+            assert_eq!(dl.len() % crate::ALIGN, 0);
+            assert!(
+                dl.len() < old.len(),
+                "flags {flags}: {} vs {}",
+                dl.len(),
+                old.len()
+            );
+        }
+        assert_eq!(DlLayout::from_flags(IDX8).vertex_bytes(), 4);
+        assert_eq!(DlLayout::from_flags(NO_COLOR).vertex_bytes(), 6);
+        assert_eq!(DlLayout::from_flags(IDX8 | NO_COLOR).vertex_bytes(), 3);
+        // Triangle lists (blended batches) too.
+        let layout = DlLayout::from_flags(IDX8 | NO_COLOR);
+        let list = crate::records::world_display_list_layout(&tris, 3, layout);
+        assert!(same_triangles(
+            dl_triangles_layout(&list, layout).into_iter(),
+            want()
+        ));
+        assert_eq!(
+            crate::records::world_display_list_fmt(&tris, 3),
+            crate::records::world_display_list_layout(&tris, 3, DlLayout::WORLD)
+        );
     }
 }
