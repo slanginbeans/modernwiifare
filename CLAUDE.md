@@ -40,7 +40,13 @@ never run (supersedes 0002)
   tails cut, off by default. Map reports also break down collision (`clip_report.rs`, measuring only). Pack reports: `<map>.json` has a texture
   breakdown (`tex_report.rs`); `common.json` covers `common.wpk` and the weapon files. `rules.rs` reads values from the
   user's scripts (ADR 0007); `destructibles.rs` reads the destructible object types the same way (map packs' `DST*`). `preview <pack.wpk>`: software render of a pack (also the viewmodel and characters).
-  `menu-preview`: menus. `report <log>...`: summarises the Wii's SD-card match logs (`report.bat`).
+  `menu-preview`: menus. `export <game folder> [--out out/export]` (`export.rs`): the class weapons as
+  `WEAPONFILE` text, their player-view sounds as WAVs and an `index.json`, for Slick Blasters' `tools/mw2/`
+  importers (the user's own data: never committed, like every `out/` file). `export-map <game folder> [--map <zone>|all]`
+  (`export_map.rs`): a map for Slick Blasters' `import_map.py` / `import_props.py`: the world and static models lit
+  (lightmaps, light grid) and simplified to `--max-tris`, each static model alone, colour textures as PNGs, collision
+  as boxes (axial brushes exactly; sloped brushes and the clip mesh through a `--column` raster merged within
+  `--step`, coarser in turn until under `--max-boxes`), spawns, sun and the play area (spawns + `--margin`). `report <log>...`: summarises the Wii's SD-card match logs (`report.bat`).
   `textures <game folder> [--map <zone>]`: every GfxImage of a map zone (in-zone or IWI) to `.gxt` under
   `out/textures/<zone>/` with a content-free `report.json`. Role and alpha come from the materials that use each image
   (`material_links.rs`); the name is only a fallback. Each texture also gets a load-by-need group (match / weapon /

@@ -14,7 +14,7 @@ use fastfile_iw4::{Ptr, ZonePtr, ZoneStream};
 use wpk::sound::{AliasRecord, NONE, Note, VariantRecord, WeaponSounds};
 
 /// Miles `MSS_PCM`: the only loaded format IW4 PC uses for in-zone sounds that IW4L plays.
-const MSS_PCM: i32 = 1;
+pub(crate) const MSS_PCM: i32 = 1;
 
 /// A loaded sound: interleaved little-endian PCM as stored in the zone.
 #[derive(Clone, Debug)]
