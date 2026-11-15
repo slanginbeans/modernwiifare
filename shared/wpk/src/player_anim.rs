@@ -23,7 +23,7 @@ pub fn encode(clips: &[Clip]) -> Vec<u8> {
     let table = b.len();
     b.zeros(clips.len() * 4);
     for (ci, c) in clips.iter().enumerate() {
-        while b.len() % 4 != 0 {
+        while !b.len().is_multiple_of(4) {
             b.u8(0);
         }
         let start = b.len();

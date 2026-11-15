@@ -148,12 +148,17 @@ pub fn display_list_fmt(tris: &[u16], vtxfmt: u8) -> Vec<u8> {
 
 /// A display list of `st` (strips may hold repeated-vertex "swap" triangles: zero area, nothing drawn).
 pub fn strips_display_list(st: &Strips, vtxfmt: u8) -> Vec<u8> {
+    strips_display_list_attrs(st, vtxfmt, WORLD_DL_ATTRS)
+}
+
+/// [`strips_display_list`] for a vertex format with `attrs` indexed attributes (each the same u16 index).
+pub fn strips_display_list_attrs(st: &Strips, vtxfmt: u8, attrs: usize) -> Vec<u8> {
     let mut dl = Vec::new();
     let put = |dl: &mut Vec<u8>, op: u8, verts: &[u16]| {
         dl.u8(op);
         dl.u16(verts.len() as u16);
         for &i in verts {
-            for _ in 0..WORLD_DL_ATTRS {
+            for _ in 0..attrs {
                 dl.u16(i);
             }
         }
@@ -180,6 +185,11 @@ pub fn strips_display_list(st: &Strips, vtxfmt: u8) -> Vec<u8> {
 
 /// Decode a world display list (lists and strips) to triangles in GX winding.
 pub fn dl_triangles(dl: &[u8]) -> Vec<[u16; 3]> {
+    dl_triangles_attrs(dl, WORLD_DL_ATTRS)
+}
+
+/// [`dl_triangles`] for a vertex format with `attrs` u16 indices per vertex (the first is the position's).
+pub fn dl_triangles_attrs(dl: &[u8], attrs: usize) -> Vec<[u16; 3]> {
     let mut out = Vec::new();
     let mut i = 0;
     while i + 3 <= dl.len() {
@@ -191,7 +201,7 @@ pub fn dl_triangles(dl: &[u8]) -> Vec<[u16; 3]> {
         let c = usize::from(u16::from_be_bytes([dl[i + 1], dl[i + 2]]));
         let verts: Vec<u16> = (0..c)
             .map(|v| {
-                let at = i + 3 + v * 2 * WORLD_DL_ATTRS;
+                let at = i + 3 + v * 2 * attrs;
                 u16::from_be_bytes([dl[at], dl[at + 1]])
             })
             .collect();
@@ -200,7 +210,7 @@ pub fn dl_triangles(dl: &[u8]) -> Vec<[u16; 3]> {
         } else {
             out.extend(verts.chunks_exact(3).map(|t| [t[0], t[1], t[2]]));
         }
-        i += 3 + c * 2 * WORLD_DL_ATTRS;
+        i += 3 + c * 2 * attrs;
     }
     out
 }

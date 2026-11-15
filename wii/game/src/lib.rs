@@ -865,7 +865,7 @@ fn run_map(
         Err(_) => return fail(0xc020c0ff),
     };
     // The players' bodies (none with an older pack: placeholder boxes then).
-    let mut characters = character::Characters::load(bytes, common, |i| world.texture(i));
+    let mut characters = character::Characters::load(bytes, common, |i| world.texture(i), gfx);
     let mut poses: Vec<character::Pose> = Vec::with_capacity(bots);
     let clip: Option<MapClip<'_>> = clip_data.as_ref().map(MapClip::new);
     devlog::event(

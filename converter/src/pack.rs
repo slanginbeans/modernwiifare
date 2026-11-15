@@ -487,6 +487,51 @@ impl Textures {
         i
     }
 
+    /// [`Textures::add_file`] with its top mip levels left out until it is at most `max` texels across (as far as
+    /// its mips go).
+    pub(crate) fn add_file_capped(
+        &mut self,
+        dir: &Path,
+        file: &str,
+        wrap: Wrap,
+        max: u32,
+    ) -> Result<u16, String> {
+        let key = format!("{file}@{max}");
+        if let Some(&i) = self.by_file.get(&key) {
+            return Ok(i);
+        }
+        let bytes = std::fs::read(dir.join(file)).map_err(|e| format!("{file}: {e}"))?;
+        let (h, data) =
+            gx_texture::container::parse(&bytes).map_err(|e| format!("{file}: {e:?}"))?;
+        let plane = gx_texture::container::parse_alpha_plane(&bytes)
+            .map_err(|e| format!("{file}: {e:?}"))?;
+        let (w, ht, levels) = (u32::from(h.width), u32::from(h.height), u32::from(h.levels));
+        let mut k = 0;
+        while k + 1 < levels && ((w >> k) > max || (ht >> k) > max) {
+            k += 1;
+        }
+        let cut = |fmt: gx_texture::TexFormat, d: &[u8]| -> Vec<u8> {
+            let skip = fmt.chain_size(w, ht, k);
+            let keep = fmt.chain_size((w >> k).max(1), (ht >> k).max(1), levels - k);
+            d.get(skip..skip + keep).unwrap_or(d).to_vec()
+        };
+        let c = gx_texture::Converted {
+            format: h.format,
+            width: (w >> k).max(1),
+            height: (ht >> k).max(1),
+            levels: levels - k,
+            traits: gx_texture::policy::Traits {
+                grey: false,
+                alpha: gx_texture::policy::Alpha::Opaque,
+            },
+            data: cut(h.format, data),
+            alpha_plane: plane.map(|(ph, p)| cut(ph.format, p)),
+        };
+        let i = self.add(&c, wrap);
+        self.by_file.insert(key, i);
+        Ok(i)
+    }
+
     /// Add a converted `.gxt` from the texture folder (once per file).
     pub(crate) fn add_file(&mut self, dir: &Path, file: &str, wrap: Wrap) -> Result<u16, String> {
         if let Some(&i) = self.by_file.get(file) {

@@ -62,7 +62,7 @@ const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <repor
      mwf-convert report <log file>...\n  \
      mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n      [--viewmodel <view.wpk> --anim <slot> --time <s>] [--character <common.wpk> --team 0|1
       [--pmove idle|run|walk|sprint|idlecr|...] [--ptype autorifle|pistol|...] [--pclass rifle|...]
-      [--pevent fireweapon|reload|death|...] [--paim <pitch>]]\n  \
+      [--pevent fireweapon|reload|death|...] [--paim <pitch>] [--pgun <n>] [--pturn <deg>]]\n  \
      mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask|minimap] [--out <folder>]";
 
 /// IW4L's `ZoneStream` keeps the latest record of every asset type inline, so walking a zone needs far more stack than
@@ -705,11 +705,33 @@ fn run_common(args: &[String]) -> ExitCode {
     let walked = zone_textures::walk_with(&image, &table_cells, |s, links| {
         let mut views = Vec::new();
         let mut failed = 0usize;
+        // The weapons in the characters' hands: each base weapon's world model, its textures shared.
+        let mut held: Vec<(String, wpk::held::Model)> = Vec::new();
+        let mut held_tex = pack::Textures::default();
         for base in &bases {
             let name = format!("{base}_mp");
             let Some(w) = links.weapons.iter().position(|n| *n == name) else {
                 continue;
             };
+            let view = &links.weapon_views[w];
+            if let Some(m) = view
+                .world
+                .as_deref()
+                .and_then(|n| links.models.iter().position(|x| x.name == n))
+            {
+                match viewmodel::build_held(
+                    s,
+                    links,
+                    m,
+                    &view.hide,
+                    &index,
+                    &tex_dir,
+                    &mut held_tex,
+                ) {
+                    Ok(model) => held.push((base.clone(), model)),
+                    Err(e) => eprintln!("warning: {base}'s third-person model: {e}"),
+                }
+            }
             let mut tex = pack::Textures::default();
             match viewmodel::build(s, links, w, &index, &tex_dir, &mut tex) {
                 Ok((vm, report)) => {
@@ -766,9 +788,9 @@ fn run_common(args: &[String]) -> ExitCode {
             &has,
         );
         let anims = viewmodel::bake_player_anims(s, links, &parsed.anims);
-        (views, failed, (anims, parsed))
+        (views, failed, (anims, parsed), (held, held_tex))
     });
-    let (mut collector, (views, failed, player_anims)) = match walked {
+    let (mut collector, (views, failed, player_anims, (held, mut held_tex))) = match walked {
         Ok(x) => x,
         Err(e) => {
             eprintln!("reading {label}: {e}");
@@ -1000,6 +1022,51 @@ fn run_common(args: &[String]) -> ExitCode {
             player_anims::SCRIPT
         );
     }
+    // The weapons in the characters' hands: each weapon record takes its base weapon's model (the longest base
+    // its name starts with).
+    let held_index: Vec<u16> = weapons
+        .iter()
+        .map(|w| {
+            let n = w.name();
+            held.iter()
+                .enumerate()
+                .filter(|(_, (base, _))| {
+                    n == format!("{base}_mp") || n.starts_with(&format!("{base}_"))
+                })
+                .max_by_key(|(_, (base, _))| base.len())
+                .map_or(wpk::records::NONE, |(i, _)| i as u16)
+        })
+        .collect();
+    let held_models: Vec<wpk::held::Model> = held.into_iter().map(|(_, m)| m).collect();
+    let held_bytes = wpk::held::encode(&held_models);
+    println!(
+        "weapons in hand: {} models ({} vertices), {} textures, {:.2} MiB; {} of {} weapons have one",
+        held_models.len(),
+        held_models.iter().map(|m| m.positions.len()).sum::<usize>(),
+        held_tex.records.len(),
+        (held_bytes.len() + held_tex.data.len()) as f64 / (1024.0 * 1024.0),
+        held_index
+            .iter()
+            .filter(|&&i| i != wpk::records::NONE)
+            .count(),
+        weapons.len(),
+    );
+    b.section(wpk::tag::HELD_MODELS, held_models.len() as u32, held_bytes);
+    b.section(
+        wpk::tag::HELD_INDEX,
+        held_index.len() as u32,
+        held_index.iter().flat_map(|v| v.to_be_bytes()).collect(),
+    );
+    b.section(
+        wpk::tag::HELD_TEXTURES,
+        held_tex.records.len() as u32,
+        wpk::records::encode(&held_tex.records),
+    );
+    b.section(
+        wpk::tag::HELD_TEXTURE_DATA,
+        0,
+        std::mem::take(&mut held_tex.data),
+    );
     b.section(
         wpk::tag::PLAYER_ANIM_SCRIPT,
         (parsed.script.moves.len() + parsed.script.events.len()) as u32,
@@ -1348,6 +1415,8 @@ fn run_preview(args: &[String]) -> ExitCode {
             }
             "--pevent" => char_shot.event = Some(name_index(&value(), anim_iw4::ANIM_ET_NAMES, 2)),
             "--paim" => char_shot.aim_pitch = value().parse().unwrap_or(0.0),
+            "--pgun" => char_shot.gun = value().parse().ok(),
+            "--pturn" => char_shot.turn = value().parse().unwrap_or(0.0),
             "--time" => anim_time = value().parse().unwrap_or(0.0),
             _ if file.is_none() => file = Some(PathBuf::from(a)),
             _ => {

@@ -27,7 +27,8 @@ use std::path::{Path, PathBuf};
 /// 28: opaque display lists take meshoptimizer's strips where they send fewer vertices.
 /// 29: MW2's player animation script (`PSCR`) and every animation it plays (`PANM` read in place, key frames); clip
 /// tracks may carry key frames.
-pub const REVISION: u32 = 29;
+/// 30: the weapons in the characters' hands (`GUNM`, `GUNI`, `GTEX`, `GTXD`).
+pub const REVISION: u32 = 30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

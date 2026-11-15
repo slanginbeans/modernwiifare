@@ -51,6 +51,10 @@ pub struct CharacterShot {
     /// The view pitch (degrees, down positive).
     pub aim_pitch: f32,
     pub time: f32,
+    /// The third-person weapon model in the hand (`GUNM` index).
+    pub gun: Option<usize>,
+    /// Degrees the character is turned from facing the camera.
+    pub turn: f32,
 }
 
 /// Draw the first-person model from `common` (its first `VIEW` section) over the frame, with its own depth.
@@ -733,8 +737,8 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
             view.eye[2] - 60.0,
         ];
         let (s, co) = (
-            (y + std::f32::consts::PI).sin(),
-            (y + std::f32::consts::PI).cos(),
+            (y + std::f32::consts::PI + shot.turn.to_radians()).sin(),
+            (y + std::f32::consts::PI + shot.turn.to_radians()).cos(),
         );
         let place = |p: [f32; 3]| {
             [
@@ -783,6 +787,77 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
                         surf.alpha_ref,
                         0,
                     );
+                }
+            }
+        }
+        // The weapon in the hand, at `tag_weapon_right`.
+        let gun = shot.gun.zip(
+            cp.section(tag::HELD_MODELS)
+                .and_then(|s| wpk::held::Guns::parse(s.data)),
+        );
+        if let (Some((g, guns)), true) = (gun, rig.weapon != ch::NO_BONE) {
+            let m = guns.model(g).ok_or("no such held weapon")?;
+            let gtxd = cp
+                .section(tag::HELD_TEXTURE_DATA)
+                .map_or(&[][..], |s| s.data);
+            let gtex: Vec<Option<Image>> = cp
+                .section(tag::HELD_TEXTURES)
+                .map(|s| {
+                    records::iter::<TextureRecord>(s.data)
+                        .map(|r| decode_texture(&r, gtxd))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let hand = world[usize::from(rig.weapon)];
+            let f = |b: &[u8], at: usize| wpk::be::f32(b, at);
+            let vert = |i: u16| -> CV {
+                let i = usize::from(i);
+                let p = [
+                    f(m.positions, i * 12),
+                    f(m.positions, i * 12 + 4),
+                    f(m.positions, i * 12 + 8),
+                ];
+                let rgba = wpk::be::u32(m.attributes, i * 12).to_be_bytes();
+                CV {
+                    c: cam.to_cam(place(vmod::apply(&hand, p))),
+                    uv: [f(m.attributes, i * 12 + 4), f(m.attributes, i * 12 + 8)],
+                    lm: [0.0; 2],
+                    rgba: rgba.map(|x| f32::from(x) / 255.0),
+                }
+            };
+            for d in 0..m.draws() {
+                let d = m.draw(d).ok_or("bad held draw")?;
+                let tex = gtex.get(usize::from(d.texture)).and_then(Option::as_ref);
+                for t in wpk::strips::dl_triangles_attrs(d.dl, 3) {
+                    if t[0] == t[1] || t[1] == t[2] || t[0] == t[2] {
+                        continue;
+                    }
+                    stats.triangles += 1;
+                    let poly = clip_near(t.map(vert));
+                    for k in 1..poly.len().saturating_sub(1) {
+                        raster(
+                            [poly[0], poly[k], poly[k + 1]],
+                            &cam,
+                            w,
+                            h,
+                            &mut colour,
+                            &mut depth,
+                            &mut stats,
+                            |cv| {
+                                let b = tex
+                                    .map_or([1.0; 4], |img| sample(img, cv.uv[0], cv.uv[1], false));
+                                [
+                                    b[0] * cv.rgba[0],
+                                    b[1] * cv.rgba[1],
+                                    b[2] * cv.rgba[2],
+                                    b[3] * cv.rgba[3],
+                                ]
+                            },
+                            Blend::from_u8(d.blend),
+                            d.alpha_ref,
+                            0,
+                        );
+                    }
                 }
             }
         }

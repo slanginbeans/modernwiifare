@@ -701,6 +701,91 @@ pub fn build_character(
     Ok((vm, names))
 }
 
+/// Most vertices a third-person weapon may have: the first LOD at or under it is used (else the last).
+const HELD_MAX_VERTICES: usize = 900;
+/// Third-person weapon textures are at most this many texels across (a gun is a few dozen pixels on screen).
+const HELD_TEXTURE_MAX: u32 = 64;
+/// GX vertex format of character and held-weapon display lists (POS, CLR0, TEX0 indexed: three u16 per vertex).
+const HELD_VTXFMT: u8 = 6;
+
+/// A weapon's third-person model (`common.wpk` `GUNM`): world model `m` at its first LOD of at most
+/// [`HELD_MAX_VERTICES`] vertices, in its bind pose (origin at `tag_origin`, which goes on the hand's
+/// `tag_weapon_right`), the parts under bones named in `hide` left out, as strips; textures (capped at
+/// [`HELD_TEXTURE_MAX`]) into `tex`. Returns the model and its vertex count.
+pub fn build_held(
+    s: &ZoneStream<'_>,
+    links: &Links,
+    m: usize,
+    hide: &[String],
+    index: &[IndexEntry],
+    tex_dir: &Path,
+    tex: &mut Textures,
+) -> Result<wpk::held::Model, String> {
+    let sets = surface_sets(s, links);
+    let bones = read_bones(s, links, m)?;
+    let mut hidden = vec![false; bones.names.len()];
+    for i in 0..bones.names.len() {
+        let named = hide.iter().any(|h| h.eq_ignore_ascii_case(&bones.names[i]));
+        hidden[i] = named || bones.parent[i].is_some_and(|p| hidden[p]);
+    }
+    let hidden: Vec<usize> = (0..hidden.len()).filter(|&i| hidden[i]).collect();
+    let lods = links
+        .model_geometry
+        .get(m)
+        .map_or(1, |g| g.lod_numsurfs.len().max(1));
+    let mut surfaces = Vec::new();
+    for lod in 0..lods {
+        let (surfs, _) = read_surfaces(s, links, &sets, m, 0, &hidden, lod)?;
+        let n: usize = surfs.iter().map(|x| x.verts.len()).sum();
+        surfaces = surfs;
+        if n <= HELD_MAX_VERTICES {
+            break;
+        }
+    }
+    let mut files_by_image: HashMap<usize, &IndexEntry> = HashMap::new();
+    for e in index {
+        for &i in &e.images {
+            files_by_image.entry(i).or_insert(e);
+        }
+    }
+    let mut out = wpk::held::Model::default();
+    for surf in surfaces {
+        let Some(mat) = surf.material else { continue };
+        let info = &links.material_info[mat];
+        let texture = match links
+            .colour_image(mat)
+            .and_then(|img| files_by_image.get(&img))
+        {
+            Some(e) => tex.add_file_capped(tex_dir, &e.file, Wrap::Repeat, HELD_TEXTURE_MAX)?,
+            None => NONE,
+        };
+        let (blend, alpha_ref) = match info.blend {
+            BlendMode::Opaque => (wpk::records::Blend::Opaque, 0),
+            BlendMode::AlphaTest(t) => (wpk::records::Blend::AlphaTest, t),
+            BlendMode::Blend => (wpk::records::Blend::Blend, 0),
+            BlendMode::Additive => (wpk::records::Blend::Additive, 0),
+            BlendMode::Multiply => (wpk::records::Blend::Multiply, 0),
+        };
+        let first = out.positions.len();
+        if first + surf.verts.len() > 65535 {
+            return Err("more than 65535 held weapon vertices".into());
+        }
+        for v in &surf.verts {
+            out.positions.push(v.pos);
+            out.attributes.push((v.rgba, v.uv));
+        }
+        let tris: Vec<u16> = surf.indices.iter().map(|&i| i + first as u16).collect();
+        let st = wpk::strips::stripify(&tris);
+        out.draws.push(wpk::held::Draw {
+            dl: wpk::strips::strips_display_list_attrs(&st, HELD_VTXFMT, 3),
+            texture,
+            blend: blend as u8,
+            alpha_ref,
+        });
+    }
+    Ok(out)
+}
+
 /// Player animations baked by bone name (`common.wpk`): each animation of `list` becomes a clip (an empty one when
 /// it can't be read, so clip numbers stay the list's) whose tracks index the returned name list. A track with no rotation keeps the model's bind rotation (stored as the
 /// zero quaternion); frames a track leaves out repeat its first. The clips ride in a [`ViewModel`] with one

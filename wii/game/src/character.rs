@@ -10,13 +10,15 @@ use alloc::vec::Vec;
 
 use game_core::arena::Fighter;
 use game_core::character::{
-    Body, Death, Held, PlayerAnims, Rig, Scratch, conditions, death_conditions, movetype, strafing,
+    Body, Death, Held as HeldType, NO_BONE, PlayerAnims, Rig, Scratch, conditions,
+    death_conditions, movetype, strafing,
 };
-use game_core::gfx::{DrawState, Gfx, Mtx34};
+use game_core::gfx::{DrawState, Gfx, Mtx34, TexDesc};
 use game_core::viewmodel as vmod;
 use wpk::anim_script::{Conditions, Script};
+use wpk::held::Guns;
 use wpk::player_anim::Anims;
-use wpk::records::{self, NONE};
+use wpk::records::{self, NONE, TextureRecord, texture_flags};
 use wpk::view::ViewModel;
 
 use crate::ffi;
@@ -38,7 +40,7 @@ const WS_MELEE_INIT: i32 = 0xD;
 const WS_OFFHAND_START: i32 = 0x13;
 
 /// A thrown grenade's player-anim type and class (IW4 `grenade`): the throw plays as its fire event.
-const THROWN: Held = Held {
+const THROWN: HeldType = HeldType {
     anim_type: 9,
     class: 6,
 };
@@ -65,9 +67,63 @@ struct Seen {
     movetype: u8,
 }
 
+/// The weapons in the players' hands (`common.wpk` `GUNM`): the models, each weapon record's model and the texture
+/// handles.
+struct Held {
+    guns: Guns<'static>,
+    index: &'static [u8],
+    textures: Vec<i32>,
+}
+
+impl Held {
+    fn load(common: &wpk::Pack<'static>, gfx: &mut impl Gfx) -> Option<Held> {
+        let guns = Guns::parse(common.section(wpk::tag::HELD_MODELS)?.data)?;
+        let index = common.section(wpk::tag::HELD_INDEX)?.data;
+        let txda = common.section(wpk::tag::HELD_TEXTURE_DATA)?.data;
+        let mut textures = Vec::new();
+        for r in records::iter::<TextureRecord>(common.section(wpk::tag::HELD_TEXTURES)?.data) {
+            let Some(data) = txda.get(r.data_off as usize..(r.data_off + r.data_len) as usize)
+            else {
+                textures.push(-1);
+                continue;
+            };
+            let alpha = if r.flags & texture_flags::ALPHA_PLANE != 0 {
+                txda.get(r.alpha_off as usize..(r.alpha_off + r.alpha_len) as usize)
+                    .map_or(core::ptr::null(), |a| a.as_ptr())
+            } else {
+                core::ptr::null()
+            };
+            textures.push(gfx.tex_create(&TexDesc {
+                data: data.as_ptr(),
+                alpha,
+                width: r.width,
+                height: r.height,
+                format: r.format,
+                levels: r.levels,
+                wrap: r.wrap,
+            }));
+        }
+        Some(Held {
+            guns,
+            index,
+            textures,
+        })
+    }
+
+    /// The model weapon record `weapon` is held as.
+    fn model(&self, weapon: u32) -> Option<wpk::held::GunRef<'static>> {
+        let at = weapon as usize * 2;
+        let m = u16::from_be_bytes([*self.index.get(at)?, *self.index.get(at + 1)?]);
+        (m != NONE)
+            .then(|| self.guns.model(usize::from(m)))
+            .flatten()
+    }
+}
+
 /// The drawn players.
 pub struct Characters {
     teams: Vec<Team>,
+    held: Option<Held>,
     anims: PlayerAnims<'static>,
     seen: Vec<Seen>,
     /// Skinned positions per drawn player (MEM2; the GPU reads them after the CPU moved on, so each player has its
@@ -103,6 +159,8 @@ pub struct Pose {
     pub moving: bool,
     pub last_fire_ms: Option<u32>,
     pub gun_state: i32,
+    /// The weapon in the hand (`WEAP` record).
+    pub weapon: Option<u32>,
 }
 
 impl Pose {
@@ -113,7 +171,7 @@ impl Pose {
         let mt = movetype(ps, forward, right);
         let held = f.gun.as_ref().map(|g| {
             let facts = g.facts();
-            Held {
+            HeldType {
                 anim_type: facts.player_anim_type.clamp(0, 63) as u8,
                 class: facts.weap_class.clamp(0, 63) as u8,
             }
@@ -141,21 +199,25 @@ impl Pose {
             moving: speed > 10.0,
             last_fire_ms: f.last_fire_ms,
             gun_state: f.gun.as_ref().map_or(0, |g| g.state()),
+            weapon: f.gun.as_ref().map(|g| g.weapon_index()),
         }
     }
 }
 
 impl Characters {
-    /// The map's characters (`map`'s `CHAR`) with the common pack's player animations; `texture` turns a map texture
-    /// index into its handle. `None` without characters or animations.
+    /// The map's characters (`map`'s `CHAR`) with the common pack's player animations and held weapons (their
+    /// textures created through `gfx`); `texture` turns a map texture index into its handle. `None` without
+    /// characters or animations.
     pub fn load(
         map: &'static [u8],
         common: &'static [u8],
         texture: impl Fn(u16) -> i32,
+        gfx: &mut impl Gfx,
     ) -> Option<Characters> {
         let pack = wpk::Pack::parse(map, false).ok()?;
         let teams = wpk::view::decode_characters(pack.section(wpk::tag::CHARACTERS)?.data);
         let common = wpk::Pack::parse(common, false).ok()?;
+        let held = Held::load(&common, gfx);
         let clips = Anims::parse(common.section(wpk::tag::PLAYER_ANIMS)?.data)?;
         let script = common
             .section(wpk::tag::PLAYER_ANIM_SCRIPT)
@@ -219,6 +281,7 @@ impl Characters {
         }
         (!out.is_empty()).then(|| Characters {
             teams: out,
+            held,
             anims: PlayerAnims { clips, script },
             seen: Vec::new(),
             buffers: Vec::new(),
@@ -359,6 +422,39 @@ impl Characters {
                     last = Some(d.state);
                 }
                 gfx.call_dl(d.dl);
+            }
+            // The weapon in the hand: its model's origin on `tag_weapon_right` (living players only: MW2 drops it).
+            let hand = team.rig.weapon;
+            if let (Some(held), Some(w), true) = (&self.held, p.weapon, p.alive && hand != NO_BONE)
+                && let Some(gun) = held.model(w)
+                && let Some(bone) = self.world.get(usize::from(hand))
+            {
+                unsafe {
+                    ffi::mwf_world_view();
+                    ffi::mwf_view_arrays(gun.positions.as_ptr(), gun.attributes.as_ptr());
+                }
+                gfx.pos_matrix(&vmod::mul(&vmod::mul(view, &model), bone));
+                let mut last: Option<DrawState> = None;
+                for i in 0..gun.draws() {
+                    let Some(d) = gun.draw(i) else { continue };
+                    let state = DrawState {
+                        tex: held
+                            .textures
+                            .get(usize::from(d.texture))
+                            .copied()
+                            .unwrap_or(-1),
+                        lightmap: -1,
+                        blend: d.blend,
+                        alpha_ref: d.alpha_ref,
+                        cull: 0,
+                        tint: 0,
+                    };
+                    if last != Some(state) {
+                        gfx.world_state(&state);
+                        last = Some(state);
+                    }
+                    gfx.call_dl(d.dl);
+                }
             }
         }
     }

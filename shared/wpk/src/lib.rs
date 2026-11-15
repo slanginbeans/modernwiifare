@@ -21,6 +21,7 @@ pub mod anim_script;
 pub mod be;
 pub mod classes;
 pub mod clip;
+pub mod held;
 pub mod nav;
 pub mod player_anim;
 pub mod quant;
@@ -78,6 +79,11 @@ pub mod tag {
     pub const PLAYER_ANIM_BONES: Tag = *b"PANB";
     /// MW2 player animation script (`anim_script`).
     pub const PLAYER_ANIM_SCRIPT: Tag = *b"PSCR";
+    /// Third-person weapon models (`held`), each weapon's model, and their textures.
+    pub const HELD_MODELS: Tag = *b"GUNM";
+    pub const HELD_INDEX: Tag = *b"GUNI";
+    pub const HELD_TEXTURES: Tag = *b"GTEX";
+    pub const HELD_TEXTURE_DATA: Tag = *b"GTXD";
     /// Static model vertices (`WorldVertex`, model space, lightmap UV unused).
     pub const MODEL_VERTICES: Tag = *b"MVTX";
     /// Static model surfaces (`BatchRecord` over `MVTX`; display lists in `WDLS`).

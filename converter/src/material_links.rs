@@ -124,6 +124,8 @@ pub struct ModelInfo {
 pub struct WeaponView {
     pub gun: Option<String>,
     pub hands: Option<String>,
+    /// The third-person (world) model: the first of `worldModel`.
+    pub world: Option<String>,
     pub anims: Vec<Option<String>>,
     /// Bone names whose surfaces are hidden (attachment parts the base weapon doesn't show).
     pub hide: Vec<String>,
@@ -630,6 +632,7 @@ impl Links {
         self.weapon_views.push(WeaponView {
             gun: w.gun_xmodel_name.and_then(text),
             hands: w.hand_xmodel_name.and_then(text),
+            world: w.world_model_names.into_iter().flatten().find_map(text),
             anims,
             hide,
             sounds: crate::sounds::WeaponSoundNames { events, note_map },
