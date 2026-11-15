@@ -126,6 +126,8 @@ pub mod tag {
     pub const WEAPON_BLOCKERS: Tag = *b"WSMK";
     /// Footstep sounds by gait, listener and surface (`sound::step_index`; u16 aliases in the world bank).
     pub const FOOTSTEPS: Tag = *b"STEP";
+    /// MW2's menu sounds (`ui::menu_sound`; u16 aliases in the world bank).
+    pub const MENU_SOUNDS: Tag = *b"UISN";
     /// Bullet penetration per weapon (`weapon::PenRecord`, parallel to `WEAP`).
     pub const WEAPON_PEN: Tag = *b"WPEN";
     /// The penetration depth table (`info/bullet_penetration_mp`): 4 types × 31 surfaces, f32.

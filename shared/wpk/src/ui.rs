@@ -218,6 +218,26 @@ pub mod od {
     pub const DPAD_KILLSTREAK_NEXT: u16 = 174;
     /// Ours, not IW4's: a lobby player row (MW2 shows its rows by script).
     pub const LOBBY_ROW: u16 = 0xF000;
+    /// Ours: where a screen shows the map's preview picture (MW2 picks `preview_<map>` by script); the picture is
+    /// the UI pack's icon [`super::map_preview_key`]. Its `texture` field holds how many of the screen's quads are
+    /// drawn before it (MW2's item order: the lobby's name bars go over the picture).
+    pub const MAP_PREVIEW: u16 = 0xF001;
+}
+
+/// The icon key of a map's preview picture (`map:mp_rust`).
+pub fn map_preview_key(map: &str) -> alloc::string::String {
+    alloc::format!("map:{map}")
+}
+
+/// MW2's menu sounds (`UISN` in `common.wpk`: u16 alias indices into its world bank), in this order.
+pub mod menu_sound {
+    /// Focus moving to another line (`mouse_over`).
+    pub const OVER: usize = 0;
+    /// Focus moving in a popup or submenu (`mouse_submenu_over`).
+    pub const SUBMENU_OVER: usize = 1;
+    /// A choice or going back (`mouse_click`).
+    pub const CLICK: usize = 2;
+    pub const ALIASES: [&str; 3] = ["mouse_over", "mouse_submenu_over", "mouse_click"];
 }
 
 /// One item of a HUD layout (an MW2 `*_sd` HUD menu) in MW2's virtual 640 × 480 space with its IW4 alignment

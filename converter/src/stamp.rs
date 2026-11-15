@@ -37,7 +37,8 @@ use std::path::{Path, PathBuf};
 /// 36: the private match's screens (lobby, Game Setup popup, map, mode and rules pages, yes / no popup), MW2's SD
 ///     HUD layouts (`weaponbar_sd`, `scorebar_sd`, `dpad_sd`), the ammo counter's rounds and map / mode strings
 ///     (`UIPK`).
-pub const REVISION: u32 = 36;
+/// 37: map preview pictures (`map:<map>` UI icons from `preview_<map>`) and their slots; MW2's menu sounds (`UISN`).
+pub const REVISION: u32 = 37;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

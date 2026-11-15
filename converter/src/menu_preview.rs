@@ -324,6 +324,7 @@ pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
             images: &images,
             inline_values: screen == "rules",
             backdrop: true,
+            preview: "",
         },
         &mut quads,
     );

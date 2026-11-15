@@ -14,6 +14,9 @@ shot 03_setup
 press A
 wait 10
 shot 04_maps
+press DOWN
+wait 5
+shot 04b_maps_next
 press B
 press DOWN
 press A

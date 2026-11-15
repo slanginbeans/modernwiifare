@@ -35,6 +35,8 @@ pub struct Page<'a> {
     pub inline_values: bool,
     /// The screen's full-screen background (false over the frozen game).
     pub backdrop: bool,
+    /// The map whose preview picture the screen shows (`mp_rust`; empty: none).
+    pub preview: &'a str,
 }
 
 /// MW2's main menu has no page name: ours goes above the first button, inside the 0.85 safe area (640 Ã— 0.075).
@@ -119,22 +121,52 @@ pub fn layout(ui: &UiPack, page: &Page<'_>, out: &mut Vec<Quad>) {
     let Some(screen) = ui.screen(page.screen).or_else(|| ui.screen("main")) else {
         return;
     };
-    if page.backdrop {
-        out.extend_from_slice(&screen.quads);
-    } else {
+    // The map's preview picture where MW2 shows it, at its place in MW2's item order (`od::MAP_PREVIEW`).
+    let preview_tex = (!page.preview.is_empty())
+        .then(|| ui.icon(&wpk::ui::map_preview_key(page.preview)))
+        .flatten();
+    let previews: Vec<(usize, Quad)> = preview_tex
+        .map(|t| {
+            screen
+                .owner_draws
+                .iter()
+                .filter(|o| o.od == wpk::ui::od::MAP_PREVIEW)
+                .map(|o| {
+                    (
+                        usize::from(o.texture),
+                        Quad {
+                            x: o.x,
+                            y: o.y,
+                            w: o.w,
+                            h: o.h,
+                            uv: [0.0, 0.0, 1.0, 1.0],
+                            rgba: o.rgba,
+                            texture: t,
+                        },
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for (n, q) in screen.quads.iter().enumerate() {
+        out.extend(previews.iter().filter(|(at, _)| *at == n).map(|(_, p)| *p));
         // Over the frozen game: the screen's own opaque full-screen background becomes a dark veil (its translucent
         // layers, like the pause menu's dimming, stay).
-        for q in &screen.quads {
-            let full = q.w.abs() >= 600.0 && q.h.abs() >= 440.0;
-            if full && q.rgba & 0xff >= 0xc0 {
-                if ui.white != NONE {
-                    out.push(fullscreen(ui.white, 0x0000_00a0));
-                }
-            } else {
-                out.push(*q);
+        let full = q.w.abs() >= 600.0 && q.h.abs() >= 440.0;
+        if !page.backdrop && full && q.rgba & 0xff >= 0xc0 {
+            if ui.white != NONE {
+                out.push(fullscreen(ui.white, 0x0000_00a0));
             }
+        } else {
+            out.push(*q);
         }
     }
+    out.extend(
+        previews
+            .iter()
+            .filter(|(at, _)| *at >= screen.quads.len())
+            .map(|(_, p)| *p),
+    );
     // The class's pictures and icons in MW2's places.
     for im in &screen.images {
         let Some(item) = page
@@ -482,6 +514,7 @@ mod tests {
             images: &[],
             inline_values: false,
             backdrop: true,
+            preview: "",
         };
         let mut q = Vec::new();
         layout(&ui, &page, &mut q);
@@ -512,6 +545,7 @@ mod tests {
             images: &[],
             inline_values: false,
             backdrop: true,
+            preview: "",
         };
         let mut q = Vec::new();
         layout(&ui, &page, &mut q);

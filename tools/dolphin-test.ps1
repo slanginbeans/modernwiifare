@@ -42,7 +42,10 @@ if (Test-Path "out\packs\views") {
     robocopy "out\packs\views" "$app\views" /MIR /NJH /NJS /NFL /NDL | Out-Null
 }
 Get-ChildItem "$app\maps" -Filter *.wpk | Remove-Item
-foreach ($m in $Maps) { Copy-Item "out\packs\$m.wpk" "$app\maps\" -Force }
+# "-Maps a,b" through -File arrives as one string.
+foreach ($m in ($Maps -join "," -split ",")) {
+    if ($m.Trim()) { Copy-Item "out\packs\$($m.Trim()).wpk" "$app\maps\" -Force }
+}
 Copy-Item $Script "$app\autoplay.txt" -Force
 if (Test-Path "$app\shots") { Get-ChildItem "$app\shots" -Filter *.bmp | Remove-Item }
 Get-ChildItem $shots -Filter *.png | Remove-Item

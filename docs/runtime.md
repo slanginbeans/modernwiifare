@@ -32,7 +32,7 @@ button column (position, font, text placement, selection bar) and the back butto
 - the private match lobby (`menu_xboxlive_privatelobby`): the players in MW2's rows on the right (team-coloured in team
   modes), the player count, the map and the game mode in its slots;
 - the Game Setup popup (`popup_gamesetup`, its frame sized for its three buttons) over the dimmed lobby;
-- the map page (`settings_map`) and the game mode page (`settings_gametype`): the focused map's or mode's name and
+- the map page (`settings_map`) and the game mode page (`settings_gametype`): the focused map's picture (MW2's`n  `preview_<map>` from your `main/*.iwd`, also in the lobby under the map's name), the map's or mode's name and
   MW2's description (`MPUI_DESC_MAP_*`, the game type table's strings) in the right-hand panel;
 - the rules rows (`settings_quick_dm`): Game Rules, Options and Debug, each value drawn in its row;
 - class select (`changeclass`): the class panel on the right shows the focused class's weapons, perks and equipment;
@@ -47,7 +47,8 @@ The layout is `game_core::ui_page`, shared with `mwf-convert menu-preview <commo
 with sample content to `out/preview/menu_<screen>.png` to check them on the PC. Without menu data in `common.wpk`
 the menus fall back to the block font.
 Every menu is a list: D-pad or main stick up / down (held, it repeats after 0.4 s, then every 90 ms), **A** chooses,
-**B** goes back; on a line with a value, left / right change it (A steps it forward). The menus ignore A, B and START
+**B** goes back (each with MW2's menu sounds: `mouse_over` on a move, `mouse_submenu_over` in popups, `mouse_click`
+on a choice, from the UI zones); on a line with a value, left / right change it (A steps it forward). The menus ignore A, B and START
 until they are let go when they open from a press (START opening the in-game menu doesn't also close it, on either
 pad). The flow is the Xbox 360's private match:
 - **Main menu**: Private Match, Create a Class, Options, Debug, Quit.

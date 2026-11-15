@@ -865,10 +865,42 @@ fn build_ui(
         }
     }
     extra.extend(class_images);
-    Some(ui_bake::bake(&ui, &localize, &extra, |name| {
-        lookup(name, tex)
-    }))
+    let (mut pack, report) = ui_bake::bake(&ui, &localize, &extra, |name| lookup(name, tex));
+    // The map page's and the lobby's pictures: MW2's `preview_<map>` images (streamed, in main/*.iwd), as
+    // `map:<map>` icons, scaled to the 272-wide slot they fill.
+    match zone_textures::main_dir(&a.game).map(|m| asset_transport::IwdIndex::open(&m)) {
+        Some(Ok(iwds)) => {
+            let mut found = 0;
+            for map in BASE_MAPS {
+                let Some(file) = iwds
+                    .image_candidates(&format!("preview_{map}"))
+                    .and_then(<[_]>::last)
+                else {
+                    continue;
+                };
+                let Some((img, _)) = file
+                    .read()
+                    .ok()
+                    .and_then(|b| pixel_decode::decode_iwi(&b).ok())
+                else {
+                    continue;
+                };
+                let small = gx_texture::image::resize(&img, MAP_PREVIEW_W, MAP_PREVIEW_H);
+                let c = gx_texture::convert(&small, gx_texture::Role::Minimap);
+                let t = tex.add_converted(&c, wpk::records::Wrap::Clamp);
+                pack.icons.push((wpk::ui::map_preview_key(map), t));
+                found += 1;
+            }
+            println!("map previews: {found} of {}", BASE_MAPS.len());
+        }
+        _ => eprintln!("warning: no main/*.iwd: no map previews"),
+    }
+    Some((pack, report))
 }
+
+/// Map previews' size in the pack (MW2 draws them about 272 × 153 on the 640 × 480 screen).
+const MAP_PREVIEW_W: u32 = 256;
+const MAP_PREVIEW_H: u32 = 128;
 
 fn run_common(args: &[String]) -> ExitCode {
     let mut a = match parse_map_args(args) {
@@ -1043,6 +1075,14 @@ fn run_common(args: &[String]) -> ExitCode {
         }
         None => eprintln!("warning: no weapon sounds ({SOUND_ZONE} unreadable)"),
     }
+    // The menus' sounds (`mouse_over`, `mouse_click` ...) live with the menus.
+    for z in ui_capture::UI_ZONES {
+        if z != "common_mp"
+            && let Some(l) = walk_zone(&a, z)
+        {
+            capture.absorb(l.sounds);
+        }
+    }
     let links = &collector.links;
     // Weapons with their recoil, sorted by name, first of each name kept.
     type Row = (
@@ -1130,6 +1170,19 @@ fn run_common(args: &[String]) -> ExitCode {
             }
         }
     }
+    // MW2's menu sounds (`wpk::ui::menu_sound`): focus moves and choices.
+    let menu_sounds: Vec<u16> = wpk::ui::menu_sound::ALIASES
+        .iter()
+        .map(|n| world_bank.add(&capture, n))
+        .collect();
+    println!(
+        "menu sounds: {} of {}",
+        menu_sounds
+            .iter()
+            .filter(|&&v| v != wpk::sound::NONE)
+            .count(),
+        menu_sounds.len()
+    );
     let files: HashSet<String> = weapons.iter().map(|w| w.name().to_owned()).collect();
     println!(
         "hit-location damage table: {}",
@@ -1432,6 +1485,11 @@ fn run_common(args: &[String]) -> ExitCode {
         wpk::tag::FOOTSTEPS,
         steps.len() as u32,
         steps.iter().flat_map(|v| v.to_be_bytes()).collect(),
+    );
+    b.section(
+        wpk::tag::MENU_SOUNDS,
+        menu_sounds.len() as u32,
+        menu_sounds.iter().flat_map(|v| v.to_be_bytes()).collect(),
     );
     // Bullet penetration: each weapon's type and multiplier (first weapon of each name), and the depth table.
     let pens: Vec<wpk::weapon::PenRecord> = weapons

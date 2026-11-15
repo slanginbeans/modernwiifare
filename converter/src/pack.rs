@@ -519,6 +519,11 @@ impl Textures {
     }
 
     /// A plain white texture (8 × 8 I8, made here: MW2's `white` material has no converted image), once.
+    /// A texture converted here (not from a `.gxt` file).
+    pub(crate) fn add_converted(&mut self, c: &gx_texture::Converted, wrap: Wrap) -> u16 {
+        self.add(c, wrap)
+    }
+
     pub(crate) fn add_white(&mut self) -> u16 {
         const KEY: &str = "<white>";
         if let Some(&i) = self.by_file.get(KEY) {

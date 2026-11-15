@@ -17,7 +17,7 @@ use game_core::menu::{self, Nav, Repeat, Step};
 use game_core::ui_page::{self, PageLine};
 pub use game_core::ui_page::{LobbyRow, ScoreRow};
 use wpk::classes::{Catalog, Loadout};
-use wpk::ui::{Quad, UiPack};
+use wpk::ui::{Quad, UiPack, menu_sound};
 
 use crate::{AppPath, Shim, ffi};
 
@@ -148,6 +148,8 @@ const FOOTER_CHANGE: &str = "A / LEFT / RIGHT CHANGE   B BACK";
 pub type Panel<'a> = &'a dyn Fn(usize, &mut Vec<String>, &mut Vec<String>);
 /// Quads drawn under or over a page (the frozen game, the lobby under a popup, the lobby's players).
 pub type Layer<'a> = &'a dyn Fn(&UiPack, &mut Vec<Quad>);
+/// The map whose preview picture a page shows for the focused line.
+pub type Preview<'a> = &'a dyn Fn(usize) -> String;
 
 /// Which baked MW2 screen a list is drawn on, and what goes with it.
 #[derive(Default)]
@@ -158,6 +160,7 @@ pub struct Page<'a> {
     pub values: bool,
     pub under: Option<Layer<'a>>,
     pub over: Option<Layer<'a>>,
+    pub preview: Option<Preview<'a>>,
 }
 
 impl<'a> Page<'a> {
@@ -166,6 +169,45 @@ impl<'a> Page<'a> {
             screen,
             ..Page::default()
         }
+    }
+}
+
+/// MW2's menu sounds (`UISN` in `common.wpk`) and the bank they play from.
+struct MenuSounds {
+    bank: crate::sound::Sounds<'static>,
+    aliases: [u16; 3],
+}
+
+static mut MENU_SOUNDS: Option<MenuSounds> = None;
+
+/// Load the menu sounds from the common pack (none with an older pack).
+pub fn init_menu_sounds(common: &'static [u8]) {
+    let Some(bank) = crate::sound::Sounds::load(common) else {
+        return;
+    };
+    let Some(s) = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::MENU_SOUNDS))
+    else {
+        return;
+    };
+    let mut aliases = [wpk::sound::NONE; 3];
+    for (k, a) in aliases.iter_mut().enumerate() {
+        if let Some(b) = s.data.get(k * 2..k * 2 + 2) {
+            *a = u16::from_be_bytes([b[0], b[1]]);
+        }
+    }
+    // Single-threaded: set once at start, before any menu.
+    unsafe { MENU_SOUNDS = Some(MenuSounds { bank, aliases }) };
+}
+
+/// Play menu sound `which` (`wpk::ui::menu_sound`).
+#[allow(static_mut_refs)]
+fn play_menu_sound(which: usize) {
+    // Single-threaded: the menus only.
+    if let Some(m) = unsafe { MENU_SOUNDS.as_mut() } {
+        let a = m.aliases[which];
+        m.bank.play(a);
     }
 }
 
@@ -194,14 +236,31 @@ pub fn list(
     let mut rects: Vec<Rect> = Vec::with_capacity(4096);
     let mut slots: Vec<String> = Vec::new();
     let mut images: Vec<String> = Vec::new();
+    // Popups (over another page) use MW2's submenu focus sound.
+    let over_sound = if page.under.is_some() {
+        menu_sound::SUBMENU_OVER
+    } else {
+        menu_sound::OVER
+    };
     loop {
+        let before = *selected;
         let step = menu::step(selected, lines.len(), input.poll());
+        if *selected != before {
+            play_menu_sound(over_sound);
+        }
         match step {
             Step::Accept(i) if !lines[i].enabled => {}
             Step::Adjust(i, _) if !page.values || !lines[i].enabled || lines[i].value.is_none() => {
             }
             Step::Stay => {}
-            other => return other,
+            other => {
+                play_menu_sound(if let Step::Adjust(..) = other {
+                    over_sound
+                } else {
+                    menu_sound::CLICK
+                });
+                return other;
+            }
         }
         unsafe { ffi::mwf_frame_begin(&cam.view(), cam.fovy, 4.0, 100.0, 0x1a1e24ff) };
         if let Some(u) = crate::ui::get() {
@@ -210,6 +269,7 @@ pub fn list(
             if let Some(p) = page.panel {
                 p(*selected, &mut slots, &mut images);
             }
+            let preview = page.preview.map(|f| f(*selected)).unwrap_or_default();
             let page_lines: Vec<PageLine<'_>> = lines
                 .iter()
                 .map(|l| PageLine {
@@ -229,6 +289,7 @@ pub fn list(
                 inline_values: page.values,
                 // Over something (the frozen game, the lobby) the screen's opaque background is left out.
                 backdrop: page.under.is_none(),
+                preview: &preview,
             };
             u.page(|ui, q| {
                 if let Some(f) = page.under {
@@ -399,10 +460,12 @@ pub fn lobby(
             out.extend(info.iter().cloned());
         };
         let over = |ui: &UiPack, q: &mut Vec<Quad>| ui_page::lobby_rows(ui, &rows, q);
+        let preview = |_: usize| String::from(map);
         let page = Page {
             screen: "lobby",
             panel: Some(&panel),
             over: Some(&over),
+            preview: Some(&preview),
             ..Page::default()
         };
         match list(
@@ -438,6 +501,7 @@ fn game_setup(
     ];
     let mut sel = 0usize;
     loop {
+        let map = setup.maps.get(*setup.map).copied().unwrap_or("");
         // The lobby, dimmed, under the popup.
         let lobby_lines = [
             PageLine {
@@ -469,6 +533,7 @@ fn game_setup(
                     images: &[],
                     inline_values: false,
                     backdrop: true,
+                    preview: map,
                 },
                 q,
             );
@@ -508,9 +573,11 @@ pub fn pick_map(gfx: &mut Shim, input: &mut Input, maps: &[&str], selected: &mut
             out.push(map_description(m));
         }
     };
+    let preview = |i: usize| maps.get(i).map_or_else(String::new, |m| String::from(*m));
     let page = Page {
         screen: "maps",
         panel: Some(&panel),
+        preview: Some(&preview),
         ..Page::default()
     };
     let mut cursor = *selected;
@@ -965,6 +1032,7 @@ pub fn scoreboard(gfx: &mut Shim, input: &mut Input, title: &str, rows: &[ScoreR
                 images: &[],
                 inline_values: false,
                 backdrop: true,
+                preview: "",
             };
             u.page(|ui, q| {
                 if grabbed_ok {

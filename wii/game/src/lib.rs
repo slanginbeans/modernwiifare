@@ -2595,6 +2595,8 @@ pub extern "C" fn mwf_game_main() -> i32 {
     let common = load_common();
     // A test script, when `autoplay.txt` is in the app folder.
     autoplay::init();
+    // MW2's menu sounds (from common.wpk).
+    front::init_menu_sounds(common);
     // MW2's menu fonts and screens (from common.wpk), when the pack has them.
     ui::init(common, &mut gfx);
     let catalog = wpk::Pack::parse(common, false)

@@ -212,6 +212,21 @@ fn bake_screen(
             }
             continue;
         }
+        // The map's preview picture (MW2 builds `preview_<map>` or reads `ui_info_icon` by script): its rect.
+        if item.material_exp.as_deref().is_some_and(shows_map_preview) {
+            let r = place(p, &item.rect);
+            owner_draws.push(OwnerDraw {
+                od: wpk::ui::od::MAP_PREVIEW,
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+                // Its place in MW2's item order: the screen's images drawn before it.
+                texture: quads.len() as u16,
+                rgba: rgba(item.fore_color),
+            });
+            continue;
+        }
         // The lobby's player rows (shown per player by script): their rects for the front end's list.
         if material(&item.background) == LOBBY_ROW_MATERIAL && item.style == WINDOW_STYLE_SHADER {
             let r = place(p, &item.rect);
@@ -371,13 +386,9 @@ fn bake_screen(
     }
 }
 
-/// The loadout field an item's material expression shows: MW2's
-/// `tablelookup("<table>", <key column>, dvarString("loadout<...>"), <image column>)`, as its dump spells it
-/// (`op 16 op 74 s:<table> op 17 <n> op 17 op 81 s:<dvar> op 1 op 17 <n> op 1`). Camouflage and other lookups:
-/// `None`.
-fn image_field(dump: &str) -> Option<u8> {
-    let strings: Vec<String> = dump
-        .split_whitespace()
+/// The strings of an expression dump (`s:<hex>` tokens).
+fn dump_strings(dump: &str) -> Vec<String> {
+    dump.split_whitespace()
         .filter_map(|t| t.strip_prefix("s:"))
         .filter_map(|h| {
             let bytes: Option<Vec<u8>> = (0..h.len() / 2)
@@ -385,7 +396,23 @@ fn image_field(dump: &str) -> Option<u8> {
                 .collect();
             String::from_utf8(bytes?).ok()
         })
-        .collect();
+        .collect()
+}
+
+/// Whether a material expression shows the map's preview: `"preview_" + mapname` (the lobby) or the map
+/// table's `ui_info_icon` (the map page).
+fn shows_map_preview(dump: &str) -> bool {
+    dump_strings(dump)
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case("preview_") || s.eq_ignore_ascii_case("ui_info_icon"))
+}
+
+/// The loadout field an item's material expression shows: MW2's
+/// `tablelookup("<table>", <key column>, dvarString("loadout<...>"), <image column>)`, as its dump spells it
+/// (`op 16 op 74 s:<table> op 17 <n> op 17 op 81 s:<dvar> op 1 op 17 <n> op 1`). Camouflage and other lookups:
+/// `None`.
+fn image_field(dump: &str) -> Option<u8> {
+    let strings = dump_strings(dump);
     let [table, dvar] = strings.as_slice() else {
         return None;
     };
@@ -695,6 +722,18 @@ mod tests {
         assert!(names.iter().any(|n| n == "bar"));
         assert_eq!(b.align, 2);
         assert_eq!(r.missing_textures, 0);
+    }
+
+    #[test]
+    fn finds_map_preview_expressions() {
+        // `"preview_" + dvarString(...)` and `dvarString("ui_info_icon")`, as IW4L dumps them.
+        assert!(shows_map_preview(
+            "op 16 s:707265766965775f op 5 op 26 26 op 1"
+        ));
+        assert!(shows_map_preview(
+            "op 16 op 81 s:75695f696e666f5f69636f6e op 1"
+        ));
+        assert!(!shows_map_preview("op 16 op 81 s:61 op 1"));
     }
 
     #[test]
