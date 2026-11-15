@@ -165,9 +165,17 @@ pub fn skin_matrices(vm: &ViewModel, world: &[Mtx34], out: &mut Vec<Mtx34>) {
 /// Skinned model-space positions of every vertex.
 pub fn skin(vm: &ViewModel, skin: &[Mtx34], out: &mut Vec<[f32; 3]>) {
     out.clear();
-    for v in &vm.verts {
+    out.resize(vm.verts.len(), [0.0; 3]);
+    skin_into(vm, skin, out);
+}
+
+/// [`skin`] straight into `out` (one entry per vertex; the Wii passes the MEM2 buffer the GPU reads, so nothing is
+/// copied). Weights are scaled by a multiply, not a divide (a PowerPC divide costs ~30 cycles).
+pub fn skin_into(vm: &ViewModel, skin: &[Mtx34], out: &mut [[f32; 3]]) {
+    const W: f32 = 1.0 / 255.0;
+    for (v, o) in vm.verts.iter().zip(out.iter_mut()) {
         if v.weights[0] == 255 {
-            out.push(apply(&skin[usize::from(v.bones[0])], v.pos));
+            *o = apply(&skin[usize::from(v.bones[0])], v.pos);
             continue;
         }
         let mut p = [0.0f32; 3];
@@ -175,13 +183,13 @@ pub fn skin(vm: &ViewModel, skin: &[Mtx34], out: &mut Vec<[f32; 3]>) {
             if v.weights[k] == 0 {
                 continue;
             }
-            let w = f32::from(v.weights[k]) / 255.0;
+            let w = f32::from(v.weights[k]) * W;
             let q = apply(&skin[usize::from(v.bones[k])], v.pos);
             for j in 0..3 {
                 p[j] += q[j] * w;
             }
         }
-        out.push(p);
+        *o = p;
     }
 }
 

@@ -40,7 +40,6 @@ pub struct Characters {
     parity: usize,
     world: Vec<Mtx34>,
     skin: Vec<Mtx34>,
-    skinned: Vec<[f32; 3]>,
 }
 
 fn mem2(count: usize) -> Option<&'static mut [u8]> {
@@ -144,7 +143,6 @@ impl Characters {
             parity: 0,
             world: Vec::new(),
             skin: Vec::new(),
-            skinned: Vec::new(),
         })
     }
 
@@ -197,9 +195,8 @@ impl Characters {
             });
             vmod::pose(&team.vm, clip.map(|c| (c, time)), &mut self.world);
             vmod::skin_matrices(&team.vm, &self.world, &mut self.skin);
-            vmod::skin(&team.vm, &self.skin, &mut self.skinned);
             let buf = &mut self.buffers[k].1;
-            buf.copy_from_slice(&self.skinned);
+            vmod::skin_into(&team.vm, &self.skin, buf);
             // Model (IW4 axes: x forward, z up) to world: turned by the yaw, at the feet.
             let (s, c) = (
                 libm::sinf(p.yaw.to_radians()),

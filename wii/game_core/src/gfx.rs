@@ -40,6 +40,11 @@ pub trait Gfx {
     /// Point the world vertex arrays at `vertices` (interleaved: 28-byte float or 18-byte compact vertices).
     fn world_arrays(&mut self, vertices: *const u8, stride: u8);
     fn world_state(&mut self, state: &DrawState);
+    /// `state` differs from the last one set only in its tint, and both tints are nonzero: only the light colour
+    /// needs loading.
+    fn world_tint(&mut self, state: &DrawState) {
+        self.world_state(state);
+    }
     /// Load the position matrix for the following draws (the view, or view x a model's placement).
     fn pos_matrix(&mut self, m: &Mtx34);
     fn call_dl(&mut self, dl: &[u8]);

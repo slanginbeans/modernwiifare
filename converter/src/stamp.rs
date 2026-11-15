@@ -23,7 +23,8 @@ use std::path::{Path, PathBuf};
 /// 23: perk damage (`_perks.gsc`). 24: player characters (`CHAR`) and player animations (`PANM`, `PANB`).
 /// 25: HUD icons (hitmarker, weapons' and killstreaks' icons in `UIPK`).
 /// 26: map fog (`FOGD`, the art script's `setExpFog`).
-pub const REVISION: u32 = 26;
+/// 27: welded vertices (world and model surfaces), strips started at the fewest-neighbour triangles.
+pub const REVISION: u32 = 27;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

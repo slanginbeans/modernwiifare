@@ -186,6 +186,8 @@ void mwf_world_view(void);
 /* Distance fog for world draws: linear from `start` to `end` (eye depth, world units) to colour 0xRRGGBB__; off when
  * `on` is 0. Kept until changed. */
 void mwf_fog(int32_t on, float start, float end, uint32_t rgba);
+/* Only the static-model light colour of the last mwf_world_state (whose tint was nonzero) changes. */
+void mwf_world_tint(uint32_t rgba);
 /* Arrays for the model: positions f32x3 (stride 12), and per vertex RGBA8 + UV f32x2 (stride 12). GX_VTXFMT6,
  * display lists index POS, CLR0, TEX0 (u16 each). */
 void mwf_view_arrays(const void *positions, const void *attributes);

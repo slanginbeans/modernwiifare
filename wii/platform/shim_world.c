@@ -404,6 +404,11 @@ static void stage_ops(u8 stage, u8 scale) {
 #define MWF_GX_CULL_BACK GX_CULL_BACK
 #define MWF_GX_CULL_FRONT GX_CULL_FRONT
 
+void mwf_world_tint(uint32_t rgba) {
+    GXColor k = {(u8)(rgba >> 24), (u8)(rgba >> 16), (u8)(rgba >> 8), 0xff};
+    GX_SetTevKColor(GX_KCOLOR0, k);
+}
+
 void mwf_world_state(const mwf_draw_state *s) {
     int has_tex = s->tex >= 0 && s->tex < tex_count;
     int lit = s->lightmap >= 0 && s->lightmap < tex_count;
@@ -437,8 +442,7 @@ void mwf_world_state(const mwf_draw_state *s) {
 
     if (s->tint != 0) {
         /* Static model light: colour x konst x 2 (the konst holds half the light, like lightmaps). */
-        GXColor k = {(u8)(s->tint >> 24), (u8)(s->tint >> 16), (u8)(s->tint >> 8), 0xff};
-        GX_SetTevKColor(GX_KCOLOR0, k);
+        mwf_world_tint(s->tint);
         GX_SetTevKColorSel(st, GX_TEV_KCSEL_K0);
         GX_SetTevOrder(st, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLORNULL);
         GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_CPREV, GX_CC_KONST, GX_CC_ZERO);

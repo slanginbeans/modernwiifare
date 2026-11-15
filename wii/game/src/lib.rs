@@ -83,6 +83,9 @@ impl Gfx for Shim {
         };
         unsafe { ffi::mwf_world_state(&st) }
     }
+    fn world_tint(&mut self, s: &DrawState) {
+        unsafe { ffi::mwf_world_tint(s.tint) }
+    }
     fn pos_matrix(&mut self, m: &Mtx34) {
         unsafe { ffi::mwf_pos_matrix(m) }
     }
@@ -159,6 +162,8 @@ fn overlay(gfx: &mut Shim, rects: &mut Vec<Rect>, t: &Timing, s: &FrameStats, ey
     line.num(s.batches);
     line.push_str("  STATE ");
     line.num(s.state_changes);
+    line.push_str("+");
+    line.num(s.tint_changes);
     line.push_str("  CELLS ");
     line.num(s.cells_visible);
     line.push_str(if s.in_cell { "" } else { " (OUT)" });
@@ -341,6 +346,11 @@ fn draw_gun_hud(
         hud::text(rects, 520, 400, 2, line.as_str());
         gfx.hud_rects(rects, if grenades > 0 { 0xc0c8d0c0 } else { 0x606870c0 });
     }
+}
+
+/// Microseconds (wrapping), for timing inside `game_core`.
+fn clock_us() -> u32 {
+    unsafe { ffi::mwf_us() }
 }
 
 /// A NUL-terminated path inside the app folder: `<app folder>/<rest>`.
@@ -900,17 +910,21 @@ fn run_map(
     let mut arsenal = arsenal::Arsenal::new();
     // A class change applies at the next spawn, as in MW2.
     let mut class = loadouts.class;
+    // The class's loadout; the debug menu's primary weapon replaces the class's (no attachments).
+    let loadout_of = |class: Option<usize>, primary: u8| {
+        let mut l = class.and_then(|c| loadouts.classes.get(c)).cloned();
+        if primary != wpk::classes::NONE
+            && let Some(l) = l.as_mut()
+        {
+            l.primary = primary;
+            l.primary_attachments = [wpk::classes::NONE; 2];
+        }
+        l
+    };
     // Arm for a spawn; returns the class's perks (with their Pro perks: everything is unlocked).
-    // The debug menu's primary weapon replaces the class's (no attachments).
     let equip =
         |arsenal: &mut arsenal::Arsenal, gfx: &mut Shim, class: Option<usize>, primary: u8| {
-            let mut l = class.and_then(|c| loadouts.classes.get(c)).cloned();
-            if primary != wpk::classes::NONE
-                && let Some(l) = l.as_mut()
-            {
-                l.primary = primary;
-                l.primary_attachments = [wpk::classes::NONE; 2];
-            }
+            let l = loadout_of(class, primary);
             let l = l.as_ref();
             arsenal.equip(
                 gfx,
@@ -1007,6 +1021,8 @@ fn run_map(
     if let Some(a) = arena.as_mut() {
         a.equips = equips;
         a.blockers = blockers;
+        // Time the bots (telemetry `bai` / `bmv` / `bgun`).
+        a.clock = Some(clock_us);
     }
     // Bots call in a UAV at its killstreakTable cost.
     if let (Some(a), Some(c)) = (arena.as_mut(), loadouts.catalog) {
@@ -1717,7 +1733,12 @@ fn run_map(
                 }
             }
             (Some(_), Some(c)) if !flying => {
-                // Dead: the view stays where the player fell until the respawn.
+                // Dead: the view stays where the player fell until the respawn. A second in (the gun's last sounds
+                // have played from its file), the next life's weapon files stream in, a slice a frame.
+                if life.respawn_in(now) <= game_core::life::RESPAWN_DELAY_MS.saturating_sub(1000) {
+                    let l = loadout_of(class, debug.primary);
+                    arsenal.prefetch(gfx, loadouts.catalog, l.as_ref());
+                }
                 if life.ready_to_respawn(now) {
                     spawn += 1;
                     // MW2's spawn weighting, as for the bots.
@@ -1881,6 +1902,11 @@ fn run_map(
             }
         }
         sections[section::BOTS] = lap(&mut mark);
+        if let Some(a) = arena.as_ref() {
+            sections[section::BOT_THINK] = a.bot_cost.think_us;
+            sections[section::BOT_MOVE] = a.bot_cost.move_us;
+            sections[section::BOT_GUN] = a.bot_cost.gun_us;
+        }
         let stats = world.draw(gfx, &cam, scratch);
         sections[section::WORLD] = lap(&mut mark);
         // The other players' bodies (timed with the placeholder boxes as `bod`).

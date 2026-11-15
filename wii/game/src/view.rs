@@ -45,7 +45,6 @@ pub struct View {
     draws: Vec<Draw>,
     world: Vec<Mtx34>,
     skin: Vec<Mtx34>,
-    skinned: Vec<[f32; 3]>,
     /// The anim tree (built for the gun it was first drawn with), the clips it plays, blend scratch.
     anim: Option<(u32, Animator)>,
     playing: Vec<Playing>,
@@ -159,7 +158,6 @@ impl View {
             draws,
             world: Vec::with_capacity(vm.bones.len()),
             skin: Vec::with_capacity(vm.bones.len()),
-            skinned: Vec::with_capacity(n),
             anim: None,
             playing: Vec::with_capacity(8),
             blend: BlendScratch::default(),
@@ -259,10 +257,10 @@ impl View {
         }
         pose_blend(&self.vm, &self.playing, &mut self.blend, &mut self.world);
         vmod::skin_matrices(&self.vm, &self.world, &mut self.skin);
-        vmod::skin(&self.vm, &self.skin, &mut self.skinned);
         self.parity ^= 1;
         let positions = &mut self.positions[self.parity];
-        positions.copy_from_slice(&self.skinned);
+        // Skinned straight into this frame's MEM2 positions (the GPU may still read the other set).
+        vmod::skin_into(&self.vm, &self.skin, positions);
         unsafe {
             ffi::mwf_flush(positions.as_ptr().cast(), (positions.len() * 12) as u32);
             ffi::mwf_view_begin(FOVY, ZNEAR, ZFAR);

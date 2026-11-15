@@ -2,13 +2,15 @@
 //! (`views/<weapon>.wpk`: model, textures, sounds) loaded into MEM2.
 //!
 //! The files load above a MEM2 and texture mark taken after the map, so a class with other weapons releases them
-//! and loads its own (the map's data below the marks stays).
+//! and loads its own (the map's data below the marks stays). While the player is dead, [`Arsenal::prefetch`] streams
+//! the next life's files a slice per frame, so the respawn doesn't stop on an SD read; whatever is left then loads
+//! at the respawn.
 
 use game_core::gun::{Gun, SwitchTarget};
 use wpk::classes::{Catalog, Loadout, NONE};
 
 use crate::view::View;
-use crate::{AppPath, ffi, load_pack};
+use crate::{AppPath, ffi};
 
 /// The weapon spawned with when there is no class data (MW2's first default class carries it).
 const FALLBACK_WEAPON: &str = "m4";
@@ -94,6 +96,18 @@ pub struct Arsenal {
     loaded: [heapless_name::Name; 2],
     mem2_mark: u32,
     tex_mark: i32,
+    /// Files being streamed in (while dead).
+    stream: Option<Stream>,
+}
+
+/// Bytes read from the SD card per frame while streaming (~20-40 ms of SD time).
+const STREAM_SLICE: usize = 192 << 10;
+
+/// Weapon files streaming into MEM2: for `wanted`, slot `slot` next, the open file's buffer and how much of it is in.
+struct Stream {
+    wanted: [Name; 2],
+    slot: usize,
+    file: Option<(AppPath, &'static mut [u8], usize)>,
 }
 
 /// Short fixed-size names (no allocation in the comparison).
@@ -132,6 +146,96 @@ impl Arsenal {
             loaded: [Name::default(); 2],
             mem2_mark: unsafe { ffi::mwf_mem2_mark() },
             tex_mark: unsafe { ffi::mwf_tex_mark() },
+            stream: None,
+        }
+    }
+
+    /// While dead (the first-person model isn't drawn): stream the files `class` needs, one slice this frame.
+    pub fn prefetch(
+        &mut self,
+        gfx: &mut impl game_core::gfx::Gfx,
+        cat: Option<&Catalog>,
+        class: Option<&Loadout>,
+    ) {
+        let wanted = slot_names(cat, class).map(|(n, _)| n);
+        if wanted == self.loaded {
+            return;
+        }
+        if self.stream.as_ref().is_none_or(|s| s.wanted != wanted) {
+            self.begin(wanted);
+        }
+        self.step(gfx, STREAM_SLICE);
+    }
+
+    /// Drop the loaded files and start streaming `wanted`.
+    fn begin(&mut self, wanted: [Name; 2]) {
+        // Drop the old views before their MEM2 goes.
+        self.views = [None, None];
+        unsafe {
+            ffi::mwf_mem2_release(self.mem2_mark);
+            ffi::mwf_tex_release(self.tex_mark);
+        }
+        self.loaded = [Name::default(); 2];
+        self.stream = Some(Stream {
+            wanted,
+            slot: 0,
+            file: None,
+        });
+    }
+
+    /// Read up to `budget` bytes of the stream (finish it with `usize::MAX`).
+    fn step(&mut self, gfx: &mut impl game_core::gfx::Gfx, mut budget: usize) {
+        while let Some(s) = self.stream.as_mut() {
+            if s.slot >= 2 {
+                self.loaded = s.wanted;
+                self.stream = None;
+                return;
+            }
+            let name = s.wanted[s.slot];
+            if name.as_str().is_empty() {
+                s.slot += 1;
+                continue;
+            }
+            if s.file.is_none() {
+                s.file = open_view(name.as_str());
+                if s.file.is_none() {
+                    // Not on the card: no first-person model for this slot.
+                    s.slot += 1;
+                    continue;
+                }
+            }
+            if budget == 0 {
+                return;
+            }
+            let Some((path, buf, done)) = s.file.as_mut() else {
+                continue;
+            };
+            let n = (buf.len() - *done).min(budget);
+            let got = unsafe {
+                ffi::mwf_file_read(
+                    path.as_ptr(),
+                    *done as u32,
+                    n as u32,
+                    buf[*done..].as_mut_ptr(),
+                )
+            };
+            if got != n as i32 {
+                s.file = None;
+                s.slot += 1;
+                continue;
+            }
+            *done += n;
+            budget -= n;
+            if *done == buf.len() {
+                let slot = s.slot;
+                let bytes: &'static [u8] = s.file.take().map_or(&[], |(_, b, _)| b);
+                s.slot += 1;
+                unsafe { ffi::mwf_flush(bytes.as_ptr(), bytes.len() as u32) };
+                self.views[slot] = wpk::Pack::parse(bytes, false)
+                    .is_ok()
+                    .then(|| View::load(bytes, gfx))
+                    .flatten();
+            }
         }
     }
 
@@ -144,36 +248,7 @@ impl Arsenal {
         cat: Option<&Catalog>,
         class: Option<&Loadout>,
     ) {
-        // (base name, weapon file candidates) per slot.
-        let mut slots: [(Name, alloc::vec::Vec<alloc::string::String>); 2] = Default::default();
-        match (cat, class) {
-            (Some(c), Some(l)) => {
-                for (i, (w, atts)) in [
-                    (l.primary, l.primary_attachments),
-                    (l.secondary, l.secondary_attachments),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    if w == NONE {
-                        continue;
-                    }
-                    let Some(item) = c.weapons.get(usize::from(w)) else {
-                        continue;
-                    };
-                    let mut names = c.weapon_names(w, atts);
-                    // A combination without its own file falls back to the bare weapon.
-                    names.push(alloc::format!("{}_mp", item.name));
-                    slots[i] = (Name::new(&item.name), names);
-                }
-            }
-            _ => {
-                slots[0] = (
-                    Name::new(FALLBACK_WEAPON),
-                    alloc::vec![alloc::format!("{FALLBACK_WEAPON}_mp")],
-                );
-            }
-        }
+        let slots = slot_names(cat, class);
         for (i, (_, names)) in slots.iter().enumerate() {
             self.guns[i] = names.iter().find_map(|n| {
                 let (index, rec) = wpk::weapon::find_indexed(t.weapons, n)?;
@@ -220,22 +295,11 @@ impl Arsenal {
         self.used = [self.active == 0, self.active == 1];
         let wanted = [slots[0].0, slots[1].0];
         if wanted != self.loaded {
-            // Drop the old views before their MEM2 goes.
-            self.views = [None, None];
-            unsafe {
-                ffi::mwf_mem2_release(self.mem2_mark);
-                ffi::mwf_tex_release(self.tex_mark);
+            // Whatever the death screen didn't stream in loads now.
+            if self.stream.as_ref().is_none_or(|s| s.wanted != wanted) {
+                self.begin(wanted);
             }
-            for (i, name) in wanted.iter().enumerate() {
-                if name.as_str().is_empty() {
-                    continue;
-                }
-                let file = AppPath::new(&alloc::format!("views/{}.wpk", name.as_str()));
-                self.views[i] = file
-                    .and_then(|p| load_pack(&p))
-                    .and_then(|bytes| View::load(bytes, gfx));
-            }
-            self.loaded = wanted;
+            self.step(gfx, usize::MAX);
         }
     }
 
@@ -290,6 +354,66 @@ impl Arsenal {
     pub fn gun(&self) -> Option<&Gun> {
         self.guns[self.active].as_ref()
     }
+}
+
+/// Per slot (primary, secondary): the base weapon name (its first-person file) and the weapon names to try for its
+/// gun, `class`'s or the fallback weapon's.
+fn slot_names(
+    cat: Option<&Catalog>,
+    class: Option<&Loadout>,
+) -> [(Name, alloc::vec::Vec<alloc::string::String>); 2] {
+    let mut slots: [(Name, alloc::vec::Vec<alloc::string::String>); 2] = Default::default();
+    match (cat, class) {
+        (Some(c), Some(l)) => {
+            for (i, (w, atts)) in [
+                (l.primary, l.primary_attachments),
+                (l.secondary, l.secondary_attachments),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if w == NONE {
+                    continue;
+                }
+                let Some(item) = c.weapons.get(usize::from(w)) else {
+                    continue;
+                };
+                let mut names = c.weapon_names(w, atts);
+                // A combination without its own file falls back to the bare weapon.
+                names.push(alloc::format!("{}_mp", item.name));
+                slots[i] = (Name::new(&item.name), names);
+            }
+        }
+        _ => {
+            slots[0] = (
+                Name::new(FALLBACK_WEAPON),
+                alloc::vec![alloc::format!("{FALLBACK_WEAPON}_mp")],
+            );
+        }
+    }
+    slots
+}
+
+/// `views/<name>.wpk` opened for streaming: its path and a MEM2 buffer of its length (32-byte padded, zeroed tail).
+fn open_view(name: &str) -> Option<(AppPath, &'static mut [u8], usize)> {
+    let path = AppPath::new(&alloc::format!("views/{name}.wpk"))?;
+    let mut head = [0u8; wpk::HEADER_LEN];
+    let got = unsafe { ffi::mwf_file_read(path.as_ptr(), 0, head.len() as u32, head.as_mut_ptr()) };
+    if got != head.len() as i32 {
+        return None;
+    }
+    let len = u32::from_be_bytes([head[24], head[25], head[26], head[27]]) as usize;
+    if !(wpk::HEADER_LEN..=16 << 20).contains(&len) {
+        return None;
+    }
+    let padded = len.div_ceil(32) * 32;
+    let p = unsafe { ffi::mwf_mem2_alloc(padded as u32, 32) };
+    if p.is_null() {
+        return None;
+    }
+    let all = unsafe { core::slice::from_raw_parts_mut(p, padded) };
+    all[len..].fill(0);
+    Some((path, &mut all[..len], 0))
 }
 
 impl Default for Arsenal {

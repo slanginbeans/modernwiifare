@@ -253,6 +253,18 @@ impl Limits {
     }
 }
 
+/// The bots' CPU in one [`Arena::update_bots`]: time thinking (sight checks, goals, routes), moving (pmove) and
+/// shooting (the gun step, bullets, melee), in microseconds, and how many steps, thoughts and new routes it took.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BotCost {
+    pub think_us: u32,
+    pub move_us: u32,
+    pub gun_us: u32,
+    pub steps: u32,
+    pub thinks: u32,
+    pub routes: u32,
+}
+
 pub struct Arena {
     pub fighters: Vec<Fighter>,
     pub rules: Rules,
@@ -276,6 +288,10 @@ pub struct Arena {
     pub god_mode: bool,
     pub bots_passive: bool,
     pub bots_frozen: bool,
+    /// A microsecond clock for [`Arena::bot_cost`] (the Wii's; none on the host: nothing is timed).
+    pub clock: Option<fn() -> u32>,
+    /// What the bots cost in the last [`Arena::update_bots`].
+    pub bot_cost: BotCost,
     /// A tactical nuke: who called it, when it goes off, and whether it has (the match is over: its caller wins).
     pub nuke: Option<Nuke>,
     rng: u32,
@@ -411,6 +427,8 @@ impl Arena {
             god_mode: false,
             bots_passive: false,
             bots_frozen: false,
+            clock: None,
+            bot_cost: BotCost::default(),
             rng: 0x2545_f491,
             human_present: true,
             spawn_count: 0,
@@ -1345,6 +1363,9 @@ impl Arena {
         if let Some(n) = nav.as_deref_mut() {
             n.routes_left = 1;
         }
+        self.bot_cost = BotCost::default();
+        let clock = self.clock;
+        let us = || clock.map_or(0, |c| c());
         for i in 1..self.fighters.len() {
             if !self.fighters[i].life.alive() {
                 if self.fighters[i].life.ready_to_respawn(now) {
@@ -1370,7 +1391,10 @@ impl Arena {
             let msec = BOT_TICK_MS as i32;
             let think = self.fighters[i].steps.is_multiple_of(THINK_EVERY);
             self.fighters[i].steps += 1;
+            self.bot_cost.steps += 1;
+            let t0 = us();
             if think {
+                self.bot_cost.thinks += 1;
                 let contacts = self.contacts(clip, i, now);
                 let objective = self.dom.as_ref().and_then(|d| {
                     let f = &self.fighters[i];
@@ -1397,6 +1421,8 @@ impl Arena {
             } else {
                 None
             };
+            let t1 = us();
+            self.bot_cost.think_us += t1.wrapping_sub(t0);
             clip.set_bodies(self.bodies_except(i));
             let slowed = self.shock_slows(i, now);
             let f = &mut self.fighters[i];
@@ -1431,6 +1457,8 @@ impl Arena {
             steer.fire = act.fire;
             steer.reload = act.reload;
             let fall = f.player.steer(clip, &steer, &w, msec);
+            let t2 = us();
+            self.bot_cost.move_us += t2.wrapping_sub(t1);
             if fall > 0 && f.life.damage(fall, now) {
                 out.push(Event::Kill {
                     attacker: i,
@@ -1519,6 +1547,10 @@ impl Arena {
             if let Some((eye, axes, melee_damage)) = swing {
                 self.melee(clip, i, eye, axes, melee_damage, now, out);
             }
+            self.bot_cost.gun_us += us().wrapping_sub(t2);
+        }
+        if let Some(n) = nav.as_deref() {
+            self.bot_cost.routes = 1 - n.routes_left.min(1);
         }
     }
 }

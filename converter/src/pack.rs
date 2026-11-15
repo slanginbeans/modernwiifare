@@ -365,6 +365,8 @@ pub struct PackReport {
     /// Materials with an IW4 polygon offset (decals), by level 1..3.
     pub polygon_offset_materials: [usize; 3],
     pub world_vertices: usize,
+    /// World vertices merged into an identical one of their batch (welding: longer GX strips).
+    pub world_vertices_welded: usize,
     pub world_triangles: u64,
     /// Vertices the world's display lists send (strips: about one per triangle; lists: three).
     pub world_dl_vertices: u64,
@@ -406,6 +408,8 @@ pub struct StaticModelReport {
     pub triangles: u64,
     pub lods: usize,
     pub dl_vertices: u64,
+    /// Vertices merged into an identical one of their surface.
+    pub vertices_welded: usize,
     /// Surfaces stored as fixed-point vertices.
     pub compact_surfaces: usize,
     /// Triangles if every instance were drawn (what world-space baking would cost).
@@ -730,6 +734,8 @@ pub fn build(
             }
             tris.push(*slot);
         }
+        // Vertices identical in every attribute become one, so strips can run across the seams IW4 leaves.
+        report.world_vertices_welded += weld(&mut verts, &mut tris);
         // Simplified for the Wii's triangle budget (opaque batches; blended ones keep their authored order), then
         // only the vertices still used.
         report.world_triangles_source += (tris.len() / 3) as u64;
@@ -855,9 +861,12 @@ pub fn build(
                         smax[k] = smax[k].max(v.pos[k]);
                     }
                 }
+                let mut verts = surf.vertices.clone();
+                let mut indices = surf.indices.clone();
+                r.vertices_welded += weld(&mut verts, &mut indices);
                 let (vertex_base, quant) = store_vertices(
-                    &surf.vertices,
-                    &surf.indices,
+                    &verts,
+                    &indices,
                     model_origin,
                     &mut model_vertices,
                     &mut model_compact,
@@ -867,12 +876,12 @@ pub fn build(
                 }
                 let dl = display_list(
                     matches!(links.material_info[mat].blend, BlendMode::Blend),
-                    &surf.indices,
+                    &indices,
                     quant.vtxfmt,
                 );
                 if !wpk::strips::same_triangles(
                     wpk::strips::dl_triangles(&dl).into_iter(),
-                    surf.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]),
+                    indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]),
                 ) {
                     return Err("display list self-check: triangles changed".into());
                 }
@@ -880,7 +889,7 @@ pub fn build(
                 surface_quant.push(quant);
                 model_surfaces.push(BatchRecord {
                     vertex_base,
-                    vertex_count: surf.vertices.len() as u32,
+                    vertex_count: verts.len() as u32,
                     material,
                     lightmap: NONE,
                     dl_off: dls.len() as u32,
@@ -1210,6 +1219,36 @@ pub fn build(
     Ok((bytes, report))
 }
 
+/// Merge vertices identical in every attribute (exact bits) and drop unused ones, keeping first-use order; returns
+/// how many fewer vertices there are. The triangles are the same, so what is drawn does not change.
+fn weld(verts: &mut Vec<WorldVertex>, tris: &mut [u16]) -> usize {
+    let key = |v: &WorldVertex| {
+        (
+            v.pos.map(f32::to_bits),
+            v.rgba,
+            v.uv.map(f32::to_bits),
+            v.lm,
+        )
+    };
+    let mut seen: HashMap<_, u16> = HashMap::with_capacity(verts.len());
+    let mut out: Vec<WorldVertex> = Vec::with_capacity(verts.len());
+    let mut remap = vec![u16::MAX; verts.len()];
+    for t in tris.iter_mut() {
+        let i = usize::from(*t);
+        if remap[i] == u16::MAX {
+            let v = verts[i];
+            remap[i] = *seen.entry(key(&v)).or_insert_with(|| {
+                out.push(v);
+                (out.len() - 1) as u16
+            });
+        }
+        *t = remap[i];
+    }
+    let fewer = verts.len() - out.len();
+    *verts = out;
+    fewer
+}
+
 /// Strips for order-independent materials; alpha-blended ones keep their authored triangle order (it is their
 /// layering order).
 fn display_list(blended: bool, tris: &[u16], vtxfmt: u8) -> Vec<u8> {
@@ -1325,6 +1364,29 @@ pub fn render_text(r: &PackReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weld_merges_identical_vertices_only() {
+        let v = |x: f32, u: f32| WorldVertex {
+            pos: [x, 0.0, 0.0],
+            rgba: 0xffff_ffff,
+            uv: [u, 0.0],
+            lm: [0, 0],
+        };
+        // 0 and 2 are identical; 3 shares 0's position but not its UV (a seam that must stay); 4 is unused.
+        let mut verts = vec![
+            v(0.0, 0.0),
+            v(1.0, 0.0),
+            v(0.0, 0.0),
+            v(0.0, 0.5),
+            v(9.0, 0.0),
+        ];
+        let mut tris = vec![0, 1, 3, 2, 1, 3];
+        let fewer = weld(&mut verts, &mut tris);
+        assert_eq!(fewer, 2);
+        assert_eq!(verts, [v(0.0, 0.0), v(1.0, 0.0), v(0.0, 0.5)]);
+        assert_eq!(tris, [0, 1, 2, 0, 1, 2]);
+    }
 
     #[test]
     fn entities_and_spawns() {

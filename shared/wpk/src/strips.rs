@@ -83,8 +83,24 @@ pub fn stripify(tris: &[u16]) -> Strips {
         (s, ts)
     };
 
+    // Start strips at the triangles with the fewest neighbours (mesh borders and corners) first: strips then run
+    // inward instead of stranding border triangles as singles.
+    let neighbours = |t: usize| -> usize {
+        let [a, b, c] = tri(t);
+        [(b, a), (c, b), (a, c)]
+            .iter()
+            .map(|e| {
+                edges
+                    .get(e)
+                    .map_or(0, |ts| ts.iter().filter(|&&o| o as usize != t).count())
+            })
+            .sum()
+    };
+    let mut starts: Vec<(usize, usize)> = (0..n).map(|t| (neighbours(t), t)).collect();
+    starts.sort_unstable();
+
     let mut out = Strips::default();
-    for t in 0..n {
+    for t in starts.into_iter().map(|(_, t)| t) {
         if used[t] {
             if degenerate[t] {
                 out.singles.push(tri(t));

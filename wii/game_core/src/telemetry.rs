@@ -16,7 +16,8 @@
 use alloc::vec::Vec;
 use core::fmt::Write;
 
-/// CPU sections timed each frame (µs). Keep in sync with [`SECTION_NAMES`].
+/// CPU sections timed each frame (µs). Keep in sync with [`SECTION_NAMES`]. `BOTS` (`bot`) is all the arena's work;
+/// `BOT_THINK` / `BOT_MOVE` / `BOT_GUN` (`bai` / `bmv` / `bgun`) are the bots' parts of it.
 pub mod section {
     pub const INPUT: usize = 0;
     pub const PLAYER: usize = 1;
@@ -26,11 +27,15 @@ pub mod section {
     pub const BODIES: usize = 5;
     pub const VIEW: usize = 6;
     pub const HUD: usize = 7;
-    pub const COUNT: usize = 8;
+    pub const BOT_THINK: usize = 8;
+    pub const BOT_MOVE: usize = 9;
+    pub const BOT_GUN: usize = 10;
+    pub const COUNT: usize = 11;
 }
 
-pub const SECTION_NAMES: [&str; section::COUNT] =
-    ["in", "mv", "gun", "bot", "wld", "bod", "vm", "hud"];
+pub const SECTION_NAMES: [&str; section::COUNT] = [
+    "in", "mv", "gun", "bot", "wld", "bod", "vm", "hud", "bai", "bmv", "bgun",
+];
 
 /// One frame's numbers.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -306,7 +311,7 @@ mod tests {
             frame_us: us,
             cpu_us: us / 2,
             gpu_us: us / 4,
-            sections: [100, 2000, 300, 1500, 3000, 50, 900, 200],
+            sections: [100, 2000, 300, 1500, 3000, 50, 900, 200, 600, 500, 300],
             triangles: 120_000,
             draws: 400,
             mem1_free: 4 << 20,

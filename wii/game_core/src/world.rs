@@ -46,7 +46,10 @@ pub struct FrameStats {
     pub triangles: u32,
     /// Of `triangles`, those of static models.
     pub model_triangles: u32,
+    /// Full draw-state changes (textures and TEV reprogrammed).
     pub state_changes: u32,
+    /// State changes where only a static model's light colour changed (one konst register).
+    pub tint_changes: u32,
     pub instances: u32,
     pub instances_culled: u32,
     /// Visibility cells drawn this frame, and whether the camera was inside the cell BSP.
@@ -187,6 +190,9 @@ pub struct World<'a> {
     /// Scratch for the frame's draw order: (class, sort key, draw). A draw below `MODEL_DRAW` is a world batch;
     /// otherwise it indexes `model_draws`.
     order: Vec<(u8, i32, u32)>,
+    /// Every world batch in draw order, sorted once at load: the opaque and alpha-tested ones by material and
+    /// lightmap first (so a frame's visible ones come out already sorted), then the blended ones.
+    batch_order: Vec<u32>,
     /// Scratch: (instance, model surface) of each visible model surface.
     model_draws: Vec<(u16, u32)>,
     /// Draw the static models (the debug menu can turn them off to measure them).
@@ -209,6 +215,27 @@ impl World<'_> {
     pub fn texture(&self, i: u16) -> i32 {
         self.textures.get(usize::from(i)).copied().unwrap_or(-1)
     }
+}
+
+/// The world batches in draw order: opaque and alpha-tested by (material, lightmap, index), then blended by index.
+fn batch_order(batches: &[BatchRecord], materials: &[MaterialRecord]) -> Vec<u32> {
+    let blended = |b: &BatchRecord| {
+        materials
+            .get(usize::from(b.material))
+            .is_some_and(|m| Blend::from_u8(m.blend) >= Blend::Blend)
+    };
+    let mut order: Vec<u32> = (0..batches.len() as u32).collect();
+    order.sort_by_key(|&i| {
+        let b = &batches[i as usize];
+        let blend = blended(b);
+        let (m, l) = if blend {
+            (0, 0)
+        } else {
+            (b.material, b.lightmap)
+        };
+        (blend, m, l, i)
+    });
+    order
 }
 
 /// `a * b` for affine 3x4 matrices (`b` applied first).
@@ -395,11 +422,13 @@ impl<'a> World<'a> {
             .ok()
             .and_then(|s| s.split('\0').next())
             .unwrap_or("");
+        let batch_order = batch_order(&batches, &materials);
         Ok(World {
             name,
             textures,
             materials,
             order: Vec::with_capacity(batches.len()),
+            batch_order,
             batches,
             vertices,
             dls,
@@ -538,7 +567,9 @@ impl<'a> World<'a> {
         // Visible draws: (class, sort key, draw). Class 0 world opaque / alpha test, 1 static models opaque,
         // 2 blended (world and models, far to near).
         self.order.clear();
-        for (i, b) in self.batches.iter().enumerate() {
+        for &i in &self.batch_order {
+            let i = i as usize;
+            let b = &self.batches[i];
             let in_view = self
                 .vis
                 .as_ref()
@@ -611,12 +642,15 @@ impl<'a> World<'a> {
                 if Blend::from_u8(m.blend) >= Blend::Blend {
                     self.order.push((2, -(depth as i32), draw));
                 } else {
-                    // After the world's opaque batches, instance by instance so each matrix loads once.
-                    self.order.push((1, self.model_draws.len() as i32, draw));
+                    // After the world's opaque batches, surface by surface (then instance by instance): every
+                    // instance of a model then draws with one material, changing only its light colour (tint).
+                    self.order.push((1, si as i32, draw));
                 }
             }
         }
-        self.order.sort_unstable();
+        // The opaque world batches went in first, already in order: only the rest needs sorting.
+        let sorted = self.order.iter().take_while(|o| o.0 == 0).count();
+        self.order[sorted..].sort_unstable();
 
         let view = cam.view();
         let mut last_state: Option<DrawState> = None;
@@ -684,9 +718,17 @@ impl<'a> World<'a> {
                 s.tint = self.instances[usize::from(ii)].light;
             }
             if last_state != Some(s) {
-                gfx.world_state(&s);
+                let tint_only = last_state.is_some_and(|l| {
+                    l.tint != 0 && s.tint != 0 && DrawState { tint: s.tint, ..l } == s
+                });
+                if tint_only {
+                    gfx.world_tint(&s);
+                    stats.tint_changes += 1;
+                } else {
+                    gfx.world_state(&s);
+                    stats.state_changes += 1;
+                }
                 last_state = Some(s);
-                stats.state_changes += 1;
             }
             gfx.call_dl(&self.dls[b.dl_off as usize..(b.dl_off + b.dl_len) as usize]);
             stats.batches += 1;
@@ -712,6 +754,7 @@ mod tests {
         Begin,
         Arrays(usize),
         State(DrawState),
+        Tint(u32),
         Dl(usize),
         Sky(i32),
         /// Eye-space z of the matrix's translation (0 for the view at the origin).
@@ -745,6 +788,9 @@ mod tests {
         }
         fn world_state(&mut self, s: &DrawState) {
             self.calls.push(Call::State(*s));
+        }
+        fn world_tint(&mut self, s: &DrawState) {
+            self.calls.push(Call::Tint(s.tint));
         }
         fn call_dl(&mut self, dl: &[u8]) {
             self.calls
@@ -1085,9 +1131,10 @@ mod tests {
             );
             b.section(
                 tag::MODEL_INSTANCES,
-                3,
+                4,
                 records::encode(&[
                     at(150.0, 0, 0x8080_80ff),  // visible
+                    at(160.0, 0, 0x4040_40ff),  // visible, lit differently
                     at(150.0, 50, 0x8080_80ff), // past its draw distance
                     at(-500.0, 0, 0x8080_80ff), // behind the camera
                 ]),
@@ -1104,14 +1151,15 @@ mod tests {
             ..Rec::default()
         };
         let mut world = World::load(&bytes, None, &mut gfx).unwrap();
-        assert_eq!(world.instance_count(), 3);
+        assert_eq!(world.instance_count(), 4);
         gfx.calls.clear();
         let stats = world.draw(&mut gfx, &Camera::new([0.0; 3], 0.0, 0.0), &mut scratch());
-        assert_eq!((stats.instances, stats.instances_culled), (1, 2));
+        assert_eq!((stats.instances, stats.instances_culled), (2, 2));
+        assert_eq!(stats.tint_changes, 1);
         let calls = &gfx.calls;
         let mtx: Vec<&Call> = calls.iter().filter(|c| matches!(c, Call::Mtx(_))).collect();
-        // The instance (150 units ahead), then the view again for the blended world batches.
-        assert_eq!(mtx, [&Call::Mtx(-150), &Call::Mtx(0)]);
+        // The instances (150 and 160 units ahead), then the view again for the blended world batches.
+        assert_eq!(mtx, [&Call::Mtx(-150), &Call::Mtx(-160), &Call::Mtx(0)]);
         let i = calls.iter().position(|c| *c == Call::Mtx(-150)).unwrap();
         assert_eq!(calls[i + 1], Call::Arrays(0));
         match calls[i + 2] {
@@ -1119,6 +1167,11 @@ mod tests {
             ref c => panic!("{c:?}"),
         }
         assert_eq!(calls[i + 3], Call::Dl(0));
+        // The second instance of the same surface: only its light colour changes.
+        assert_eq!(
+            &calls[i + 4..i + 7],
+            [Call::Mtx(-160), Call::Tint(0x4040_40ff), Call::Dl(0)]
+        );
     }
 
     #[test]
