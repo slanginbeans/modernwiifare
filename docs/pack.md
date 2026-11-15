@@ -143,6 +143,14 @@ with `--slim-views`' 32 kHz.
 - **To check on hardware:** clicks or gaps at buffer joins, very short sounds (footsteps), many sounds at once, and how
   it sounds next to PCM.
 
+### Quiet sound tails cut (toggle, off by default)
+`--trim-sounds` on `pack` / `common`, or `MWF_TRIM_SOUNDS=1` (`builder.bat`: "Sounds: cut quiet tails"). Part of the
+stamp. Each clip in `common.wpk` and the weapon files ends 10 ms after its last sample louder than -54 dBFS
+(`sounds::trim_tail`, `TRIM_THRESHOLD` 65 of 32767), so anything below that level at the end is dropped. Only the
+end is cut: every clip still starts on its first sample, so nothing plays earlier or later and notetrack and event
+timings are unchanged. Stacks with `--adpcm` and `--slim-views`' 32 kHz. The reports give `trimmed_seconds` per
+bank. To check on hardware: sounds whose fade-out seems cut short (reverb tails of shots and explosions).
+
 ### Keyframed player animations (toggle, off by default)
 `--slim-anims` on `pack` / `common`, or `MWF_SLIM_ANIMS=1` (`builder.bat`: "Player animations: keyframes only").
 Part of the stamp. `PANM` keeps its format (it already reads keyed tracks); `wpk::player_anim::slim` only chooses
@@ -165,7 +173,10 @@ Every `pack` run writes a content-free `.json` beside each pack (sizes and count
   (`converter/src/tex_report.rs`): `TXDA` by use (`lightmap`, the texture roles, `sky`, `minimap`, `character`), by GX
   format and by longest side. Each group gives its count, bytes, the bytes in mips and in split alpha planes, and what
   capping every texture at 256 or 128 texels across would save (`save_cap_256`, `save_cap_128`). Also the 12 largest
-  textures (use, format, size, bytes).
+  textures (use, format, size, bytes). `collision_breakdown` (`converter/src/clip_report.rs`): `CLIP` (decoded into
+  MEM1) by table, and what lossless repacking would save: per-plane and per-triangle u32 flags as indices into a
+  palette, deduplicated brush planes behind u16 indices, deduplicated mesh vertices. Measuring only; collision is
+  unchanged.
 - **`common.json`** (beside `common.wpk`): its sections, the held weapons' and menus' textures broken down the same way,
   the world sounds (encoding, clips, seconds and bytes, by sample rate), `player_anims` (`PANM` size with and
   without `--slim-anims`), and `views`: all weapon files together
