@@ -13,12 +13,12 @@ use game_core::character::{
     Body, Death, Held as HeldType, NO_BONE, PlayerAnims, Rig, Scratch, conditions,
     death_conditions, movetype, strafing,
 };
-use game_core::gfx::{DrawState, Gfx, Mtx34, TexDesc};
+use game_core::gfx::{DrawState, Gfx, Mtx34};
 use game_core::viewmodel as vmod;
 use wpk::anim_script::{Conditions, Script};
 use wpk::held::Guns;
 use wpk::player_anim::Anims;
-use wpk::records::{self, NONE, TextureRecord, texture_flags};
+use wpk::records::{self, NONE};
 use wpk::view::ViewModel;
 
 use crate::ffi;
@@ -65,6 +65,8 @@ struct Seen {
     last_fire_ms: Option<u32>,
     gun_state: i32,
     movetype: u8,
+    /// Where its muzzle was last drawn (world origin and forward).
+    flash: Option<([f32; 3], [f32; 3])>,
 }
 
 /// The weapons in the players' hands (`common.wpk` `GUNM`): the models, each weapon record's model and the texture
@@ -77,36 +79,15 @@ struct Held {
 
 impl Held {
     fn load(common: &wpk::Pack<'static>, gfx: &mut impl Gfx) -> Option<Held> {
-        let guns = Guns::parse(common.section(wpk::tag::HELD_MODELS)?.data)?;
-        let index = common.section(wpk::tag::HELD_INDEX)?.data;
-        let txda = common.section(wpk::tag::HELD_TEXTURE_DATA)?.data;
-        let mut textures = Vec::new();
-        for r in records::iter::<TextureRecord>(common.section(wpk::tag::HELD_TEXTURES)?.data) {
-            let Some(data) = txda.get(r.data_off as usize..(r.data_off + r.data_len) as usize)
-            else {
-                textures.push(-1);
-                continue;
-            };
-            let alpha = if r.flags & texture_flags::ALPHA_PLANE != 0 {
-                txda.get(r.alpha_off as usize..(r.alpha_off + r.alpha_len) as usize)
-                    .map_or(core::ptr::null(), |a| a.as_ptr())
-            } else {
-                core::ptr::null()
-            };
-            textures.push(gfx.tex_create(&TexDesc {
-                data: data.as_ptr(),
-                alpha,
-                width: r.width,
-                height: r.height,
-                format: r.format,
-                levels: r.levels,
-                wrap: r.wrap,
-            }));
-        }
         Some(Held {
-            guns,
-            index,
-            textures,
+            guns: Guns::parse(common.section(wpk::tag::HELD_MODELS)?.data)?,
+            index: common.section(wpk::tag::HELD_INDEX)?.data,
+            textures: crate::effects::create_textures(
+                common,
+                wpk::tag::HELD_TEXTURES,
+                wpk::tag::HELD_TEXTURE_DATA,
+                gfx,
+            ),
         })
     }
 
@@ -348,6 +329,11 @@ impl Characters {
         }
     }
 
+    /// Where player `slot`'s muzzle was last drawn (world origin and forward), if it was.
+    pub fn muzzle(&self, slot: usize) -> Option<([f32; 3], [f32; 3])> {
+        self.seen.get(slot).and_then(|s| s.flash)
+    }
+
     /// Animate and draw `players` (after the world, before the first-person model) seen through `view` (world to eye)
     /// at `now_ms`.
     pub fn draw(&mut self, gfx: &mut impl Gfx, view: &Mtx34, players: &[Pose], now_ms: u32) {
@@ -433,7 +419,13 @@ impl Characters {
                     ffi::mwf_world_view();
                     ffi::mwf_view_arrays(gun.positions.as_ptr(), gun.attributes.as_ptr());
                 }
-                gfx.pos_matrix(&vmod::mul(&vmod::mul(view, &model), bone));
+                let gun_world = vmod::mul(&model, bone);
+                let [o, f] = gun.flash;
+                let dir = core::array::from_fn(|r| {
+                    gun_world[r][0] * f[0] + gun_world[r][1] * f[1] + gun_world[r][2] * f[2]
+                });
+                self.seen[p.slot].flash = Some((vmod::apply(&gun_world, o), dir));
+                gfx.pos_matrix(&vmod::mul(view, &gun_world));
                 let mut last: Option<DrawState> = None;
                 for i in 0..gun.draws() {
                     let Some(d) = gun.draw(i) else { continue };

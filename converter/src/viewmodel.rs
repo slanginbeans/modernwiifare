@@ -750,6 +750,14 @@ pub fn build_held(
         }
     }
     let mut out = wpk::held::Model::default();
+    // The muzzle (`tag_flash`) in the bind pose: its origin and its x axis.
+    if let Some(i) = bones.names.iter().position(|n| n == "tag_flash") {
+        let (q, t) = bones.bind[i];
+        let r = qmat(q);
+        out.flash = [t, [r[0][0], r[1][0], r[2][0]]];
+    } else {
+        out.flash = [[0.0; 3], [1.0, 0.0, 0.0]];
+    }
     for surf in surfaces {
         let Some(mat) = surf.material else { continue };
         let info = &links.material_info[mat];

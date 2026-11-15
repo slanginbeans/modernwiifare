@@ -786,6 +786,7 @@ version = "0.1.0"
 dependencies = [
  "anim_iw4",
  "dpvs_iw4",
+ "fx_iw4",
  "game_core",
  "hud_iw4",
  "libm",

@@ -133,10 +133,11 @@ pub enum Event {
     BotFired {
         bot: usize,
     },
-    /// A grenade went off at `origin`.
+    /// A grenade went off at `origin`, over IW4 surface type `surface`.
     Explosion {
         origin: [f32; 3],
         weapon: u32,
+        surface: u8,
     },
     /// A grenade bounced (loud enough to hear).
     GrenadeBounce {
@@ -159,6 +160,15 @@ pub enum Event {
     /// A claymore saw an enemy (it goes off after the grace period).
     ClaymoreTripped {
         origin: [f32; 3],
+    },
+    /// A bullet struck a surface (IW4 surface type) or a player (`flesh`), facing `normal`, from a weapon of IW4
+    /// impact type `impact_type`.
+    Impact {
+        origin: [f32; 3],
+        normal: [f32; 3],
+        surface: u8,
+        flesh: bool,
+        impact_type: i32,
     },
 }
 
@@ -682,10 +692,32 @@ impl Arena {
                 best = Some((t, i, loc));
             }
         }
+        // Where it struck: the first wall, and the player when one was hit before (or behind) it.
+        let length = libm::sqrtf(dist2(shot.start, shot.pen_end));
+        let wall = libm::sqrtf(dist2(shot.start, shot.end));
+        let dir_n: [f32; 3] =
+            core::array::from_fn(|k| (shot.pen_end[k] - shot.start[k]) / length.max(1e-6));
+        if shot.hit && best.is_none_or(|b| b.0 * length > wall) {
+            out.push(Event::Impact {
+                origin: shot.end,
+                normal: shot.normal,
+                surface: ((shot.surface >> 20) & 0x1f) as u8,
+                flesh: false,
+                impact_type: facts.impact_type,
+            });
+        }
+        if let Some((t, _, _)) = best {
+            out.push(Event::Impact {
+                origin: core::array::from_fn(|k| shot.start[k] + dir_n[k] * t * length),
+                normal: dir_n.map(|v| -v),
+                surface: 0,
+                flesh: true,
+                impact_type: facts.impact_type,
+            });
+        }
         let Some((t, victim, loc)) = best else {
             return;
         };
-        let length = libm::sqrtf(dist2(shot.start, shot.pen_end));
         let d = damage::bullet(facts, &facts.location_damage, t * length, loc);
         // Through walls the bullet keeps what penetration left it (IW4L's segment damage scale).
         let scale = shot.scale_at(t * length);
@@ -869,9 +901,17 @@ impl Arena {
                         .collect();
                 self.smoke.spawn(g.origin, &recs, now);
             }
+            // What it went off over (its explosion effect is the surface's).
+            let below = [g.origin[0], g.origin[1], g.origin[2] - 32.0];
+            let t = clip.trace(g.origin, below, [0.0; 3], [0.0; 3], MASK_SHOT);
             out.push(Event::Explosion {
                 origin: g.origin,
                 weapon: g.weapon,
+                surface: if t.fraction < 1.0 {
+                    ((t.surface_flags >> 20) & 0x1f) as u8
+                } else {
+                    0
+                },
             });
             let kind = crate::grenade::effect(&g.facts);
             for v in 0..self.fighters.len() {
@@ -1818,6 +1858,7 @@ mod tests {
             end,
             hit: true,
             normal: [0.0; 3],
+            surface: 0,
             pen_end: end,
             layers: [(0.0, 0.0); crate::gun::MAX_LAYERS],
             layer_count: 0,
@@ -1839,23 +1880,28 @@ mod tests {
             |_| Some(rifle()),
         );
         b.bullet(0, &through, &facts, 1000, &mut ev);
+        let hit = |ev: &[Event]| ev.iter().find(|e| matches!(e, Event::Hit { .. })).copied();
         assert!(
-            matches!(ev[0], Event::Hit { damage: 20, .. }),
-            "{:?}",
-            ev[0]
+            matches!(hit(&ev), Some(Event::Hit { damage: 20, .. })),
+            "{ev:?}"
         );
         ev.clear();
         let mut ev = Vec::new();
         a.bullet(0, &shot, &facts, 1000, &mut ev);
         assert!(matches!(
-            ev[0],
-            Event::Hit {
+            hit(&ev),
+            Some(Event::Hit {
                 victim: 1,
                 damage: 40,
                 location: damage::hitloc::HEAD,
                 ..
-            }
+            })
         ));
+        // The bullet struck flesh before the wall: a flesh impact, facing back along the shot.
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            Event::Impact { flesh: true, normal, .. } if normal[0] < -0.9
+        )));
         assert_eq!(a.fighters[1].life.health, 60);
         // Three more head shots: dead, and the kill goes to the human.
         for t in 0..3 {

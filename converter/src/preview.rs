@@ -33,6 +33,9 @@ pub struct View {
     pub viewmodel: Option<(Vec<u8>, u8, f32)>,
     /// A player character to draw 120 units ahead, facing the camera on the floor below the eye.
     pub character: Option<CharacterShot>,
+    /// An effect played 150 units ahead pointing at the camera: the common pack, its `FXDF` index and the time
+    /// since it started (seconds).
+    pub effect: Option<(Vec<u8>, u16, f32)>,
 }
 
 /// A player character for the preview: posed by MW2's player animation script (the common pack's) as a player with
@@ -871,6 +874,132 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
                             },
                             Blend::from_u8(d.blend),
                             d.alpha_ref,
+                            0,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some((common, effect, time)) = &view.effect {
+        let cp = Pack::parse(common, true).map_err(|e| format!("common pack: {e:?}"))?;
+        let defs = cp
+            .section(tag::FX_DEFS)
+            .and_then(|s| wpk::fx::decode(s.data))
+            .ok_or("no effects in the common pack")?;
+        let ftxd = cp.section(tag::FX_TEXTURE_DATA).map_or(&[][..], |s| s.data);
+        let ftex: Vec<Option<Image>> = cp
+            .section(tag::FX_TEXTURES)
+            .map(|s| {
+                records::iter::<TextureRecord>(s.data)
+                    .map(|r| decode_texture(&r, ftxd))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (y, p) = (view.yaw.to_radians(), view.pitch.to_radians());
+        let fwd = [y.cos() * p.cos(), y.sin() * p.cos(), -p.sin()];
+        let right = [y.sin(), -y.cos(), 0.0];
+        let up = [
+            right[1] * fwd[2] - right[2] * fwd[1],
+            right[2] * fwd[0] - right[0] * fwd[2],
+            right[0] * fwd[1] - right[1] * fwd[0],
+        ];
+        let at: [f32; 3] = std::array::from_fn(|k| view.eye[k] + fwd[k] * 150.0);
+        if std::env::var_os("MWF_FX_DEBUG").is_some() {
+            for (k, e) in defs[usize::from(*effect)].elems.iter().enumerate() {
+                println!(
+                    "  elem {k}: kind {} looping {} blend {} tex {} spawn {:?} delay {:?} life {:?} vis {} vel {}/{} flags {:#x}",
+                    e.kind,
+                    e.looping,
+                    e.blend,
+                    e.texture,
+                    e.spawn,
+                    e.delay_ms,
+                    e.life_ms,
+                    e.vis_intervals,
+                    e.vel_local.len(),
+                    e.vel_world.len(),
+                    e.flags
+                );
+            }
+        }
+        let mut fx = game_core::fx::Fx::new(12345);
+        fx.play(&defs, *effect, at, fwd.map(|v| -v), 0);
+        let end = (time * 1000.0) as u32;
+        for t in (0..=end).step_by(10) {
+            fx.update(&defs, t);
+        }
+        let (mut order, mut verts, mut batches) = (Vec::new(), Vec::new(), Vec::new());
+        fx.sprites(
+            &defs,
+            end,
+            right,
+            up,
+            view.eye,
+            &mut order,
+            &mut verts,
+            &mut batches,
+        );
+        println!(
+            "effect {effect}: {} particles, {} batches {:?}",
+            fx.particles(),
+            batches.len(),
+            batches
+                .iter()
+                .map(|b| (b.texture, b.blend))
+                .collect::<Vec<_>>()
+        );
+        for b in &batches {
+            let tex = ftex.get(usize::from(b.texture)).and_then(Option::as_ref);
+            if std::env::var_os("MWF_FX_DEBUG").is_some() {
+                let q = &verts[b.first..b.first + 4];
+                let d: f32 = (0..3)
+                    .map(|k| (q[1].pos[k] - q[0].pos[k]).powi(2))
+                    .sum::<f32>()
+                    .sqrt();
+                let t = tex.map(|i| {
+                    let a: f32 = i.pixels.iter().map(|p| f32::from(p[3])).sum::<f32>()
+                        / i.pixels.len() as f32;
+                    let c: f32 = i.pixels.iter().map(|p| f32::from(p[0])).sum::<f32>()
+                        / i.pixels.len() as f32;
+                    (i.width, i.height, a, c)
+                });
+                println!(
+                    "  batch tex {} blend {}: width {d:.1} rgba {:08x} texture {t:?}",
+                    b.texture, b.blend, q[0].rgba
+                );
+            }
+            for q in verts[b.first..b.first + b.count].chunks_exact(4) {
+                for tri in [[q[0], q[1], q[2]], [q[0], q[2], q[3]]] {
+                    let cv = tri.map(|v| CV {
+                        c: cam.to_cam(v.pos),
+                        uv: v.uv,
+                        lm: [0.0; 2],
+                        rgba: v.rgba.to_be_bytes().map(|x| f32::from(x) / 255.0),
+                    });
+                    let poly = clip_near(cv);
+                    for k in 1..poly.len().saturating_sub(1) {
+                        raster(
+                            [poly[0], poly[k], poly[k + 1]],
+                            &cam,
+                            w,
+                            h,
+                            &mut colour,
+                            &mut depth,
+                            &mut stats,
+                            |cv| {
+                                let t = tex
+                                    .map_or([1.0; 4], |img| sample(img, cv.uv[0], cv.uv[1], true));
+                                [
+                                    t[0] * cv.rgba[0],
+                                    t[1] * cv.rgba[1],
+                                    t[2] * cv.rgba[2],
+                                    t[3] * cv.rgba[3],
+                                ]
+                            },
+                            Blend::from_u8(b.blend),
+                            0,
                             0,
                         );
                     }

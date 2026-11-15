@@ -40,6 +40,8 @@ pub struct Shot {
     pub end: [f32; 3],
     pub hit: bool,
     pub normal: [f32; 3],
+    /// The first surface's IW4 surface flags (its surface type in bits 20..25).
+    pub surface: u32,
     /// Where it finally stopped after going through walls (`end` when it went through none).
     pub pen_end: [f32; 3],
     /// Past each wall: the distance from `start` where the bullet came out and its damage scale after it (IW4L
@@ -734,6 +736,7 @@ impl Gun {
             end: first,
             hit: t.fraction < 1.0,
             normal: t.normal,
+            surface: t.surface_flags,
             pen_end: first,
             layers: [(0.0, 0.0); MAX_LAYERS],
             layer_count: 0,

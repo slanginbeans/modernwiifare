@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod collision;
+mod fx;
 mod inventory;
 mod light_grid;
 mod map_walk;
@@ -63,7 +64,8 @@ const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <repor
      mwf-convert report <log file>...\n  \
      mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n      [--viewmodel <view.wpk> --anim <slot> --time <s>] [--character <common.wpk> --team 0|1
       [--pmove idle|run|walk|sprint|idlecr|...] [--ptype autorifle|pistol|...] [--pclass rifle|...]
-      [--pevent fireweapon|reload|death|...] [--paim <pitch>] [--pgun <n>] [--pturn <deg>]]\n  \
+      [--pevent fireweapon|reload|death|...] [--paim <pitch>] [--pgun <n>] [--pturn <deg>]]
+      [--fxpack <common.wpk> --fx <n> --time <s>]\n  \
      mwf-convert texture <image.png> [--role world|prop|character|viewmodel|effect|sky|ui|mask|minimap] [--out <folder>]";
 
 /// IW4L's `ZoneStream` keeps the latest record of every asset type inline, so walking a zone needs far more stack than
@@ -1094,6 +1096,94 @@ fn run_common(args: &[String]) -> ExitCode {
             player_anims::SCRIPT
         );
     }
+    // Effects: the class weapons' flashes and explosions, every thrown weapon's explosion, and the impact table's
+    // rows for every impact type those weapons have, with the effects their runners start.
+    let class_weapon = |i: usize| {
+        let name = links.weapons[i].as_str();
+        bases.iter().any(|b| name == format!("{b}_mp"))
+    };
+    let offhand = |i: usize| {
+        links
+            .weapon_equip
+            .get(i)
+            .is_some_and(|e| e.offhand_class != 0)
+    };
+    let mut fx_roots: Vec<String> = Vec::new();
+    let mut rows: Vec<usize> = Vec::new();
+    for i in 0..links.weapons.len() {
+        let (class, off) = (class_weapon(i), offhand(i));
+        if !class && !off {
+            continue;
+        }
+        if let Some(f) = links.weapon_fx.get(i) {
+            let pick: &[usize] = if class { &[0, 1, 2] } else { &[2] };
+            fx_roots.extend(pick.iter().filter_map(|&k| f[k].clone()));
+        }
+        if let Some(r) = links
+            .weapon_impact_types
+            .get(i)
+            .and_then(|&t| fx_iw4::impact_table_row(t, false))
+            && !rows.contains(&r)
+        {
+            rows.push(r);
+        }
+    }
+    let impact_table: Vec<[Option<String>; wpk::fx::IMPACT_COLUMNS]> = links
+        .impact_table
+        .iter()
+        .take(wpk::fx::IMPACT_ROWS)
+        .enumerate()
+        .map(|(r, row)| {
+            if rows.contains(&r) {
+                row.clone()
+            } else {
+                std::array::from_fn(|_| None)
+            }
+        })
+        .collect();
+    fx_roots.extend(impact_table.iter().flatten().flatten().cloned());
+    let mut fx_tex = pack::Textures::default();
+    let baked_fx = fx::bake(links, &fx_roots, &index, &tex_dir, &mut fx_tex);
+    let fx_defs = baked_fx.encode();
+    let mut fx_weapons: Vec<u8> = Vec::with_capacity(weapons.len() * 6);
+    for w in &weapons {
+        let f = links
+            .weapons
+            .iter()
+            .position(|n| n == w.name())
+            .and_then(|i| links.weapon_fx.get(i));
+        for k in 0..3 {
+            let i = baked_fx.index(f.and_then(|f| f[k].as_deref()));
+            fx_weapons.extend_from_slice(&i.to_be_bytes());
+        }
+    }
+    println!(
+        "effects: {} ({} elements, {} left out, {} not in the zone), impact table {} rows, {} textures, {:.2} MiB",
+        baked_fx.len(),
+        baked_fx.elems,
+        baked_fx.dropped_elems,
+        baked_fx.missing,
+        links.impact_table.len(),
+        fx_tex.records.len(),
+        (fx_defs.len() + fx_tex.data.len()) as f64 / (1024.0 * 1024.0),
+    );
+    b.section(wpk::tag::FX_DEFS, baked_fx.len() as u32, fx_defs);
+    b.section(wpk::tag::FX_WEAPONS, weapons.len() as u32, fx_weapons);
+    b.section(
+        wpk::tag::FX_IMPACTS,
+        wpk::fx::IMPACT_ROWS as u32,
+        fx::impact_section(&baked_fx, &impact_table),
+    );
+    b.section(
+        wpk::tag::FX_TEXTURES,
+        fx_tex.records.len() as u32,
+        wpk::records::encode(&fx_tex.records),
+    );
+    b.section(
+        wpk::tag::FX_TEXTURE_DATA,
+        0,
+        std::mem::take(&mut fx_tex.data),
+    );
     // The weapons in the characters' hands: each weapon record takes its base weapon's model (the longest base
     // its name starts with).
     let held_index: Vec<u16> = weapons
@@ -1537,6 +1627,11 @@ fn run_preview(args: &[String]) -> ExitCode {
         (None, wpk::view::slot::IDLE, 0.0);
     let (mut char_pack, mut char_team): (Option<PathBuf>, usize) = (None, 0);
     let mut char_shot = preview::CharacterShot::default();
+    let (mut fx_index, mut fx_pack): (Option<u16>, Option<PathBuf>) = (None, None);
+    // `--fxweapon <name>:<0 world flash | 1 view flash | 2 explosion>` picks the effect by weapon.
+    let mut fx_weapon: Option<String> = None;
+    // `--fximpact <IW4 impact type>:<surface type>` picks the impact table's effect.
+    let mut fx_impact: Option<String> = None;
     // An IW4 name's index in `names` (any case), else `default`.
     let name_index = |n: &str, names: &[&str], default: u8| {
         names
@@ -1574,6 +1669,10 @@ fn run_preview(args: &[String]) -> ExitCode {
             "--paim" => char_shot.aim_pitch = value().parse().unwrap_or(0.0),
             "--pgun" => char_shot.gun = value().parse().ok(),
             "--pturn" => char_shot.turn = value().parse().unwrap_or(0.0),
+            "--fx" => fx_index = value().parse().ok(),
+            "--fxweapon" => fx_weapon = Some(value()),
+            "--fximpact" => fx_impact = Some(value()),
+            "--fxpack" => fx_pack = Some(PathBuf::from(value())),
             "--time" => anim_time = value().parse().unwrap_or(0.0),
             _ if file.is_none() => file = Some(PathBuf::from(a)),
             _ => {
@@ -1610,6 +1709,29 @@ fn run_preview(args: &[String]) -> ExitCode {
             }
         },
     };
+    let fx_index = fx_index.or_else(|| {
+        let (t, surf) = fx_impact.as_deref()?.split_once(':')?;
+        let row = fx_iw4::impact_table_row(t.parse().ok()?, false)?;
+        let b = std::fs::read(fx_pack.as_ref()?).ok()?;
+        let p = wpk::Pack::parse(&b, true).ok()?;
+        let at = (row * wpk::fx::IMPACT_COLUMNS + surf.parse::<usize>().ok()?) * 2;
+        let fx = p.section(wpk::tag::FX_IMPACTS)?.data;
+        let i = u16::from_be_bytes([*fx.get(at)?, *fx.get(at + 1)?]);
+        println!("impact {t} on {surf}: effect {i}");
+        Some(i)
+    });
+    let fx_index = fx_index.or_else(|| {
+        let (name, kind) = fx_weapon.as_deref()?.split_once(':')?;
+        let b = std::fs::read(fx_pack.as_ref()?).ok()?;
+        let p = wpk::Pack::parse(&b, true).ok()?;
+        let w = wpk::records::iter::<wpk::weapon::WeaponRecord>(p.section(wpk::tag::WEAPONS)?.data)
+            .position(|w| w.name() == name)?;
+        let at = (w * 3 + kind.parse::<usize>().ok()?) * 2;
+        let fx = p.section(wpk::tag::FX_WEAPONS)?.data;
+        let i = u16::from_be_bytes([*fx.get(at)?, *fx.get(at + 1)?]);
+        println!("{name}: effect {i}");
+        Some(i)
+    });
     let view = preview::View {
         eye,
         yaw: view_yaw,
@@ -1625,6 +1747,9 @@ fn run_preview(args: &[String]) -> ExitCode {
                 time: anim_time,
                 ..char_shot
             }),
+        effect: fx_pack
+            .zip(fx_index)
+            .and_then(|(p, i)| std::fs::read(p).ok().map(|b| (b, i, anim_time))),
         viewmodel: match view_pack {
             Some(p) => match std::fs::read(&p) {
                 Ok(b) => Some((b, anim, anim_time)),
