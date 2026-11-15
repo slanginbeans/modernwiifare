@@ -550,6 +550,7 @@ pub fn build(
             {
                 Some(e) => {
                     texture_count += 1;
+                    tex.role = e.role;
                     tex.add_file(tex_dir, &e.file, Wrap::Repeat)?
                 }
                 None => NONE,
@@ -756,7 +757,10 @@ pub fn build_held(
             .colour_image(mat)
             .and_then(|img| files_by_image.get(&img))
         {
-            Some(e) => tex.add_file_capped(tex_dir, &e.file, Wrap::Repeat, HELD_TEXTURE_MAX)?,
+            Some(e) => {
+                tex.role = "held";
+                tex.add_file_capped(tex_dir, &e.file, Wrap::Repeat, HELD_TEXTURE_MAX)?
+            }
             None => NONE,
         };
         let (blend, alpha_ref) = match info.blend {

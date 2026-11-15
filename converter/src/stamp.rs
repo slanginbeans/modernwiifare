@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 /// 29: MW2's player animation script (`PSCR`) and every animation it plays (`PANM` read in place, key frames); clip
 /// tracks may carry key frames.
 /// 30: the weapons in the characters' hands (`GUNM`, `GUNI`, `GTEX`, `GTXD`).
-pub const REVISION: u32 = 30;
+pub const REVISION: u32 = 31;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

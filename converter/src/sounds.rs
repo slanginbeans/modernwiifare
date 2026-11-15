@@ -244,6 +244,55 @@ pub struct Bank {
     pub missing: usize,
     /// Clips above this rate are resampled down to it (`--slim-views`: 32 kHz, which keeps everything up to 16 kHz).
     pub max_rate: Option<u32>,
+    /// Clips as 4-bit DSP ADPCM (`--adpcm`, [`wpk::adpcm`]; `SNDD`'s count says so), else 16-bit PCM.
+    pub adpcm: bool,
+    /// Samples written so far, by rate (the report).
+    samples_by_rate: std::collections::BTreeMap<u32, (usize, u64)>,
+}
+
+/// What a sound bank holds (content-free).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct BankReport {
+    pub encoding: &'static str,
+    pub aliases: usize,
+    pub variants: usize,
+    pub clips: usize,
+    pub seconds: f64,
+    pub bytes: u64,
+    /// Clips and seconds by sample rate (Hz).
+    pub by_rate: std::collections::BTreeMap<u32, RateBucket>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct RateBucket {
+    pub clips: usize,
+    pub seconds: f64,
+}
+
+impl BankReport {
+    /// Add another bank's numbers (the view files' banks summed).
+    pub fn merge(&mut self, o: &BankReport) {
+        self.encoding = o.encoding;
+        self.aliases += o.aliases;
+        self.variants += o.variants;
+        self.clips += o.clips;
+        self.seconds += o.seconds;
+        self.bytes += o.bytes;
+        for (r, b) in &o.by_rate {
+            let e = self.by_rate.entry(*r).or_default();
+            e.clips += b.clips;
+            e.seconds += b.seconds;
+        }
+    }
+}
+
+/// `SNDD`'s section count for a bank.
+pub fn data_count(bank: &Bank) -> u32 {
+    if bank.adpcm {
+        wpk::adpcm::SNDD_ADPCM
+    } else {
+        0
+    }
 }
 
 /// The `--slim-views` sound rate.
@@ -307,11 +356,37 @@ impl Bank {
             mono = resample_be(&mono, rate, max);
             rate = max;
         }
-        mono.resize(mono.len().div_ceil(32) * 32, 0);
+        let samples = mono.len() / 2;
+        let e = self.samples_by_rate.entry(rate).or_default();
+        e.0 += 1;
+        e.1 += samples as u64;
+        if self.adpcm {
+            mono = wpk::adpcm::encode(&wpk::adpcm::samples_be(&mono));
+        } else {
+            mono.resize(mono.len().div_ceil(32) * 32, 0);
+        }
         let c = (self.data.len() as u32, mono.len() as u32, rate);
         self.data.extend_from_slice(&mono);
         self.clips.insert(loaded.to_owned(), c);
         Some(c)
+    }
+
+    /// What the bank holds so far.
+    pub fn report(&self) -> BankReport {
+        let mut r = BankReport {
+            encoding: if self.adpcm { "dsp-adpcm" } else { "pcm16" },
+            aliases: self.aliases.len(),
+            variants: self.variants.len(),
+            clips: self.clips.len(),
+            bytes: self.data.len() as u64,
+            ..BankReport::default()
+        };
+        for (&rate, &(clips, samples)) in &self.samples_by_rate {
+            let seconds = samples as f64 / f64::from(rate.max(1));
+            r.seconds += seconds;
+            r.by_rate.insert(rate, RateBucket { clips, seconds });
+        }
+        r
     }
 
     /// The index of alias `name`, adding it (and its clips) the first time; `NONE` when nothing in it is playable.
@@ -575,5 +650,65 @@ mod tests {
         assert_eq!(bank.variants.len(), 3);
         assert_eq!(bank.data.len(), 32);
         assert_eq!(bank.missing, 1);
+    }
+
+    #[test]
+    fn adpcm_bank_is_smaller_decodes_and_reports() {
+        let pcm = tone(440.0, 44_100, 0.5, 12_000.0);
+        let mut c = Capture::default();
+        c.loaded.insert(
+            "loop".into(),
+            LoadedPcm {
+                format: MSS_PCM,
+                rate: 44_100,
+                bits: 16,
+                channels: 1,
+                // The capture holds little-endian PCM, as the zone does.
+                data: pcm.chunks_exact(2).flat_map(|b| [b[1], b[0]]).collect(),
+            },
+        );
+        c.aliases.insert(
+            "hum".into(),
+            vec![AliasRow {
+                loaded: Some("loop".into()),
+                vol_min: 1.0,
+                vol_max: 1.0,
+                pitch_min: 1.0,
+                pitch_max: 1.0,
+                probability: 1.0,
+                dist_min: 0.0,
+                dist_max: 0.0,
+            }],
+        );
+        let mut plain = Bank::default();
+        let mut small = Bank {
+            adpcm: true,
+            ..Bank::default()
+        };
+        assert_eq!(plain.add(&c, "hum"), 0);
+        assert_eq!(small.add(&c, "hum"), 0);
+        assert_eq!(data_count(&plain), 0);
+        assert_eq!(data_count(&small), wpk::adpcm::SNDD_ADPCM);
+        let v = small.variants[0];
+        assert_eq!(v.rate, 44_100);
+        assert_eq!(v.data_len as usize, small.data.len());
+        assert!(plain.data.len() as f64 / small.data.len() as f64 > 3.4);
+        let clip = &small.data[v.data_off as usize..(v.data_off + v.data_len) as usize];
+        let n = wpk::adpcm::sample_count(clip) as usize;
+        assert_eq!(n * 2, pcm.len());
+        let mut out = vec![0i16; n];
+        wpk::adpcm::decode(clip, 0, &mut [0; 2], &mut out);
+        let want = wpk::adpcm::samples_be(&pcm);
+        let err = want
+            .iter()
+            .zip(&out)
+            .map(|(a, b)| (i32::from(*a) - i32::from(*b)).abs())
+            .max()
+            .unwrap();
+        assert!(err < 400, "max error {err}");
+        let r = small.report();
+        assert_eq!((r.encoding, r.clips, r.aliases), ("dsp-adpcm", 1, 1));
+        assert!((r.seconds - 0.5).abs() < 0.01);
+        assert_eq!(r.by_rate[&44_100].clips, 1);
     }
 }

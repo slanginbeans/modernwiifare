@@ -179,7 +179,13 @@ void mwf_draw_boxes(const float view[3][4], const float (*b)[6], const uint32_t 
    Volumes 0..255. Returns the voice, or -1 when every voice is busy. */
 void mwf_snd_init(void);
 int32_t mwf_snd_play(const void *pcm, uint32_t bytes, uint32_t rate, uint8_t vol_l, uint8_t vol_r);
+/* The same for a 4-bit DSP ADPCM clip (`wpk::adpcm`, 32-byte aligned): decoded a piece at a time while it plays. */
+int32_t mwf_snd_play_adpcm(const void *clip, uint32_t bytes, uint32_t rate, uint8_t vol_l, uint8_t vol_r);
 void mwf_snd_stop_all(void);
+/* Implemented by the game (Rust, `wpk::adpcm::decode`): decode up to `max` samples of `clip` from sample `start`,
+   continuing from `hist` ([h1, h2], updated). Returns the samples written. Safe to call from the audio interrupt. */
+uint32_t mwf_adpcm_decode(const uint8_t *clip, uint32_t len, uint32_t start, int16_t *hist, int16_t *out,
+                          uint32_t max);
 /* Start drawing the first-person model: its own projection (fovy degrees, near / far) and the front slice of the
  * depth range, so it never sinks into walls. World draws use the rest of the range. */
 void mwf_view_begin(float fovy_deg, float znear, float zfar);

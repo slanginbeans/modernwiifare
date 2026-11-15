@@ -78,7 +78,7 @@ ignores the section.
 | `WSND` | one blob (`wpk::sound::WeaponSounds`) | the alias of each weapon event (fire, last shot, empty, reload, empty reload, raise, first raise, put away, melee swipe) and notetrack sounds (anim slot, time fraction, alias) |
 | `SNDA` | `AliasRecord` (4 B) | a sound alias: a run of `SNDV` variants |
 | `SNDV` | `VariantRecord` (40 B) | a clip in `SNDD` (offset, padded length, rate), volume and pitch ranges, probability weight, falloff distances (min / max) |
-| `SNDD` | – | mono 16-bit big-endian PCM, each clip 32-byte aligned and padded to 32 (ASND DMA) |
+| `SNDD` | – | mono 16-bit big-endian PCM, each clip 32-byte aligned and padded to 32 (ASND DMA). Section `count` 1 (`wpk::adpcm::SNDD_ADPCM`, `--adpcm`): 4-bit DSP ADPCM clips instead (below) |
 
 ### Smaller map packs (toggles, off by default)
 Two switches on `pack` (or in `builder.bat`), each folded into the map pack's stamp so turning it on or off rebuilds the
@@ -112,6 +112,36 @@ on or off rebuilds `common.wpk` and the weapon files on the next run. With it on
   are untouched.
 
 The converter prints the total size of the weapon files; compare a run with and without the option.
+
+### ADPCM sounds (toggle, off by default)
+`--adpcm` on `pack` / `common`, or `MWF_ADPCM=1` (`builder.bat`: "Sounds: ADPCM"). Part of the stamp, so switching it
+rebuilds `common.wpk` and the weapon files. Every clip (world sounds and each weapon's) becomes 4-bit DSP ADPCM
+(`wpk::adpcm`), the format GameCube and Wii games use: 14 samples in 8 bytes, 3.5× smaller than 16-bit PCM. It stacks
+with `--slim-views`' 32 kHz.
+- **Clip:** a 32-byte header (7 predictor pairs, i16 with 11 fractional bits, then the sample count), then 8-byte frames
+  (`predictor << 4 | scale`, 14 nibbles), padded to 32 bytes. The encoder fits the 7 pairs to the clip (least squares,
+  a few rounds of assigning frames to pairs) and tries every pair and scale per frame, keeping the smallest error after
+  quantisation. Host tests: about 32 dB signal-to-noise on a sweep with a noise burst, pieces decode exactly like one
+  pass, damaged clips decode without reading out of bounds.
+- **Playback:** ASND mixes only PCM, so the shim (`mwf_snd_play_adpcm`) gives each voice playing an ADPCM clip two
+  2048-sample PCM buffers (128 KiB for all 16 voices, in MEM1). It decodes the first when the sound starts; the voice
+  callback (the audio interrupt) decodes the next piece into the free buffer and queues it with `ASND_AddVoice` while
+  the other plays. The decoder is the game's Rust `wpk::adpcm::decode`, exported as `mwf_adpcm_decode`
+  (integer-only, about 2048 samples a call). A buffer lasts 43 ms at 48 kHz, more than one ASND mixing frame (~21 ms),
+  so pitch up to about 2× is safe.
+- **To check on hardware:** clicks or gaps at buffer joins, very short sounds (footsteps), many sounds at once, and how
+  it sounds next to PCM.
+
+## Pack reports
+Every `pack` run writes a content-free `.json` beside each pack (sizes and counts, no names):
+- **Map packs** (`out/packs/<map>.json`): sections, world and model numbers, and `texture_breakdown`
+  (`converter/src/tex_report.rs`): `TXDA` by use (`lightmap`, the texture roles, `sky`, `minimap`, `character`), by GX
+  format and by longest side. Each group gives its count, bytes, the bytes in mips and in split alpha planes, and what
+  capping every texture at 256 or 128 texels across would save (`save_cap_256`, `save_cap_128`). Also the 12 largest
+  textures (use, format, size, bytes).
+- **`common.json`** (beside `common.wpk`): its sections, the held weapons' and menus' textures broken down the same way,
+  the world sounds (encoding, clips, seconds and bytes, by sample rate), and `views`: all weapon files together
+  (files, bytes, sections, textures, sounds).
 
 ## How the world is built (`converter/src/pack.rs`)
 - Surfaces are batched by vertex group (consecutive surfaces spanning under 65,536 vertices, so u16 indices reach

@@ -17,6 +17,7 @@
 
 extern crate alloc;
 
+pub mod adpcm;
 pub mod anim_script;
 pub mod be;
 pub mod classes;
@@ -317,6 +318,11 @@ impl<'a> Pack<'a> {
             .map(|e| e.1 as usize)
             .min()
             .unwrap_or(self.header.file_len as usize)
+    }
+
+    /// Every section's tag and length, in file order (loaded or not).
+    pub fn section_sizes(&self) -> impl Iterator<Item = (Tag, usize)> + '_ {
+        self.entries().map(|e| (e.0, e.2 as usize))
     }
 
     /// Offset of a section's data within the file (for computing addresses once the file is in memory).

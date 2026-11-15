@@ -33,7 +33,10 @@ never run (supersedes 0002)
   classes, rules, menus, characters) and `views/<weapon>.wpk`. `common`: those alone. `--slim-views` (or
   `MWF_SLIM_VIEWS=1`): smaller weapon files, off by default (`docs/pack.md`, "Slim weapon files").
   `--tiled-uv` / `--small-dl` (`MWF_TILED_UV`, `MWF_SMALL_DL`): smaller map packs, off by default (`docs/pack.md`,
-  "Smaller map packs"; the Wii side is `mwf_world_desc` in the shim, called before every world draw). `rules.rs` reads values from the
+  "Smaller map packs"; the Wii side is `mwf_world_desc` in the shim, called before every world draw).
+  `--adpcm` (`MWF_ADPCM`): sounds as 4-bit DSP ADPCM (`shared/wpk/src/adpcm.rs`), decoded while they play by the shim's
+  ASND voice callback; off by default (`docs/pack.md`, "ADPCM sounds"). Pack reports: `<map>.json` has a texture
+  breakdown (`tex_report.rs`); `common.json` covers `common.wpk` and the weapon files. `rules.rs` reads values from the
   user's scripts (ADR 0007). `preview <pack.wpk>`: software render of a pack (also the viewmodel and characters).
   `menu-preview`: menus. `report <log>...`: summarises the Wii's SD-card match logs (`report.bat`).
   `textures <game folder> [--map <zone>]`: every GfxImage of a map zone (in-zone or IWI) to `.gxt` under
