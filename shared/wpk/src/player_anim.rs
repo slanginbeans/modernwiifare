@@ -262,6 +262,147 @@ impl TrackRef<'_> {
     }
 }
 
+/// How far [`slim`] lets a track stray from the full one, as the Wii plays it. Third-person bodies at 480p: a pixel
+/// at 3 m is about 0.3 units across, and 0.25° on a metre-long leg moves its foot about 0.17 units (half a pixel), only
+/// on the frames between keys.
+pub const SLIM: crate::view::Tolerance = crate::view::Tolerance {
+    rot_deg: 0.25,
+    trans: 0.1,
+};
+
+/// A rotation as `PANM` stores and reads it: x, y, z with w ≥ 0, w rebuilt.
+fn stored_rot(q: [i16; 4]) -> [f64; 4] {
+    let s = if q[3] < 0 { -1.0 } else { 1.0 };
+    let [x, y, z] = [q[0], q[1], q[2]].map(|v| f64::from(v) * s / 32767.0);
+    let w = libm::sqrt((1.0 - x * x - y * y - z * z).max(0.0));
+    [x, y, z, w]
+}
+
+/// [`TrackRef::rotation`]'s blend, in f64.
+fn nlerp(a: [f64; 4], b: [f64; 4], t: f64) -> [f64; 4] {
+    let s = if (0..4).map(|k| a[k] * b[k]).sum::<f64>() < 0.0 {
+        -1.0
+    } else {
+        1.0
+    };
+    let q: [f64; 4] = core::array::from_fn(|k| a[k] + (s * b[k] - a[k]) * t);
+    let len = libm::sqrt(q.iter().map(|v| v * v).sum::<f64>()).max(1e-12);
+    q.map(|v| v / len)
+}
+
+/// Angle between two unit quaternions, degrees (`4·asin(|a ∓ b| / 2)`: exact at tiny angles).
+fn angle_deg(a: [f64; 4], b: [f64; 4]) -> f64 {
+    let d = |s: f64| {
+        libm::sqrt(
+            (0..4)
+                .map(|k| {
+                    let d = a[k] - s * b[k];
+                    d * d
+                })
+                .sum::<f64>(),
+        )
+    };
+    4.0 * libm::asin((d(1.0).min(d(-1.0)) / 2.0).min(1.0)) * (180.0 / core::f64::consts::PI)
+}
+
+/// A translation as `PANM` stores it (1/[`TRANS_SCALE`] steps).
+fn stored_trans(v: [f32; 3]) -> [f64; 3] {
+    v.map(|x| {
+        f64::from(libm::roundf(x * TRANS_SCALE).clamp(-32767.0, 32767.0)) / f64::from(TRANS_SCALE)
+    })
+}
+
+fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    libm::sqrt(
+        (0..3)
+            .map(|k| {
+                let d = a[k] - b[k];
+                d * d
+            })
+            .sum::<f64>(),
+    )
+}
+
+/// `clip` with each track cut to the frames linear interpolation can't rebuild within `tol` (one key list per track,
+/// shared by its rotation and translation), and parts that hardly move made constant. Checked against how the Wii
+/// reads `PANM`, so a slim pack plays within `tol` of a full one. A track stays one sample per frame when listing
+/// keys would not save bytes. The format is unchanged: [`Anims`] already reads keyed tracks.
+pub fn slim(clip: &Clip, tol: crate::view::Tolerance) -> Clip {
+    let n = usize::from(clip.frames.max(1));
+    let tracks = clip.tracks.iter().map(|t| slim_track(t, n, tol)).collect();
+    Clip {
+        tracks,
+        ..clip.clone()
+    }
+}
+
+fn slim_track(t: &crate::view::Track, n: usize, tol: crate::view::Tolerance) -> crate::view::Track {
+    use crate::view::Track;
+    let bind = t.rot.len() == 1 && t.rot[0] == [0; 4];
+    let (rot, trans) = crate::view::compact::per_frame(t, n);
+    let (tol_r, tol_t) = (f64::from(tol.rot_deg), f64::from(tol.trans));
+    let r: Vec<[f64; 4]> = if bind {
+        Vec::new()
+    } else {
+        rot.iter().map(|&q| stored_rot(q)).collect()
+    };
+    let tr: Vec<[f64; 3]> = trans.iter().map(|&v| stored_trans(v)).collect();
+    // A part is constant when every frame is within tolerance of the first; it varies only with a sample per frame.
+    let rot_moves = r.len() == n && n > 1 && r.iter().any(|&q| angle_deg(r[0], q) > tol_r);
+    let trans_moves = tr.len() == n && n > 1 && tr.iter().any(|&v| dist3(tr[0], v) > tol_t);
+    let one_rot = || {
+        if bind {
+            alloc::vec![[0; 4]]
+        } else {
+            rot.first().copied().into_iter().collect()
+        }
+    };
+    let one_trans = || trans.first().copied().into_iter().collect::<Vec<_>>();
+    if !rot_moves && !trans_moves {
+        return Track {
+            bone: t.bone,
+            rot: one_rot(),
+            trans: one_trans(),
+            keys: Vec::new(),
+        };
+    }
+    let keys = crate::view::compact::reduce(n, |a, b| {
+        (a + 1..b).all(|m| {
+            let w = (m - a) as f64 / (b - a) as f64;
+            (!rot_moves || angle_deg(nlerp(r[a], r[b], w), r[m]) <= tol_r)
+                && (!trans_moves || {
+                    let v: [f64; 3] =
+                        core::array::from_fn(|k| tr[a][k] + (tr[b][k] - tr[a][k]) * w);
+                    dist3(v, tr[m]) <= tol_t
+                })
+        })
+    });
+    let per = 6 * (usize::from(rot_moves) + usize::from(trans_moves));
+    if keys.len() * (2 + per) >= n * per {
+        // Every frame, but constant parts still shrink to one sample.
+        return Track {
+            bone: t.bone,
+            rot: if rot_moves { rot } else { one_rot() },
+            trans: if trans_moves { trans } else { one_trans() },
+            keys: Vec::new(),
+        };
+    }
+    Track {
+        bone: t.bone,
+        rot: if rot_moves {
+            keys.iter().map(|&k| rot[k]).collect()
+        } else {
+            one_rot()
+        },
+        trans: if trans_moves {
+            keys.iter().map(|&k| trans[k]).collect()
+        } else {
+            one_trans()
+        },
+        keys: keys.iter().map(|&k| k as u16).collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +463,140 @@ mod tests {
         assert!((c.frame_at(12.0 / 30.0) - 2.0).abs() < 1e-3);
         assert_eq!(a.clip(1).unwrap().frame_at(5.0), 0.0);
         assert!(Anims::parse(&b[..b.len() - 2]).is_none());
+    }
+
+    /// A run-like clip at 30 fps (a 32-frame cycle): a leg swinging ±30° with a 1-unit bob twice per cycle, a still
+    /// bone, a bind bone, a jittery one, and an already keyed one.
+    fn walk(frames: u16) -> Clip {
+        let n = usize::from(frames);
+        let swing = |amp: f32, speed: f32| -> Vec<[i16; 4]> {
+            (0..n)
+                .map(|f| {
+                    let a = amp * libm::sinf(f as f32 * speed) * 0.5;
+                    quat_to_i16([libm::sinf(a), 0.0, 0.0, libm::cosf(a)])
+                })
+                .collect()
+        };
+        let mut seed = 7u32;
+        let mut jitter = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 16) as f32 / 65536.0 - 0.5
+        };
+        Clip {
+            looping: true,
+            framerate: 30.0,
+            frames,
+            tracks: vec![
+                Track {
+                    bone: 0,
+                    rot: swing(0.52, 0.196),
+                    trans: (0..n)
+                        .map(|f| [0.0, 0.0, libm::sinf(f as f32 * 0.393)])
+                        .collect(),
+                    keys: vec![],
+                },
+                Track {
+                    bone: 1,
+                    rot: vec![quat_to_i16([0.0, 0.0, 0.0, 1.0]); n],
+                    trans: vec![[3.0, 0.0, 1.0]; n],
+                    keys: vec![],
+                },
+                Track {
+                    bone: 2,
+                    rot: vec![[0; 4]],
+                    trans: vec![],
+                    keys: vec![],
+                },
+                Track {
+                    bone: 3,
+                    rot: swing(0.3, 0.05),
+                    trans: (0..n).map(|_| [jitter() * 4.0, 0.0, 0.0]).collect(),
+                    keys: vec![],
+                },
+                Track {
+                    bone: 4,
+                    rot: vec![
+                        quat_to_i16([0.0, 0.0, 0.0, 1.0]),
+                        quat_to_i16([0.0, 0.3, 0.0, 0.954]),
+                    ],
+                    trans: vec![],
+                    keys: vec![0, frames - 1],
+                },
+            ],
+            ..Clip::default()
+        }
+    }
+
+    #[test]
+    fn slim_clips_are_smaller_and_play_within_tolerance() {
+        let full = walk(61);
+        let slim_clip = slim(&full, SLIM);
+        let (fb, sb) = (
+            encode(core::slice::from_ref(&full)),
+            encode(core::slice::from_ref(&slim_clip)),
+        );
+        assert!(sb.len() < fb.len());
+        // Without the jittery bone (which keeps every frame), the clip loses over a third: the still bone most, the run
+        // cycle's fast leg little (linear keys need most frames of a 30 fps swing at a quarter degree).
+        let smooth = |c: &Clip| Clip {
+            tracks: c.tracks.iter().filter(|t| t.bone != 3).cloned().collect(),
+            ..c.clone()
+        };
+        let (a, b) = (
+            encode(&[smooth(&full)]).len(),
+            encode(&[smooth(&slim_clip)]).len(),
+        );
+        assert!(b * 3 < a * 2, "{a} -> {b}");
+        let (fa, sa) = (Anims::parse(&fb).unwrap(), Anims::parse(&sb).unwrap());
+        let (fc, sc) = (fa.clip(0).unwrap(), sa.clip(0).unwrap());
+        assert_eq!((sc.frames(), sc.looping(), sc.tracks()), (61, true, 5));
+        let to64 = |q: [f32; 4]| q.map(f64::from);
+        for t in 0..5 {
+            let (ft, st) = (fc.track(t).unwrap(), sc.track(t).unwrap());
+            assert_eq!(ft.bone, st.bone);
+            // Every frame and a half frame between them.
+            for h in 0..121 {
+                let f = h as f32 * 0.5;
+                match (ft.rotation(f), st.rotation(f)) {
+                    (Some(a), Some(b)) => {
+                        let e = angle_deg(to64(a), to64(b));
+                        assert!(
+                            e <= f64::from(SLIM.rot_deg) + 0.02,
+                            "track {t} frame {f}: {e}°"
+                        );
+                    }
+                    (a, b) => assert_eq!(a.is_none(), b.is_none(), "track {t}"),
+                }
+                match (ft.translation(f), st.translation(f)) {
+                    (Some(a), Some(b)) => {
+                        let e = dist3(a.map(f64::from), b.map(f64::from));
+                        assert!(
+                            e <= f64::from(SLIM.trans) + 1e-4,
+                            "track {t} frame {f}: {e}"
+                        );
+                    }
+                    (a, b) => assert_eq!(a.is_none(), b.is_none(), "track {t}"),
+                }
+            }
+        }
+        let tr = &slim_clip.tracks;
+        // The still bone shrinks to one sample; the bind bone stays bind; jitter keeps every frame.
+        assert_eq!(
+            (tr[1].rot.len(), tr[1].trans.len(), tr[1].keys.len()),
+            (1, 1, 0)
+        );
+        assert_eq!(tr[2].rot, vec![[0; 4]]);
+        assert_eq!(tr[3].trans.len(), 61);
+        assert!(
+            tr[0].keys.len() > 2 && tr[0].keys.len() < 61,
+            "{}",
+            tr[0].keys.len()
+        );
+        // Never larger, even for the worst case.
+        let noisy = Clip {
+            tracks: vec![tr[3].clone()],
+            ..walk(61)
+        };
+        assert!(encode(&[slim(&noisy, SLIM)]).len() <= encode(&[noisy]).len());
     }
 }

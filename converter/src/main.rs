@@ -13,7 +13,7 @@
 //!       Converts every texture (GfxImage) of one map zone to Wii `.gxt` files, taking pixels from the zone or
 //!       from main/*.iwd, and writes a content-free report.json beside them. Default folder: out/textures/<zone>.
 //!       --verbose prints one line per texture (with its name) to the console only.
-//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--adpcm]
+//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--adpcm] [--slim-anims]
 //!       Builds the Wii pack of one map: its textures (as `textures` does), lightmaps, materials, world geometry as
 //!       display lists, skybox and spawns. Default output: out/packs/<zone>.wpk (+ a content-free .json report).
 //!   mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw <deg> --pitch <deg>] [--out <file.png>]
@@ -60,7 +60,7 @@ const SHARED_TABLES_ZONE: &str = "code_post_gfx_mp";
 const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <report.json>]\n  \
      mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]\n  \
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
-     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--adpcm]\n  \
+     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--adpcm] [--slim-anims]\n  \
      mwf-convert report <log file>...\n  \
      mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n      [--viewmodel <view.wpk> --anim <slot> --time <s>] [--character <common.wpk> --team 0|1
       [--pmove idle|run|walk|sprint|idlecr|...] [--ptype autorifle|pistol|...] [--pclass rifle|...]
@@ -241,6 +241,9 @@ struct MapArgs {
     /// Map packs: u8 display-list indices for batches of at most 256 vertices, and no colour index where every
     /// vertex is white (`--small-dl`, or `MWF_SMALL_DL=1`). Off by default while it's tested on hardware.
     small_dl: bool,
+    /// Player animations in `common.wpk` cut to the frames interpolation can't rebuild within
+    /// `wpk::player_anim::SLIM` (`--slim-anims`, or `MWF_SLIM_ANIMS=1`). Off by default while it's tested on hardware.
+    slim_anims: bool,
     /// Sounds (`common.wpk` and the weapon files) as 4-bit DSP ADPCM, 3.5x smaller than 16-bit PCM, decoded on the
     /// Wii as they play (`--adpcm`, or `MWF_ADPCM=1`). Off by default while it's tested on hardware.
     adpcm: bool,
@@ -271,6 +274,7 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
     let mut tiled_uv = env_on("MWF_TILED_UV");
     let mut small_dl = env_on("MWF_SMALL_DL");
     let mut adpcm = env_on("MWF_ADPCM");
+    let mut slim_anims = env_on("MWF_SLIM_ANIMS");
     let mut quality = simplify::WorldQuality::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -292,6 +296,10 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
         }
         if a == "--adpcm" {
             adpcm = true;
+            continue;
+        }
+        if a == "--slim-anims" {
+            slim_anims = true;
             continue;
         }
         let target = match a.as_str() {
@@ -332,6 +340,7 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
         tiled_uv,
         small_dl,
         adpcm,
+        slim_anims,
     })
 }
 
@@ -559,6 +568,9 @@ fn run_pack(args: &[String]) -> ExitCode {
         if a.adpcm {
             common_args.push("--adpcm".to_owned());
         }
+        if a.slim_anims {
+            common_args.push("--slim-anims".to_owned());
+        }
         if run_common(&common_args) != ExitCode::SUCCESS {
             failed.push("common");
         }
@@ -730,7 +742,8 @@ fn run_common(args: &[String]) -> ExitCode {
     zones.extend(ui_capture::UI_ZONES);
     let st = stamp_of(&a, &zones)
         .with("slim-views", a.slim_views)
-        .with("adpcm", a.adpcm);
+        .with("adpcm", a.adpcm)
+        .with("slim-anims", a.slim_anims);
     if a.slim_views {
         println!(
             "common: slim weapon files (keyframed clips, no gun mips, sounds at {} Hz)",
@@ -1078,7 +1091,31 @@ fn run_common(args: &[String]) -> ExitCode {
     );
     // Player animations by bone name.
     let ((panm, panb, missing_anims), parsed) = player_anims;
-    let panm_bytes = wpk::player_anim::encode(&panm.clips);
+    let full_panm = wpk::player_anim::encode(&panm.clips);
+    let panm_bytes = if a.slim_anims {
+        let slim: Vec<_> = panm
+            .clips
+            .iter()
+            .map(|c| wpk::player_anim::slim(c, wpk::player_anim::SLIM))
+            .collect();
+        let b = wpk::player_anim::encode(&slim);
+        println!(
+            "player animations: slim ({:.2} MiB -> {:.2} MiB, within {}° / {} units)",
+            full_panm.len() as f64 / (1024.0 * 1024.0),
+            b.len() as f64 / (1024.0 * 1024.0),
+            wpk::player_anim::SLIM.rot_deg,
+            wpk::player_anim::SLIM.trans
+        );
+        b
+    } else {
+        full_panm.clone()
+    };
+    let player_anim_report = PlayerAnimReport {
+        clips: panm.clips.len(),
+        slim: a.slim_anims,
+        full_bytes: full_panm.len() as u64,
+        bytes: panm_bytes.len() as u64,
+    };
     println!(
         "player animations: {} clips ({:.2} MiB), {} bones, {} missing; script: {} items ({} dropped, {} skipped), {} unresolved",
         panm.clips.len(),
@@ -1340,6 +1377,7 @@ fn run_common(args: &[String]) -> ExitCode {
         pack_bytes: bytes.len() as u64,
         sections: section_sizes(&bytes),
         sounds: world_sounds,
+        player_anims: player_anim_report,
         textures: tex_report::breakdown(&held_tex.records, &held_tex.roles),
         ..CommonReport::default()
     };
@@ -1441,7 +1479,17 @@ struct CommonReport {
     textures: tex_report::Breakdown,
     /// The world sounds (footsteps, explosions, throws).
     sounds: sounds::BankReport,
+    player_anims: PlayerAnimReport,
     views: ViewFilesReport,
+}
+
+/// `PANM`: its clips, and its size with and without `--slim-anims`.
+#[derive(Default, serde::Serialize)]
+struct PlayerAnimReport {
+    clips: usize,
+    slim: bool,
+    full_bytes: u64,
+    bytes: u64,
 }
 
 /// All `views/<weapon>.wpk` together.
