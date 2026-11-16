@@ -1,6 +1,6 @@
 //! The player's options (MW2's Options > Controls on the console): look sensitivity, inverted look, aim assist,
-//! the button layout and the stick layout, and the HUD's safe area (MW2's console safe-area adjustment, so the HUD
-//! stays inside a TV's overscan), kept in the app folder (`options.dat`).
+//! the button layout and the stick layout, vibration (the pad's rumble), and the HUD's safe area (MW2's console
+//! safe-area adjustment, so the HUD stays inside a TV's overscan), kept in the app folder (`options.dat`).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -37,6 +37,8 @@ pub struct Options {
     pub southpaw: bool,
     /// The HUD's safe area, percent.
     pub safe_area: u8,
+    /// MW2's console "Vibration": the pad rumbles on shots and hits.
+    pub vibration: bool,
 }
 
 impl Default for Options {
@@ -49,6 +51,7 @@ impl Default for Options {
             layout: layout::DEFAULT,
             southpaw: false,
             safe_area: (crate::hud_mw2::SAFE_AREA_DEFAULT * 100.0 + 0.5) as u8,
+            vibration: true,
         }
     }
 }
@@ -62,10 +65,11 @@ pub enum Item {
     Layout,
     Southpaw,
     SafeArea,
+    Vibration,
     Defaults,
 }
 
-pub const ITEMS: [Item; 8] = [
+pub const ITEMS: [Item; 9] = [
     Item::Sensitivity,
     Item::AdsSensitivity,
     Item::Invert,
@@ -73,6 +77,7 @@ pub const ITEMS: [Item; 8] = [
     Item::Layout,
     Item::Southpaw,
     Item::SafeArea,
+    Item::Vibration,
     Item::Defaults,
 ];
 
@@ -86,6 +91,7 @@ impl Item {
             Item::Layout => "BUTTON LAYOUT",
             Item::Southpaw => "STICK LAYOUT",
             Item::SafeArea => "SAFE AREA",
+            Item::Vibration => "VIBRATION",
             Item::Defaults => "RESTORE DEFAULTS",
         }
     }
@@ -106,6 +112,7 @@ impl Options {
             }),
             Item::Southpaw => String::from(if self.southpaw { "SOUTHPAW" } else { "DEFAULT" }),
             Item::SafeArea => alloc::format!("{}%", self.safe_area),
+            Item::Vibration => on_off(self.vibration),
             Item::Defaults => return None,
         })
     }
@@ -144,6 +151,7 @@ impl Options {
             Item::SafeArea => {
                 self.safe_area = step(self.safe_area, SAFE_AREA_MIN, SAFE_AREA_MAX, SAFE_AREA_STEP)
             }
+            Item::Vibration => self.vibration = !self.vibration,
             Item::Defaults => {
                 if dir > 0 && wrap {
                     *self = Options::default()
@@ -179,6 +187,7 @@ impl Options {
             self.layout,
             u8::from(self.southpaw),
             self.safe_area,
+            u8::from(self.vibration),
         ]
     }
 
@@ -198,6 +207,8 @@ impl Options {
             safe_area: b.get(7).map_or(Options::default().safe_area, |&v| {
                 v.clamp(SAFE_AREA_MIN, SAFE_AREA_MAX)
             }),
+            // ... and from before vibration keep it on.
+            vibration: b.get(8).is_none_or(|&v| v != 0),
         })
     }
 }
@@ -244,6 +255,17 @@ mod tests {
         // Left / right never restore the defaults.
         o.adjust(Item::Defaults, 1, false);
         assert_eq!(o.sensitivity, 1);
+        // Vibration toggles and is kept.
+        o.cycle(Item::Vibration);
+        assert_eq!(o.value(Item::Vibration).as_deref(), Some("DISABLED"));
+        assert_eq!(
+            Options::decode(&o.encode()).map(|d| d.vibration),
+            Some(false)
+        );
+        assert_eq!(
+            Options::decode(&o.encode()[..8]).map(|d| d.vibration),
+            Some(true)
+        );
         // Old files (no safe area byte) still read.
         assert_eq!(
             Options::decode(&o.encode()[..7]).map(|d| d.safe_area),

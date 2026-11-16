@@ -63,9 +63,14 @@ destructible objects; bullet marks~~ done in this round (`docs/runtime.md`, Gun 
 as the reference, host-tested against its values; a trace against MW2 is still to do for each). Memory: see "Audio,
 effects and lighting" below. Still to do there: bullet impact sounds (MW2's impact effects name none, IW4L has no other code for them), weapons other than the bots' default ones for others' gunfire, destructible objects' own sounds (their aliases live in the map
 zone), the bots' knife cues, IW4's per-texel model lighting and the sun's direction, marks on models and players,
-the tracer's screw wiggle, a fill-rate measurement of a full smoke cloud on hardware. HUD: sniper scope overlay
-(`hud_iw4::iris`), MW2's crosshair (`hud_iw4::crosshair`), damage direction, blood / pain (`hud_iw4::blood`),
-overhead names, kill-feed weapon icons, EMP static; rumble. Not on the Wii's GPU: shadow maps, depth of field,
+the tracer's screw wiggle, a fill-rate measurement of a full smoke cloud on hardware. HUD done (2026-11-16,
+`hud_fx`; IW4L's numbers, a trace against MW2 still to do): sniper scope overlay, MW2's crosshair, damage direction,
+blood, teammates' overhead names, kill-feed weapon icons, the killstreak splash, the EMP blackout and static, rumble.
+Not in the HUD yet: the pain vision set and the splatter envelope (IW4L has the numbers, no caller), enemy names under
+the crosshair, the scopes' EMP / low-res overlay variants (not captured), the cooking grenade's centre reticle, vision
+sets (the EMP flash is a white fade), the weapons' own `killIcon` and `fireRumble` (not read back: `hudIcon` and a
+rumble by class stand in), the viewmodel's `viewmodel_*` notetrack rumbles, rumble from nearby explosions
+(`grenade_rumble`). Not on the Wii's GPU: shadow maps, depth of field,
 glow, colour grading, glass shatter.
 
 Network: IW4L has no LAN transport (internet relay over QUIC); its snapshot deltas (`PS_NETFIELDS`), acked
@@ -110,7 +115,7 @@ scripted Dolphin runs, the PC menu preview.
 11. **Minimap and killstreaks**: the HUD minimap (map pack `MINI`: MW2's `setupMiniMap` frame, the script's
     `compassmaxrange`; turned with the view; firing pings), kill streaks with your class's streak costs, the UAV
     (radar sweep and ping fade from IW4L's compass, duration from `_uav.gsc`), bots' UAVs. EMP and the nuke: done. Counter-UAV: done (``_uav.gsc``: as long as a UAV, jams the enemies' radar: your minimap dims and shows nothing but you; bots under it lose their UAV's knowledge). Not yet: the other
-    streaks (care package, predator, sentry, harrier, airstrike, helicopters, AC-130), EMP's HUD blackout, bots calling Counter-UAVs / EMPs / nukes,
+    streaks (care package, predator, sentry, harrier, airstrike, helicopters, AC-130), bots calling Counter-UAVs / EMPs / nukes,
     Cold-Blooded / Scrambler on the radar, the minimap's fading edge and scan-line pass order.
 10. **Perks** (`game_core::perks`): a class's three perks and their Pro perks (perkTable's upgrade column;
     everything unlocked) become IW4's `ps.perks` bits that IW4L's movement and weapon code read (Marathon,

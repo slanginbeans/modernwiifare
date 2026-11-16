@@ -37,6 +37,7 @@ pub mod glass;
 pub mod grenade;
 pub mod gun;
 pub mod hud;
+pub mod hud_fx;
 pub mod hud_mw2;
 pub mod item;
 pub mod life;

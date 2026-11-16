@@ -70,6 +70,12 @@ fires in bursts and holds Y now and then. Check the match log for `hit`, `hitvol
 BRING A BOT IN FRONT) to shoot a bot with the drawn bones and take its weapon with a Y hold, three times. Its toggles
 assume the debug defaults: delete `<app folder>/debug.dat` (`out\dolphin\sd\apps\mwf_game\debug.dat`) first.
 
+The match HUD over the play view (`hud_fx`): `tools/autoplay/hud_match.txt` (Team Deathmatch with the Barrett from the
+debug menu: the scope overlay, teammates' names, the kill feed's icons, the EMP's flash), `hud_match_rifle.txt` (the
+default M4: MW2's crosshair at rest and firing, the EMP's flash) and `hud_hits.txt` (free-for-all, standing still until
+the bots hit you: the hit arrows and blood). The killstreak splash and the EMP static show in `mwf-convert menu-preview`
+(`menu_hud.png`, `menu_hud_scope.png`). Rumble can't be seen in Dolphin.
+
 On the PC, `tools/dolphin-test.ps1 -Dolphin <Dolphin.exe>` (or `MWF_DOLPHIN`) runs a script in Dolphin on the
 built game (`dist\apps\mwf_game`, `out\packs`): it sets up its own Dolphin profile and an SD card folder under
 `out\dolphin` (your Dolphin settings are untouched), boots the game, waits for `quit` and converts the screenshots

@@ -75,6 +75,9 @@ void mwf_mem_info(mwf_mem *out);
 int mwf_widescreen(void);     /* 1 when the console is set to 16:9 */
 void mwf_input_scan(void);
 void mwf_pad_read(int chan, mwf_pad *out);
+/* The GameCube pad's rumble motor on `chan` (0..3): on or off (libogc PAD_ControlMotor; it has no strength, the
+   game duty-cycles it). Only sent when it changes. */
+void mwf_pad_rumble(int chan, int on);
 double mwf_ffi_echo(float a, double b, int32_t c); /* returns a + b + c; float-ABI self-test */
 void mwf_panic(const char *msg, size_t len) __attribute__((noreturn));
 void mwf_poweroff(void); /* switch the console off (Dolphin stops) */
@@ -224,6 +227,8 @@ void mwf_decals(const float view[3][4], int32_t tex, uint32_t blend, const mwf_s
 void mwf_x360_scan(void);
 /* The Xbox 360 wired pad's latest state (connected 0 when there is none). */
 void mwf_x360_read(mwf_x360 *out);
+/* The 360 pad's two rumble motors (0..255: the big low one, the small high one); sent when they change. */
+void mwf_x360_rumble(uint8_t big, uint8_t small);
 
 /* Sound: ASND voices. `pcm`: mono 16-bit big-endian, 32-byte aligned, flushed, `bytes` a multiple of 32.
    Volumes 0..255. Returns the voice, or -1 when every voice is busy. */

@@ -544,6 +544,8 @@ mod tests {
             icons: Vec::new(),
             hud: Vec::new(),
             strings: Vec::new(),
+            weapons: Vec::new(),
+            rumbles: Vec::new(),
         }
     }
 

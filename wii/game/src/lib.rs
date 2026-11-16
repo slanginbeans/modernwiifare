@@ -274,7 +274,8 @@ fn draw_life_hud(
     text: bool,
 ) {
     let hurt = life.hurt(now);
-    if hurt > 0.01 {
+    // MW2's HUD has its own blood (`hud_fx::Blood`).
+    if text && hurt > 0.01 {
         let a = (hurt * 200.0) as u32;
         let edge = 48;
         rects.clear();
@@ -316,6 +317,7 @@ fn draw_life_hud(
 }
 
 /// Crosshair, ammo, weapon name and bullet impacts (markers that fade over 400 ms).
+#[allow(clippy::too_many_arguments)]
 fn draw_gun_hud(
     gfx: &mut Shim,
     rects: &mut Vec<Rect>,
@@ -324,17 +326,20 @@ fn draw_gun_hud(
     impacts: &[(Option<[f32; 3]>, u32)],
     now: u32,
     text: bool,
+    ticks: bool,
 ) {
-    // Crosshair: four ticks at the spread cone's edge (as MW2's hip-fire crosshair opens while firing or moving).
+    // Crosshair (without MW2's, `hud_fx::Crosshair`): four ticks at the spread cone's edge.
     let half_w = libm::tanf(cam.fovy.to_radians() * 0.5) * cam.aspect;
     let gap = (libm::tanf(g.spread_degrees.to_radians()) / half_w * 320.0).clamp(3.0, 120.0) as i16;
     rects.clear();
-    rects.extend_from_slice(&[
-        [320 - gap - 8, 239, 8, 2],
-        [320 + gap, 239, 8, 2],
-        [319, 240 - gap - 8, 2, 8],
-        [319, 240 + gap, 2, 8],
-    ]);
+    if ticks {
+        rects.extend_from_slice(&[
+            [320 - gap - 8, 239, 8, 2],
+            [320 + gap, 239, 8, 2],
+            [319, 240 - gap - 8, 2, 8],
+            [319, 240 + gap, 2, 8],
+        ]);
+    }
     gfx.hud_rects(rects, 0xffffffc0);
     rects.clear();
     for &(at, t) in impacts {
@@ -374,6 +379,25 @@ fn draw_gun_hud(
         rects.clear();
         hud::text(rects, 520, 400, 2, line.as_str());
         gfx.hud_rects(rects, if grenades > 0 { 0xc0c8d0c0 } else { 0x606870c0 });
+    }
+}
+
+/// The pads' rumble this frame: the GameCube pad's motor on / off and the 360 pad's two motors' strength (None: off).
+fn rumble_output(r: Option<(bool, (f32, f32))>) {
+    let (on, (big, small)) = r.unwrap_or((false, (0.0, 0.0)));
+    let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0) as u8 & 0xf0;
+    unsafe {
+        ffi::mwf_pad_rumble(0, i32::from(on));
+        ffi::mwf_x360_rumble(b(big), b(small));
+    }
+}
+
+/// Stops the rumble when the match loop ends, however it ends.
+struct RumbleOff;
+
+impl Drop for RumbleOff {
+    fn drop(&mut self) {
+        rumble_output(None);
     }
 }
 
@@ -1269,6 +1293,22 @@ fn run_map(
     // The HUD's score popup: your score last frame, the points just scored and when.
     let mut last_score = 0u32;
     let mut popup: Option<(u32, u32)> = None;
+    // MW2's HUD over the play view (`hud_fx`): hit arrows, blood, the ADS direction, teammates' names, the splash,
+    // the EMP's flash, each kill feed line's weapon and headshot, the last hit location per fighter, the rumble.
+    let mut damage_dirs = game_core::hud_fx::DamageDirections::default();
+    let mut blood = game_core::hud_fx::Blood::default();
+    let mut ads_latch = game_core::hud_fx::AdsLatch::default();
+    let mut overhead = game_core::hud_fx::Overhead::default();
+    let mut splash: Option<(alloc::string::String, i32, u32)> = None;
+    let mut emp_flash_at: Option<u32> = None;
+    let mut emp_seen: Vec<Option<u32>> = Vec::new();
+    let mut feed_icon: [(Option<u32>, bool); 4] = [(None, false); 4];
+    let mut hit_head: [bool; 8] = [false; 8];
+    let mut rumbler = game_core::hud_fx::Rumbler::default();
+    let _rumble_off = RumbleOff;
+    let mut hud_weapon: Option<(u32, wpk::ui::HudWeapon)> = None;
+    let mut free_quads: Vec<game_core::hud_fx::FreeQuad> = Vec::with_capacity(32);
+    let mut hud_frame = 0u32;
     // Weapon names by index (the HUD's grenade icons).
     let weapon_names: Vec<alloc::string::String> =
         wpk::records::iter::<wpk::weapon::WeaponRecord>(weapons)
@@ -1381,6 +1421,8 @@ fn run_map(
         }
         if ctl.pressed(act::PAUSE) {
             unsafe { ffi::mwf_snd_stop_all() };
+            rumbler.stop();
+            rumble_output(None);
             devlog::event(now, "pause", format_args!(""));
             stick_event(&stick_max, &trigger_max, now);
             devlog::flush(now);
@@ -2210,6 +2252,10 @@ fn run_map(
                         }
                         if let Some(s) = shot.as_ref() {
                             last_shot_ms = Some(now);
+                            // The weapon's fire rumble (its notetrack rumble map's `*_fire`).
+                            if let Some(w) = ui::get().and_then(|u| u.pack.weapon(g.name())) {
+                                rumbler.play(w.fire_rumble, now, 1.0);
+                            }
                             // The first-person muzzle flash, in the gun's own (eye) space.
                             if let (Some(fx), Some(v)) =
                                 (effects.as_mut(), arsenal.views[arsenal.active % 2].as_ref())
@@ -2405,6 +2451,26 @@ fn run_map(
                             .filter(|_| attacker != 0)
                             .map(|a| a.fighters[attacker].player.ps.origin);
                         view_kick.hit(&p.ps, from, damage, now);
+                    }
+                    if let Some(h) = hit_head.get_mut(victim) {
+                        *h = hud_iw4::obituary_is_headshot(location);
+                    }
+                    if victim == 0 && attacker != 0 {
+                        // Where it came from (`damageYaw`) and `_damage.gsc`'s `damage_heavy` rumble.
+                        if let Some(a) = arena.as_ref() {
+                            damage_dirs.hit(
+                                now as i32,
+                                game_core::hud_fx::damage_yaw(
+                                    a.fighters[attacker].player.ps.origin,
+                                    a.fighters[0].player.ps.origin,
+                                ),
+                            );
+                        }
+                        if let Some(r) = ui::get().and_then(|u| {
+                            u.pack.rumbles.iter().position(|r| r.name == "damage_heavy")
+                        }) {
+                            rumbler.play(r as u16, now, 1.0);
+                        }
                     }
                     if attacker == 0 || victim == 0 {
                         devlog::event(
@@ -2618,6 +2684,21 @@ fn run_map(
                 Event::Kill { attacker, victim } => {
                     feed.rotate_right(1);
                     feed[0] = (Some((attacker, victim)), now);
+                    // The killer's weapon in hand (yours from the arsenal) and whether the last hit was to the head.
+                    let weapon = if attacker == 0 {
+                        arsenal.gun().map(|g| g.weapon_index())
+                    } else {
+                        arena
+                            .as_ref()
+                            .and_then(|a| a.fighters.get(attacker))
+                            .and_then(|f| f.gun.as_ref())
+                            .map(|g| g.weapon_index())
+                    };
+                    feed_icon.rotate_right(1);
+                    feed_icon[0] = (
+                        weapon.filter(|_| attacker != victim),
+                        hit_head.get(victim).copied().unwrap_or(false),
+                    );
                     devlog::event(now, "kill", format_args!("by={attacker} on={victim}"));
                     if victim == 0 {
                         // MW2: a death resets the streak; rewards already earned are kept.
@@ -2635,6 +2716,7 @@ fn run_map(
                                 {
                                     rewards.push(item.name.clone());
                                     reward_note = Some(("KILLSTREAK READY: D-PAD LEFT", now));
+                                    splash = Some((item.name.clone(), streak as i32, now));
                                     devlog::event(
                                         now,
                                         "killstreak",
@@ -2917,8 +2999,31 @@ fn run_map(
             for _ in fx.take_sounds() {}
         }
         sections[section::BODIES] = lap(&mut mark);
+        // The weapon's HUD facts (crosshair, scope) and which way the gun last moved.
+        if let Some(g) = arsenal.gun() {
+            if hud_weapon
+                .as_ref()
+                .is_none_or(|(i, _)| *i != g.weapon_index())
+            {
+                hud_weapon = ui::get()
+                    .and_then(|u| u.pack.weapon(g.name()).cloned())
+                    .map(|w| (g.weapon_index(), w));
+            }
+        } else {
+            hud_weapon = None;
+        }
+        if let Some(p) = player.as_ref() {
+            ads_latch.update(p.ps.f_weapon_pos_frac);
+        }
+        let scoped = hud_weapon
+            .as_ref()
+            .zip(player.as_ref())
+            .is_some_and(|((_, w), p)| {
+                !game_core::hud_fx::draws_gun(w, p.ps.f_weapon_pos_frac, ads_latch.to_ads)
+            });
         if !flying
             && life.alive()
+            && !scoped
             && let (Some(v), Some(g), Some(p)) = (
                 arsenal.views[arsenal.view_slot()].as_mut(),
                 arsenal.guns[arsenal.active].as_ref(),
@@ -2959,8 +3064,28 @@ fn run_map(
             // MW2's HUD (its fonts and images) when the common pack has the UI; else the plain one.
             let mw2 = ui::get().is_some() && arena.is_some();
             if let Some(g) = arsenal.gun().filter(|_| life.alive()) {
-                draw_gun_hud(gfx, &mut hud_rects, g, &cam, &impacts, now, !mw2);
+                let ticks = !mw2 || hud_weapon.is_none();
+                draw_gun_hud(gfx, &mut hud_rects, g, &cam, &impacts, now, !mw2, ticks);
             }
+            blood.update(life.health, life.max_health, life.alive(), msec as i32);
+            if !life.alive() {
+                damage_dirs.clear();
+            }
+            // An EMP going off (any fighter's: `_emp.gsc` flashes everyone), and whether yours is jammed.
+            if let Some(a) = arena.as_ref() {
+                emp_seen.resize(a.fighters.len(), None);
+                for (seen, f) in emp_seen.iter_mut().zip(&a.fighters) {
+                    if f.emp_until != *seen {
+                        if f.emp_until
+                            .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
+                        {
+                            emp_flash_at = Some(now);
+                        }
+                        *seen = f.emp_until;
+                    }
+                }
+            }
+            hud_frame = hud_frame.wrapping_add(1);
             draw_life_hud(gfx, &mut hud_rects, &life, &clock, now, !mw2);
             if let Some(a) = arena.as_ref() {
                 // Points just scored pop up at the crosshair.
@@ -3013,29 +3138,124 @@ fn run_map(
                     }
                 }
                 let mode_name = front::mode_name(a.mode).to_ascii_uppercase();
-                let mut feed_lines: [Str; 4] = Default::default();
-                let mut feed_mine = [false; 4];
-                let mut n_feed = 0;
-                for (e, t) in &feed {
-                    let Some((killer, victim)) = e else { continue };
-                    if now.wrapping_sub(*t) > 4000 {
-                        continue;
-                    }
-                    let l = &mut feed_lines[n_feed];
-                    if killer == victim {
-                        l.push_str(fighter_name(*victim).as_str());
-                        l.push_str(" DIED");
-                    } else {
-                        l.push_str(fighter_name(*killer).as_str());
-                        l.push_str(" KILLED ");
-                        l.push_str(fighter_name(*victim).as_str());
-                    }
-                    feed_mine[n_feed] = *killer == 0 || *victim == 0;
-                    n_feed += 1;
-                }
-                let feed_refs: Vec<(&str, bool)> = (0..n_feed)
-                    .map(|k| (feed_lines[k].as_str(), feed_mine[k]))
+                let names: [Str; 4] = core::array::from_fn(fighter_name);
+                let headshot = u
+                    .pack
+                    .icon(hud_iw4::KILLICON_HEADSHOT)
+                    .unwrap_or(wpk::ui::NONE);
+                let suicide = u
+                    .pack
+                    .icon(hud_iw4::KILLICON_SUICIDE)
+                    .unwrap_or(wpk::ui::NONE);
+                // The lines' weapons (copied: the pack is drawn from below).
+                let feed_weapons: [Option<wpk::ui::HudWeapon>; 4] = core::array::from_fn(|k| {
+                    feed_icon[k]
+                        .0
+                        .and_then(|w| weapon_names.get(w as usize))
+                        .and_then(|n| u.pack.weapon(n).cloned())
+                });
+                let feed_refs: Vec<game_core::hud_fx::FeedLine<'_>> = feed
+                    .iter()
+                    .zip(&feed_icon)
+                    .zip(&feed_weapons)
+                    .rev()
+                    .filter_map(|(((e, t), (_, head)), w)| {
+                        let (killer, victim) = (*e)?;
+                        Some(game_core::hud_fx::FeedLine {
+                            killer: (killer != victim)
+                                .then(|| names.get(killer).map(|n| n.as_str()))
+                                .flatten(),
+                            victim: names.get(victim).map_or("", |n| n.as_str()),
+                            icon: w.as_ref(),
+                            headshot: if killer == victim {
+                                suicide
+                            } else if *head {
+                                headshot
+                            } else {
+                                wpk::ui::NONE
+                            },
+                            mine: killer == 0 || victim == 0,
+                            at: *t,
+                        })
+                    })
                     .collect();
+                // Under an enemy EMP: no crosshair (IW4 `OTHER_FLAGS` 0x400), static over the screen.
+                let jammed = a.fighters.iter().enumerate().any(|(i, f)| {
+                    a.enemies(0, i)
+                        && f.emp_until
+                            .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
+                });
+                let flashed = a.fighters[0].shock.is_some_and(|s| {
+                    s.fx(&a.rules).screen_type == hud_iw4::SCREEN_BLEND_FLASHED
+                        && s.remaining(now) > 0
+                });
+                let tan_half = libm::tanf(cam.fovy.to_radians() * 0.5);
+                let crosshair = arsenal
+                    .gun()
+                    .filter(|_| life.alive())
+                    .zip(hud_weapon.as_ref())
+                    .zip(player.as_ref())
+                    .map(|((g, (_, w)), p)| {
+                        let (cone, scale) = g.hud_spread();
+                        game_core::hud_fx::Crosshair {
+                            weapon: w,
+                            cone,
+                            aim_spread_scale: scale,
+                            frac: p.ps.f_weapon_pos_frac,
+                            to_ads: ads_latch.to_ads,
+                            tan_half_fov_y: tan_half,
+                            gate: hud_iw4::HipCrosshairGate {
+                                flashbanged: flashed,
+                                other_flags: if jammed {
+                                    hud_iw4::OTHER_FLAGS_BLOCK_CROSSHAIR_HUD
+                                } else {
+                                    0
+                                },
+                                f_weapon_pos_frac: p.ps.f_weapon_pos_frac,
+                                bob_gate: false,
+                                weaponstate_primary: g.state(),
+                                ..hud_iw4::HipCrosshairGate::default()
+                            },
+                        }
+                    });
+                let scope = hud_weapon
+                    .as_ref()
+                    .zip(player.as_ref())
+                    .filter(|_| life.alive())
+                    .map(|((_, w), p)| (w, p.ps.f_weapon_pos_frac, ads_latch.to_ads));
+                // Teammates' names (team modes, as MW2 draws friendly names), when in sight.
+                let mut overhead_names: Vec<([f32; 2], f32, f32, &str)> = Vec::new();
+                if a.mode.teams() {
+                    for (i, f) in a.fighters.iter().enumerate().skip(1) {
+                        let o = f.player.ps.origin;
+                        let place = (f.life.alive() && !a.enemies(0, i))
+                            .then(|| game_core::hud_fx::overhead_place(&cam, o))
+                            .flatten();
+                        let in_sight = place.is_some_and(|_| {
+                            clip.as_ref().is_none_or(|c| {
+                                let head = [o[0], o[1], o[2] + 60.0];
+                                c.trace(
+                                    cam.eye,
+                                    head,
+                                    [0.0; 3],
+                                    [0.0; 3],
+                                    game_core::gun::MASK_SHOT,
+                                )
+                                .fraction
+                                    >= 1.0
+                            })
+                        });
+                        let al = overhead.alpha(i, now as i32, in_sight);
+                        if let (Some((pos, scale)), true) = (place, al > 0.0) {
+                            overhead_names.push((
+                                pos,
+                                scale,
+                                al,
+                                names.get(i).map_or("", |n| n.as_str()),
+                            ));
+                        }
+                    }
+                }
                 let gun = arsenal.gun().filter(|_| life.alive());
                 let mut display = Str::default();
                 let weapon = gun.map(|g| {
@@ -3086,14 +3306,30 @@ fn run_map(
                     hitmarker: hitmarker_ms.is_some_and(|t| now.wrapping_sub(t) < 150),
                     popup,
                     reward: rewards.last().map(|r| r.as_str()),
-                    notice: reward_note,
+                    // The splash stands in for the "killstreak ready" notice.
+                    notice: reward_note.filter(|_| splash.is_none()),
                     respawn_in: (!life.alive()).then(|| life.respawn_in(now).div_ceil(1000)),
                     nuke_in: a
                         .nuke
                         .filter(|n| !n.done)
                         .map(|n| n.detonate_ms.saturating_sub(now).div_ceil(1000)),
+                    crosshair,
+                    scope,
+                    damage: (life.alive() && !scoped).then_some((&damage_dirs, cam.yaw)),
+                    blood,
+                    names: &overhead_names,
+                    splash: splash.as_ref().map(|(n, k, t)| (n.as_str(), *k, *t)),
+                    emp: jammed.then_some(hud_frame),
                 };
-                u.page(|ui, q| game_core::hud_mw2::layout(ui, &state, q));
+                free_quads.clear();
+                u.page(|ui, q| game_core::hud_mw2::layout(ui, &state, q, &mut free_quads));
+                u.draw_free(&free_quads);
+                if splash
+                    .as_ref()
+                    .is_some_and(|(_, _, t)| now.wrapping_sub(*t) > 10_000)
+                {
+                    splash = None;
+                }
             } // The UAV's sweep, then the minimap.
             if let (Some((m, _)), Some(a)) = (world.minimap.as_ref(), arena.as_ref()) {
                 let enemies: Vec<(usize, [f32; 3])> = a
@@ -3107,15 +3343,42 @@ fn run_map(
                 radar.sweep(m, radar_at, now, &enemies);
             }
             radar_at = now;
-            draw_minimap(
-                &world,
-                arena.as_ref(),
-                &radar,
-                &cam,
-                &blasts,
-                now,
-                options.safe_area(),
-            );
+            let emp_jammed = arena.as_ref().is_some_and(|a| {
+                a.fighters.iter().enumerate().any(|(i, f)| {
+                    a.enemies(0, i)
+                        && f.emp_until
+                            .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
+                })
+            });
+            if !emp_jammed {
+                draw_minimap(
+                    &world,
+                    arena.as_ref(),
+                    &radar,
+                    &cam,
+                    &blasts,
+                    now,
+                    options.safe_area(),
+                );
+            }
+            if let Some(at) = emp_flash_at {
+                let age = now.wrapping_sub(at);
+                let a = game_core::hud_fx::emp_flash(age);
+                if a > 0.0 {
+                    gfx.hud_rects(&[[0, 0, 640, 480]], 0xffff_ff00 | (a * 255.0) as u32);
+                } else if age > game_core::hud_fx::EMP_FLASH_MS {
+                    emp_flash_at = None;
+                }
+            }
+            // The pad's rumble (Options > Vibration).
+            if options.vibration && life.alive() {
+                let s = ui::get().map_or((0.0, 0.0), |u| rumbler.strength(now, &u.pack.rumbles));
+                let m = rumbler.motor(s);
+                rumble_output(Some((m, s)));
+            } else {
+                rumbler.stop();
+                rumble_output(None);
+            }
             // A flashbang's or stun's white-out (IW4L `shellshock_flash_blend` with the shock's fade times).
             if let Some(a) = arena.as_ref()
                 && let Some(s) = a.fighters[0].shock

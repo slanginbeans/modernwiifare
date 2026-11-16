@@ -55,6 +55,7 @@ unsafe extern "C" {
     pub fn mwf_mem_info(out: *mut Mem);
     pub fn mwf_input_scan();
     pub fn mwf_pad_read(chan: i32, out: *mut Pad);
+    pub fn mwf_pad_rumble(chan: i32, on: i32);
     pub fn mwf_ffi_echo(a: f32, b: f64, c: i32) -> f64;
     pub fn mwf_panic(msg: *const u8, len: usize) -> !;
 

@@ -90,6 +90,8 @@ unsafe extern "C" {
     pub fn mwf_us() -> u32;
     pub fn mwf_input_scan();
     pub fn mwf_pad_read(chan: i32, out: *mut Pad);
+    pub fn mwf_pad_rumble(chan: i32, on: i32);
+    pub fn mwf_x360_rumble(big: u8, small: u8);
     pub fn mwf_x360_scan();
     pub fn mwf_x360_read(out: *mut X360);
     pub fn mwf_panic(msg: *const u8, len: usize) -> !;

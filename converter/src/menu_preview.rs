@@ -85,6 +85,64 @@ fn draw_verts(img: &mut Image, t: &Image, v: &[game_core::minimap::Vert; 4]) {
     }
 }
 
+/// Draw a turned quad (`hud_fx::FreeQuad`) as two triangles, texture coordinates and colour interpolated.
+fn draw_free(img: &mut Image, textures: &[Option<Image>], f: &game_core::hud_fx::FreeQuad) {
+    let Some(Some(t)) = textures.get(usize::from(f.texture)) else {
+        return;
+    };
+    let rgba = f.v[0].rgba;
+    let c = [
+        (rgba >> 24) as f32 / 255.0,
+        ((rgba >> 16) & 0xff) as f32 / 255.0,
+        ((rgba >> 8) & 0xff) as f32 / 255.0,
+        (rgba & 0xff) as f32 / 255.0,
+    ];
+    for tri in [[0, 1, 2], [0, 2, 3]] {
+        let [a, b, d] = tri.map(|i| f.v[i]);
+        let area = (b.x - a.x) * (d.y - a.y) - (d.x - a.x) * (b.y - a.y);
+        if area.abs() < 1e-6 {
+            continue;
+        }
+        let xs = [a.x, b.x, d.x];
+        let ys = [a.y, b.y, d.y];
+        let (x0, x1) = (
+            xs.iter().copied().fold(f32::MAX, f32::min).max(0.0) as u32,
+            xs.iter()
+                .copied()
+                .fold(f32::MIN, f32::max)
+                .clamp(0.0, 640.0) as u32,
+        );
+        let (y0, y1) = (
+            ys.iter().copied().fold(f32::MAX, f32::min).max(0.0) as u32,
+            ys.iter()
+                .copied()
+                .fold(f32::MIN, f32::max)
+                .clamp(0.0, 480.0) as u32,
+        );
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                let w1 = ((px - a.x) * (d.y - a.y) - (d.x - a.x) * (py - a.y)) / area;
+                let w2 = ((b.x - a.x) * (py - a.y) - (px - a.x) * (b.y - a.y)) / area;
+                let w0 = 1.0 - w1 - w2;
+                if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                    continue;
+                }
+                let s = w0 * a.s + w1 * b.s + w2 * d.s;
+                let tt = w0 * a.t + w1 * b.t + w2 * d.t;
+                let tx = (s.clamp(0.0, 0.9999) * t.width as f32) as u32;
+                let ty = (tt.clamp(0.0, 0.9999) * t.height as f32) as u32;
+                let p = t.pixels[(ty * t.width + tx) as usize];
+                let al = f32::from(p[3]) / 255.0 * c[3];
+                let o = &mut img.pixels[(y * 640 + x) as usize];
+                for k in 0..3 {
+                    o[k] = (f32::from(p[k]) * c[k] * al + f32::from(o[k]) * (1.0 - al)) as u8;
+                }
+            }
+        }
+    }
+}
+
 /// The HUD minimap of map pack `map` for a player at its first free-for-all spawn, with an enemy firing ahead and
 /// one marked by the radar, over a grey background.
 pub fn render_minimap(common: &[u8], map: &[u8]) -> Result<Image, String> {
@@ -413,8 +471,9 @@ pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
     Ok(img)
 }
 
-/// The match HUD (`game_core::hud_mw2`) with sample content over a dark frame.
-pub fn render_hud(common: &[u8]) -> Result<Image, String> {
+/// The match HUD (`game_core::hud_mw2`) with sample content over a dark frame; `scoped`: looking down a sniper
+/// rifle's scope (the first weapon with an overlay) while jammed by an EMP.
+pub fn render_hud(common: &[u8], scoped: bool) -> Result<Image, String> {
     let pack = wpk::Pack::parse(common, true).map_err(|e| format!("{e:?}"))?;
     let ui = pack
         .section(wpk::tag::UI)
@@ -431,7 +490,30 @@ pub fn render_hud(common: &[u8]) -> Result<Image, String> {
                 .collect()
         })
         .unwrap_or_default();
-    let feed = [("BOT 2 KILLED BOT 4", false), ("YOU KILLED BOT 1", true)];
+    use game_core::hud_fx::{self, FeedLine};
+    let m4 = ui.weapon("m4_mp");
+    let feed = [
+        FeedLine {
+            killer: Some("BOT 2"),
+            victim: "BOT 4",
+            icon: ui.weapon("ak47_mp"),
+            headshot: wpk::ui::NONE,
+            mine: false,
+            at: 0,
+        },
+        FeedLine {
+            killer: Some("YOU"),
+            victim: "BOT 1",
+            icon: m4,
+            headshot: wpk::ui::NONE,
+            mine: true,
+            at: 600,
+        },
+    ];
+    let mut damage = hud_fx::DamageDirections::default();
+    damage.hit(500, 64);
+    damage.hit(700, 200);
+    let names = [([400.0, 200.0], 0.8, 1.0, "BOT 3")];
     let state = game_core::hud_mw2::State {
         now: 1000,
         match_ms: 9000,
@@ -457,12 +539,38 @@ pub fn render_hud(common: &[u8]) -> Result<Image, String> {
         notice: Some(("UAV ONLINE", 500)),
         respawn_in: None,
         nuke_in: None,
+        crosshair: m4.map(|w| hud_fx::Crosshair {
+            weapon: w,
+            cone: (3.0, 8.0),
+            aim_spread_scale: 60.0,
+            frac: 0.0,
+            to_ads: false,
+            tan_half_fov_y: (game_core::camera::DEFAULT_FOVY.to_radians() * 0.5).tan(),
+            gate: hud_iw4::HipCrosshairGate::default(),
+        }),
+        scope: if scoped {
+            ui.weapons
+                .iter()
+                .find(|w| w.overlay != wpk::ui::NONE)
+                .map(|w| (w, 1.0, true))
+        } else {
+            None
+        },
+        damage: Some((&damage, 0.0)),
+        blood: hud_fx::Blood { intensity: 0.4 },
+        names: &names,
+        splash: Some(("uav", 3, 0)),
+        emp: scoped.then_some(3),
     };
     let mut quads = Vec::new();
-    game_core::hud_mw2::layout(&ui, &state, &mut quads);
+    let mut free = Vec::new();
+    game_core::hud_mw2::layout(&ui, &state, &mut quads, &mut free);
     let mut img = Image::new(640, 480, [70, 76, 84, 255]);
     for q in &quads {
         draw(&mut img, &textures, q);
+    }
+    for f in &free {
+        draw_free(&mut img, &textures, f);
     }
     Ok(img)
 }

@@ -343,6 +343,67 @@ pub struct UiPack {
     pub hud: Vec<HudLayout>,
     /// MW2's localized strings the front end shows (map and game mode names and descriptions), by key.
     pub strings: Vec<(String, String)>,
+    /// Each weapon's HUD facts (crosshair, scope overlay, kill icon, fire rumble); empty in an older pack.
+    pub weapons: Vec<HudWeapon>,
+    /// MW2's rumbles (`rumble/<name>` raw files); empty in an older pack.
+    pub rumbles: Vec<Rumble>,
+}
+
+/// A weapon's HUD numbers and images from its IW4 weapon def (IW4L `hud_iw4` `WeaponReticleFacts`,
+/// `WeaponAdsCrosshairFacts`, `WeaponAdsOverlayFacts`, kill icon ratio and flip). Textures are `NONE` when absent.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HudWeapon {
+    pub name: String,
+    /// `reticleCenter` / `reticleSide` materials.
+    pub reticle_center: u16,
+    pub reticle_side: u16,
+    /// `overlayMaterial` (the sniper scope).
+    pub overlay: u16,
+    /// `killIcon`.
+    pub kill_icon: u16,
+    pub reticle_center_size: i32,
+    pub reticle_side_size: i32,
+    pub reticle_min_ofs: i32,
+    pub hip_reticle_side_pos: f32,
+    pub ads_aim_pitch: f32,
+    pub ads_crosshair_in_frac: f32,
+    pub ads_crosshair_out_frac: f32,
+    pub ads_zoom_in_frac: f32,
+    pub ads_zoom_out_frac: f32,
+    pub ads_overlay_width: f32,
+    pub ads_overlay_height: f32,
+    pub overlay_reticle: i32,
+    pub kill_icon_ratio: u8,
+    pub flip_kill_icon: bool,
+    /// The rumble played on each shot (index into [`UiPack::rumbles`], or `NONE`).
+    pub fire_rumble: u16,
+}
+
+/// An IW4 rumble (a `RUMBLE` raw file and its two `RUMBLEGRAPHFILE` graphs, as IW4L's `audio::rumble` reads them):
+/// strength over the rumble's life for the low (strong) and high (weak) motors, points `(fraction, strength)`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rumble {
+    pub name: String,
+    pub duration_ms: u32,
+    pub low: Vec<(f32, f32)>,
+    pub high: Vec<(f32, f32)>,
+    pub range: f32,
+    pub fade_with_distance: bool,
+    pub broadcast: bool,
+}
+
+fn put_graph(o: &mut Vec<u8>, g: &[(f32, f32)]) {
+    let n = g.len().min(16);
+    o.push(n as u8);
+    for &(x, y) in &g[..n] {
+        o.f32(x);
+        o.f32(y);
+    }
+}
+
+fn get_graph(r: &mut Reader<'_>) -> Option<Vec<(f32, f32)>> {
+    let n = r.u8()?;
+    (0..n).map(|_| Some((r.f32()?, r.f32()?))).collect()
 }
 
 struct Reader<'a> {
@@ -554,6 +615,46 @@ impl UiPack {
             put_str(&mut o, k);
             put_str(&mut o, v);
         }
+        // Since the HUD round: weapons' HUD facts and rumbles (an older pack ends here).
+        o.u16(self.weapons.len() as u16);
+        for w in &self.weapons {
+            put_str(&mut o, &w.name);
+            for t in [w.reticle_center, w.reticle_side, w.overlay, w.kill_icon] {
+                o.u16(t);
+            }
+            for v in [
+                w.reticle_center_size,
+                w.reticle_side_size,
+                w.reticle_min_ofs,
+                w.overlay_reticle,
+            ] {
+                o.u32(v as u32);
+            }
+            for v in [
+                w.hip_reticle_side_pos,
+                w.ads_aim_pitch,
+                w.ads_crosshair_in_frac,
+                w.ads_crosshair_out_frac,
+                w.ads_zoom_in_frac,
+                w.ads_zoom_out_frac,
+                w.ads_overlay_width,
+                w.ads_overlay_height,
+            ] {
+                o.f32(v);
+            }
+            o.push(w.kill_icon_ratio);
+            o.push(u8::from(w.flip_kill_icon));
+            o.u16(w.fire_rumble);
+        }
+        o.u16(self.rumbles.len() as u16);
+        for r in &self.rumbles {
+            put_str(&mut o, &r.name);
+            o.u32(r.duration_ms);
+            put_graph(&mut o, &r.low);
+            put_graph(&mut o, &r.high);
+            o.f32(r.range);
+            o.push(u8::from(r.fade_with_distance) | (u8::from(r.broadcast) << 1));
+        }
         o
     }
 
@@ -697,6 +798,65 @@ impl UiPack {
         for _ in 0..ns {
             strings.push((r.str()?, r.str()?));
         }
+        let mut weapons = Vec::new();
+        let mut rumbles = Vec::new();
+        if r.at < b.len() {
+            let n = r.u16()?;
+            for _ in 0..n {
+                let name = r.str()?;
+                let (rc, rs, ov, ki) = (r.u16()?, r.u16()?, r.u16()?, r.u16()?);
+                let ints = [
+                    r.u32()? as i32,
+                    r.u32()? as i32,
+                    r.u32()? as i32,
+                    r.u32()? as i32,
+                ];
+                let mut f = [0.0f32; 8];
+                for v in &mut f {
+                    *v = r.f32()?;
+                }
+                weapons.push(HudWeapon {
+                    name,
+                    reticle_center: rc,
+                    reticle_side: rs,
+                    overlay: ov,
+                    kill_icon: ki,
+                    reticle_center_size: ints[0],
+                    reticle_side_size: ints[1],
+                    reticle_min_ofs: ints[2],
+                    overlay_reticle: ints[3],
+                    hip_reticle_side_pos: f[0],
+                    ads_aim_pitch: f[1],
+                    ads_crosshair_in_frac: f[2],
+                    ads_crosshair_out_frac: f[3],
+                    ads_zoom_in_frac: f[4],
+                    ads_zoom_out_frac: f[5],
+                    ads_overlay_width: f[6],
+                    ads_overlay_height: f[7],
+                    kill_icon_ratio: r.u8()?,
+                    flip_kill_icon: r.u8()? != 0,
+                    fire_rumble: r.u16()?,
+                });
+            }
+            let n = r.u16()?;
+            for _ in 0..n {
+                let name = r.str()?;
+                let duration_ms = r.u32()?;
+                let low = get_graph(&mut r)?;
+                let high = get_graph(&mut r)?;
+                let range = r.f32()?;
+                let flags = r.u8()?;
+                rumbles.push(Rumble {
+                    name,
+                    duration_ms,
+                    low,
+                    high,
+                    range,
+                    fade_with_distance: flags & 1 != 0,
+                    broadcast: flags & 2 != 0,
+                });
+            }
+        }
         Some(UiPack {
             fonts,
             screens,
@@ -704,6 +864,8 @@ impl UiPack {
             icons,
             hud,
             strings,
+            weapons,
+            rumbles,
         })
     }
 
@@ -726,6 +888,21 @@ impl UiPack {
             .iter()
             .find(|(n, _)| n.eq_ignore_ascii_case(name))
             .map(|(_, t)| *t)
+    }
+
+    /// Weapon `name`'s HUD facts: its own, else its base weapon's (`m4_reflex_mp` -> `m4_mp`).
+    pub fn weapon(&self, name: &str) -> Option<&HudWeapon> {
+        self.weapons.iter().find(|w| w.name == name).or_else(|| {
+            let base = name.split('_').next().unwrap_or(name);
+            self.weapons
+                .iter()
+                .find(|w| w.name.strip_suffix("_mp") == Some(base))
+        })
+    }
+
+    /// Rumble `name`.
+    pub fn rumble(&self, name: &str) -> Option<&Rumble> {
+        self.rumbles.iter().find(|r| r.name == name)
     }
 
     pub fn screen(&self, name: &str) -> Option<&Screen> {
@@ -857,9 +1034,38 @@ mod tests {
                 }],
             }],
             strings: vec![("MPUI_RUST".into(), "Rust".into())],
+            weapons: vec![HudWeapon {
+                name: "cheytac_mp".into(),
+                overlay: 4,
+                reticle_side: NONE,
+                ads_overlay_width: 220.0,
+                kill_icon_ratio: 1,
+                fire_rumble: 0,
+                ..HudWeapon::default()
+            }],
+            rumbles: vec![Rumble {
+                name: "sniper_fire".into(),
+                duration_ms: 400,
+                low: vec![(0.0, 1.0), (1.0, 0.0)],
+                high: vec![(0.0, 0.5)],
+                range: 0.0,
+                fade_with_distance: false,
+                broadcast: true,
+            }],
         };
         let back = UiPack::decode(&p.encode()).expect("decodes");
         assert_eq!(back, p);
+        assert_eq!(back.weapon("cheytac_fmj_mp").map(|w| w.overlay), Some(4));
+        assert_eq!(back.rumble("sniper_fire").map(|r| r.low.len()), Some(2));
+        // A pack from before the HUD round ends after the strings: it decodes with no weapons or rumbles.
+        let old = UiPack {
+            weapons: Vec::new(),
+            rumbles: Vec::new(),
+            ..p.clone()
+        };
+        let mut b = old.encode();
+        b.truncate(b.len() - 4);
+        assert_eq!(UiPack::decode(&b), Some(old));
         assert_eq!(
             image_field::from_dvar("loadoutPerk2"),
             Some(image_field::PERK_2)
