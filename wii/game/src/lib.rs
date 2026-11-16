@@ -999,6 +999,8 @@ fn run_map(
         Err(game_core::world::LoadError::TooManyTextures) => return fail(0xe08020ff),
         Err(_) => return fail(0xc020c0ff),
     };
+    // Time the world's stages (telemetry `wvis` / `wcul` / `wsrt` / `wsub`).
+    world.clock = Some(clock_us);
     // The players' bodies (none with an older pack: placeholder boxes then).
     let mut characters = character::Characters::load(bytes, common, |i| world.texture(i), gfx);
     // MW2's effects (none with an older pack: placeholder flashes then).
@@ -1534,6 +1536,8 @@ fn run_map(
     let mut rects: Vec<Rect> = Vec::with_capacity(4096);
     let mut frame_start = ffi::us();
     let mut last_mem_s = u32::MAX;
+    // GX FIFO bytes written and high-watermark stops, at the last frame's end (telemetry `fifo` / `full`).
+    let mut fifo_mark = unsafe { (ffi::mwf_fifo_bytes(), ffi::mwf_fifo_overflows()) };
     // Gamepad look (IW4L): the sticks' learned range, the look's state between steps, settings.
     let mut sticks = look::StickRange::default();
     let mut look_state = look::LookState::default();
@@ -3307,6 +3311,10 @@ fn run_map(
             fx.draw_marks(&cam, now);
         }
         sections[section::WORLD] = lap(&mut mark);
+        sections[section::WLD_VIS] = world.cost.vis_us;
+        sections[section::WLD_CULL] = world.cost.cull_us;
+        sections[section::WLD_SORT] = world.cost.sort_us;
+        sections[section::WLD_SUBMIT] = world.cost.submit_us;
         // The other players' bodies (timed with the placeholder boxes as `bod`).
         if let (Some(k), Some(r)) = (watching.as_ref(), replay.as_mut()) {
             r.draw(
@@ -4240,6 +4248,12 @@ fn run_map(
         } else {
             (0, 0)
         };
+        let fifo_now = unsafe { (ffi::mwf_fifo_bytes(), ffi::mwf_fifo_overflows()) };
+        let (fifo_bytes, fifo_full) = (
+            fifo_now.0.wrapping_sub(fifo_mark.0),
+            fifo_now.1.wrapping_sub(fifo_mark.1),
+        );
+        fifo_mark = fifo_now;
         devlog::frame(
             ffi::ms(),
             &telemetry::Frame {
@@ -4252,6 +4266,8 @@ fn run_map(
                 draws: stats.batches,
                 mem1_free,
                 mem2_free,
+                fifo_bytes,
+                fifo_full,
             },
         );
         // The GPU's own counters (zeros under Dolphin).

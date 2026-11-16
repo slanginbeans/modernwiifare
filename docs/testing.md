@@ -27,7 +27,7 @@ Also say per round: did it crash (the log then has no summary line), did sound p
 - Header: build, map, bots, class, free MEM1 / MEM2 at start, `pace` (retraces a frame: 2 under Options > FRAME RATE
   STEADY 30, 1 UNCAPPED); then the load time and memory after loading.
 - Every second: fps, average / worst frame, CPU time and GPU wait (frames are pipelined: the wait for the *previous* frame's GPU work at the end of this one; near 0 means the CPU is the slower side, large means the GPU is), `idle` (under STEADY 30, the wait for the frame's turn on screen: the headroom left), and the CPU split: input, player movement, gun,
-  bots (all the arena's work; `bai` / `bmv` / `bgun` are the bots' thinking, moving and shooting within it), world draw submit, other players' bodies (characters: pose, CPU skinning and draw submit; or the placeholder boxes), viewmodel, HUD; triangles and draws; free memory (every 5 s). Then the GPU's own counters (`GX_SetGPMetric`, four pairs taken in
+  bots (all the arena's work; `bai` / `bmv` / `bgun` are the bots' thinking, moving and shooting within it), world draw submit (`wld`, with destructible objects and bullet marks; `wvis` / `wcul` / `wsrt` / `wsub` are the map's portal walk, culling, sort and draw calls within it), other players' bodies (characters: pose, CPU skinning and draw submit; or the placeholder boxes), viewmodel, HUD; triangles and draws; `fifo` (KB the CPU wrote to the GX FIFO a frame) and `full` (times that second the FIFO reached its high watermark: each stops the CPU until the GPU has drained half of it, inside whichever section was drawing, so nonzero means the GPU is the slower side even when `gpu` is near 0); free memory (every 5 s). Then the GPU's own counters (`GX_SetGPMetric`, four pairs taken in
   turn, each for about a second; zeros or missing under Dolphin, which doesn't count them): `gbusy` (ms a frame the
   GPU worked: its clocks less those its transform unit waited for input), `gidle` (% of clocks it waited for input:
   high means the CPU is the slower side), `gxo` (ms a frame the transform unit waited on the pixel end: fill-bound),
@@ -54,6 +54,14 @@ match, none while a map loads, so a script runs the same on every machine. Scrip
 whatever Options > FRAME RATE says (they count frames), until they say `pace`. `tools/autoplay/pace30.txt` plays
 a match uncapped, at `pace 2` and uncapped again: its S rows read `fps=29 fr=33.36/33.36` with `idle=` around 22 ms
 in the middle (Dolphin, `mp_rust`). Delete `autoplay.txt` afterwards, or the game plays it on every start.
+
+`tools/autoplay/world_perf_terminal.txt` / `world_perf_rust.txt` hold three fixed views each (the heaviest from the
+spawns, bots frozen, ~4 s a view, a shot each) for comparing the world draw's cost (`wld` and its stages, `fifo`)
+between builds on the same machine; delete `out/dolphin/sd/apps/mwf_game/debug.dat` first. On the host,
+`MWF_BENCH_PACK=<map>.wpk cargo test -p game_core --release --test world_bench -- --ignored --nocapture` draws the
+world from every spawn eight ways and prints the calls per view (matrix loads, array binds, state and tint changes),
+the host time by stage and a hash of what was drawn (each display list with its state, arrays and matrix, in order):
+`MWF_BENCH_EXPECT=<hash>` fails if a change alters the picture or the order.
 
 `tools/autoplay/ks_tour.txt` calls killstreaks from the debug menu's GIVE lines (care package, emergency airdrop with
 its crates' capture, Predator, sentry, precision airstrike); `tools/autoplay/ks_air.txt` the stealth bomber, attack

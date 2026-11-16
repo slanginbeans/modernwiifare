@@ -21,7 +21,9 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 
 /// CPU sections timed each frame (µs). Keep in sync with [`SECTION_NAMES`]. `BOTS` (`bot`) is all the arena's work;
-/// `BOT_THINK` / `BOT_MOVE` / `BOT_GUN` (`bai` / `bmv` / `bgun`) are the bots' parts of it.
+/// `BOT_THINK` / `BOT_MOVE` / `BOT_GUN` (`bai` / `bmv` / `bgun`) are the bots' parts of it. `WORLD` (`wld`) is
+/// the world draw with destructible objects and bullet marks; `WLD_VIS` / `WLD_CULL` / `WLD_SORT` / `WLD_SUBMIT`
+/// (`wvis` / `wcul` / `wsrt` / `wsub`) are the map's stages within it (`world::WorldCost`).
 pub mod section {
     pub const INPUT: usize = 0;
     pub const PLAYER: usize = 1;
@@ -34,11 +36,16 @@ pub mod section {
     pub const BOT_THINK: usize = 8;
     pub const BOT_MOVE: usize = 9;
     pub const BOT_GUN: usize = 10;
-    pub const COUNT: usize = 11;
+    pub const WLD_VIS: usize = 11;
+    pub const WLD_CULL: usize = 12;
+    pub const WLD_SORT: usize = 13;
+    pub const WLD_SUBMIT: usize = 14;
+    pub const COUNT: usize = 15;
 }
 
 pub const SECTION_NAMES: [&str; section::COUNT] = [
-    "in", "mv", "gun", "bot", "wld", "bod", "vm", "hud", "bai", "bmv", "bgun",
+    "in", "mv", "gun", "bot", "wld", "bod", "vm", "hud", "bai", "bmv", "bgun", "wvis", "wcul",
+    "wsrt", "wsub",
 ];
 
 /// One frame's numbers.
@@ -58,6 +65,10 @@ pub struct Frame {
     /// Free MEM1 heap and MEM2 (bytes; 0 = unknown).
     pub mem1_free: u32,
     pub mem2_free: u32,
+    /// Bytes the CPU wrote to the GX FIFO this frame, and the times it filled to its high watermark (the CPU then
+    /// waits for the GPU inside whatever section was drawing: the GPU, not the CPU, is the slower side).
+    pub fifo_bytes: u32,
+    pub fifo_full: u32,
 }
 
 /// Frame-time histogram: 0.25 ms bins up to 64 ms (last bin: everything above).
@@ -82,6 +93,8 @@ struct Second {
     sections: [u64; section::COUNT],
     triangles: u64,
     draws: u64,
+    fifo_bytes: u64,
+    fifo_full: u64,
 }
 
 pub struct Telemetry {
@@ -97,6 +110,7 @@ pub struct Telemetry {
     total_cpu: u64,
     total_gpu: u64,
     total_idle: u64,
+    total_fifo_full: u64,
     /// Retraces a frame (1: as fast as ready; 2: steady 30), and the frames past that pacing's budget.
     pace: u32,
     over_pace: u64,
@@ -190,6 +204,7 @@ impl Telemetry {
             total_cpu: 0,
             total_gpu: 0,
             total_idle: 0,
+            total_fifo_full: 0,
             pace: 1,
             over_pace: 0,
             gpu_last: [GpuCounters::default(); GPU_SETS],
@@ -268,6 +283,9 @@ impl Telemetry {
         }
         s.triangles += u64::from(f.triangles);
         s.draws += u64::from(f.draws);
+        s.fifo_bytes += u64::from(f.fifo_bytes);
+        s.fifo_full += u64::from(f.fifo_full);
+        self.total_fifo_full += u64::from(f.fifo_full);
         self.total_frames += 1;
         self.total_cpu += u64::from(f.cpu_us);
         self.total_gpu += u64::from(f.gpu_us);
@@ -309,7 +327,14 @@ impl Telemetry {
                 let _ = write!(Buf(&mut l), " {n}=");
                 ms2(&mut l, u64::from(v));
             }
-            let _ = write!(Buf(&mut l), " tris={} draws={}", f.triangles, f.draws);
+            let _ = write!(
+                Buf(&mut l),
+                " tris={} draws={} fifo={}k full={}",
+                f.triangles,
+                f.draws,
+                f.fifo_bytes / 1024,
+                f.fifo_full
+            );
             self.buf.extend_from_slice(&l);
             self.buf.push(b'\n');
         }
@@ -348,9 +373,11 @@ impl Telemetry {
         }
         let _ = write!(
             Buf(&mut l),
-            " tris={} draws={} mem1={}k mem2={}k",
+            " tris={} draws={} fifo={}k full={} mem1={}k mem2={}k",
             s.triangles / n,
             s.draws / n,
+            s.fifo_bytes / n / 1024,
+            s.fifo_full,
             self.last_mem.0 / 1024,
             self.last_mem.1 / 1024
         );
@@ -404,6 +431,7 @@ impl Telemetry {
             let _ = write!(Buf(&mut l), " {name}=");
             ms2(&mut l, v / n);
         }
+        let _ = write!(Buf(&mut l), " full={}", self.total_fifo_full);
         gpu_fields(&mut l, &self.gpu_total);
         for (what, c) in &self.events {
             let _ = write!(Buf(&mut l), " ev.{what}={c}");
@@ -433,11 +461,15 @@ mod tests {
             cpu_us: us / 2,
             gpu_us: us / 4,
             idle_us: 0,
-            sections: [100, 2000, 300, 1500, 3000, 50, 900, 200, 600, 500, 300],
+            sections: [
+                100, 2000, 300, 1500, 3000, 50, 900, 200, 600, 500, 300, 400, 700, 100, 1600,
+            ],
             triangles: 120_000,
             draws: 400,
             mem1_free: 4 << 20,
             mem2_free: 10 << 20,
+            fifo_bytes: 96 << 10,
+            fifo_full: 0,
         }
     }
 

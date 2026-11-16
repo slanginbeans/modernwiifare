@@ -196,8 +196,13 @@ big maps, then TMEM preloading, CI palettes for UI, a particle coverage cap.
    frame = max(CPU, GPU), capped at one per retrace; not yet measured on hardware).
 3. Draw submit: done: opaque static-model surfaces draw surface by surface, so instances of one model change only
    their light colour (`mwf_world_tint`, one konst register; the overlay's STATE shows full+tint changes); opaque
-   world batches presorted at load (a frame sorts only models and blended surfaces). Not yet: shared quantisation
-   origins.
+   world batches presorted at load (a frame sorts only models and blended surfaces). World submission cut
+   (2026-11-16, `docs/perf.md`): GX state sent only where it changed, one vertex-cache flush a frame instead of one
+   per array rebind, a 1 MiB GX FIFO (`mp_terminal` wrote ~415 KB a frame into 256 KB, stopping the CPU at the high
+   watermark ~100 times a second), culling over compact records and cell / grid groups, a radix sort, one matrix
+   product per instance: Dolphin `wld` -21% on `mp_terminal` and `mp_rust`, same pictures. Not yet: shared
+   quantisation origins (most draws still load a matrix: each compact batch has its own origin), GX-indexed matrix
+   loads, paired singles (Rust's PowerPC inline assembly is unstable; it would go in the C shim).
 4. Viewmodel and characters: skinned straight into their MEM2 buffers with a multiply for the weights (no copy, no
    divide). The viewmodel's rigid vertices (one bone at full weight) are placed by GX with their bone's matrix (a
    matrix index per vertex, at most ten per draw); only blended vertices are skinned on the CPU. Not yet: the same
@@ -205,8 +210,9 @@ big maps, then TMEM preloading, CI palettes for UI, a particle coverage cap.
 5. ~~Weapon-file hitch at spawn~~ done differently: a whole class set is ~4-8 MB (files average 2.1 MB), too much to
    keep every class's loaded, so the next life's files stream in during the death screen (192 KB a frame, from 1 s
    after death); what's left at the respawn loads then.
-6. Finer telemetry: the bots' CPU split into thinking, moving and shooting (`bai` / `bmv` / `bgun`, inside `bot`).
-   Not yet: trace counts, A* expansions, world draw stages, GPU metrics. Bot trims wait for these numbers.
+6. Finer telemetry: the bots' CPU split into thinking, moving and shooting (`bai` / `bmv` / `bgun`, inside `bot`);
+   the world draw's stages (`wvis` / `wcul` / `wsrt` / `wsub`, inside `wld`); GX FIFO bytes a frame and high-watermark
+   stops (`fifo` / `full`); GPU metrics. Not yet: trace counts, A* expansions. Bot trims wait for these numbers.
 
 ## Menus like MW2's
 Done (2026-11-14): fonts and the main menu screen baked (`wpk::ui`, `UIPK`), drawn on the Wii as textured quads.
