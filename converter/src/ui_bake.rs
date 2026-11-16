@@ -133,6 +133,16 @@ const STRINGS: &[&str] = &[
     "MPUI_END_GAME2",
     "MENU_YES",
     "MENU_NO",
+    // The killcam, last stand and One Man Army's notices (`_killcam.gsc`, `_damage.gsc`, `_perkfunctions.gsc`).
+    "MP_KILLCAM",
+    "MP_FINAL_KILLCAM",
+    "PLATFORM_PRESS_TO_SKIP",
+    "PLATFORM_PRESS_TO_RESPAWN",
+    "PLATFORM_PRESS_TO_COPYCAT",
+    "PLATFORM_COWARDS_WAY_OUT",
+    "MPUI_LAST_STAND",
+    "MPUI_FINAL_STAND",
+    "MPUI_CHANGING_KIT",
 ];
 
 /// Items wider than this (virtual pixels) are layers the menu's scripts scroll across the screen (MW2's cloud
@@ -153,7 +163,7 @@ const ITEM_TYPE_BUTTON: i32 = 1;
 const ITEM_TYPE_OWNERDRAW: i32 = 8;
 /// HUD images the game draws by name (`hud_iw4` compass pings and the radar sweep, the magazine's rounds), and the
 /// lobby's player rows.
-pub const ICONS: [&str; 16] = [
+pub const ICONS: [&str; 17] = [
     "ks_button_check_bg",
     "ks_button_check_fg",
     "ks_button_selected_bar",
@@ -170,6 +180,8 @@ pub const ICONS: [&str; 16] = [
     "ammo_counter_rocket_mp",
     "ammo_counter_beltbullet_mp",
     "playercard_short_bg",
+    // Bomb Squad's mark over enemy explosives (`_weapons.gsc` `setupBombSquad`).
+    "waypoint_bombsquad",
 ];
 
 #[derive(Debug, Default)]

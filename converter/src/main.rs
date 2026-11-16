@@ -1635,6 +1635,17 @@ fn run_common(args: &[String]) -> ExitCode {
         println!("  kept MW2's stock value for: {}", missing.join(", "));
     }
     b.section(wpk::tag::RULES, 0, rules.encode());
+    let life = rules::read_life(&scripts);
+    println!(
+        "perk and killcam rules: {} of {} values read from the scripts",
+        life.found.count_ones(),
+        wpk::life_rules::found::ALL.count_ones()
+    );
+    let missing = rules::missing_life(&life);
+    if !missing.is_empty() {
+        println!("  kept MW2's stock value for: {}", missing.join(", "));
+    }
+    b.section(wpk::tag::LIFE_RULES, 0, life.encode());
     match built {
         Some((ui, r)) => {
             println!(
