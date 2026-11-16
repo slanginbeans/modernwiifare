@@ -38,7 +38,9 @@ use std::path::{Path, PathBuf};
 ///     HUD layouts (`weaponbar_sd`, `scorebar_sd`, `dpad_sd`), the ammo counter's rounds and map / mode strings
 ///     (`UIPK`).
 /// 37: map preview pictures (`map:<map>` UI icons from `preview_<map>`) and their slots; MW2's menu sounds (`UISN`).
-pub const REVISION: u32 = 37;
+/// 38: Create-a-Class in MW2's layout (the class page's popups: weapon type, weapon, attachment, perk, reset class;
+/// the killstreak page, the playercard popup), choosers' descriptions and Pro perks (strings, icons).
+pub const REVISION: u32 = 38;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

@@ -148,7 +148,14 @@ pub mod image_field {
     pub const DEATHSTREAK: u8 = 9;
     pub const EQUIPMENT: u8 = 10;
     pub const OFFHAND: u8 = 11;
+    /// The loadout fields (the class panel's images).
     pub const COUNT: usize = 12;
+    /// Not a loadout field: the item a chooser popup has focused (MW2's `ui_selected_ref`), and its Pro version.
+    /// The page passes these (and the streaks) as their whole icon key.
+    pub const SELECTED: u8 = 12;
+    pub const SELECTED_PRO: u8 = 13;
+    /// Not a loadout field: the player's killstreaks (the playercard popup), passed as their icon key.
+    pub const STREAK_1: u8 = 14;
 
     /// The field MW2's dvar `loadout<...>` is.
     pub fn from_dvar(dvar: &str) -> Option<u8> {
@@ -174,6 +181,9 @@ pub mod image_field {
 /// `img:attachment:<name>`, `img:perk:<name>` (perks, deathstreaks, equipment).
 pub fn image_key(field: u8, item: &str) -> alloc::string::String {
     use image_field::*;
+    if field >= SELECTED {
+        return alloc::string::String::from(item);
+    }
     let kind = match field {
         PRIMARY | SECONDARY | OFFHAND => "weapon",
         PRIMARY_ATTACHMENT
@@ -222,6 +232,36 @@ pub mod od {
     /// the UI pack's icon [`super::map_preview_key`]. Its `texture` field holds how many of the screen's quads are
     /// drawn before it (MW2's item order: the lobby's name bars go over the picture).
     pub const MAP_PREVIEW: u16 = 0xF001;
+    /// Ours: a popup whose frame MW2 sizes by script to its buttons (`y` its top, `h` the height it was baked at).
+    /// The front end stretches the screen's quads of that height to the rows it shows.
+    pub const POPUP_FRAME: u16 = 0xF002;
+}
+
+/// The order MW2's menus list choices in: strings of the UI pack ([`UiPack::string`]) holding names, space
+/// separated, as the menus spell them.
+pub mod order {
+    /// The Create-a-Class popups' choices: weapons (`m4`), perks (`specialty_marathon`, `bling`), equipment
+    /// (`frag_grenade_mp`), special grenades (`flash_grenade`).
+    pub const CAC: &str = "order:cac";
+    /// The killstreak page's rows (`uav`, `airdrop`, ...); killstreaks it doesn't list are not offered.
+    pub const STREAKS: &str = "order:streaks";
+    /// An order is stored in parts of at most this many bytes (a pack string's length is one byte).
+    pub const PART_MAX: usize = 250;
+
+    /// The key of part `n` of order `base` (`order:cac:0`).
+    pub fn part(base: &str, n: usize) -> alloc::string::String {
+        alloc::format!("{base}:{n}")
+    }
+
+    /// Where `name` (a catalog name) stands in `order`: an entry naming it as is, without `specialty_`, or without
+    /// `_mp`. `None` when it isn't there.
+    pub fn rank(order: &str, name: &str) -> Option<usize> {
+        let bare = name.strip_prefix("specialty_").unwrap_or(name);
+        let short = name.strip_suffix("_mp").unwrap_or(name);
+        order
+            .split_ascii_whitespace()
+            .position(|e| e == name || e == bare || e == short)
+    }
 }
 
 /// The icon key of a map's preview picture (`map:mp_rust`).
@@ -703,6 +743,16 @@ impl UiPack {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn ranks_names_in_a_menu_order() {
+        let o = "m4 famas bling frag_grenade_mp flash_grenade";
+        assert_eq!(order::rank(o, "famas"), Some(1));
+        assert_eq!(order::rank(o, "specialty_bling"), Some(2));
+        assert_eq!(order::rank(o, "frag_grenade_mp"), Some(3));
+        assert_eq!(order::rank(o, "flash_grenade_mp"), Some(4));
+        assert_eq!(order::rank(o, "ak47"), None);
+    }
 
     #[test]
     fn round_trips() {

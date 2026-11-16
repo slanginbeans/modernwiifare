@@ -794,6 +794,53 @@ fn build_ui(
             }
         }
     }
+    // The choosers' texts (`desc:perk:<name>`: a perk's, equipment's or deathstreak's description, perkTable column
+    // 4; `name:perk:<pro>` / `desc:perk:<pro>`: its Pro version's, by column 8; `desc:streak:<name>`: a killstreak's,
+    // killstreakTable column 3) and Pro icons (MW2 shows the perk's icon + "_upgrade").
+    let mut ui_strings: Vec<(String, String)> = Vec::new();
+    for z in &zones {
+        if let Some(t) = z.links.tables.get("mp/perktable.csv") {
+            let row_of = |n: &str| (1..t.rows()).find(|&r| t.cell(r, 1) == n);
+            for r in 1..t.rows() {
+                let name = t.cell(r, 1);
+                if name.is_empty()
+                    || !matches!(
+                        t.cell(r, 5),
+                        "perk1" | "perk2" | "perk3" | "perk4" | "equipment"
+                    )
+                {
+                    continue;
+                }
+                if let Some(d) = localize.get(t.cell(r, 4)) {
+                    ui_strings.push((format!("desc:perk:{name}"), d.clone()));
+                }
+                let up = t.cell(r, 8);
+                if up.is_empty() || up == "specialty_null" {
+                    continue;
+                }
+                if let Some(u) = row_of(up) {
+                    if let Some(n) = localize.get(t.cell(u, 2)) {
+                        ui_strings.push((format!("name:perk:{up}"), n.clone()));
+                    }
+                    if let Some(d) = localize.get(t.cell(u, 4)) {
+                        ui_strings.push((format!("desc:perk:{up}"), d.clone()));
+                    }
+                }
+                let icon = t.cell(r, 3);
+                let key = format!("img:perk:{up}");
+                if !icon.is_empty() && !class_images.iter().any(|(k, _)| *k == key) {
+                    class_images.push((key, format!("{icon}_upgrade")));
+                }
+            }
+        }
+        if let Some(t) = z.links.tables.get("mp/killstreaktable.csv") {
+            for r in 1..t.rows() {
+                if let Some(d) = localize.get(t.cell(r, 3)) {
+                    ui_strings.push((format!("desc:streak:{}", t.cell(r, 1)), d.clone()));
+                }
+            }
+        }
+    }
     let capped: HashMap<String, u32> = class_images
         .iter()
         .map(|(k, m)| {
@@ -865,7 +912,41 @@ fn build_ui(
         }
     }
     extra.extend(class_images);
-    let (mut pack, report) = ui_bake::bake(&ui, &localize, &extra, |name| lookup(name, tex));
+    let (mut pack, report) = ui_bake::bake(&ui, &localize, &extra, &ui_strings, |name| {
+        lookup(name, tex)
+    });
+    // Dev aid (`MWF_MENU_DUMP=1`): the baked screens' buttons, labels, images and owner draws.
+    if std::env::var_os("MWF_MENU_DUMP").is_some() {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        for sc in &pack.screens {
+            let _ = writeln!(
+                s,
+                "== {} ({} quads) buttons={:?}",
+                sc.name,
+                sc.quads.len(),
+                sc.buttons
+            );
+            for (k, l) in &sc.labels {
+                let _ = writeln!(
+                    s,
+                    "  label kind={k} rect=({},{},{},{}) align={} ty={} font={} {:?}",
+                    l.x, l.y, l.w, l.h, l.align, l.text_y, l.font, l.text
+                );
+            }
+            for i in &sc.images {
+                let _ = writeln!(
+                    s,
+                    "  image field={} rect=({},{},{},{})",
+                    i.field, i.x, i.y, i.w, i.h
+                );
+            }
+            for o in &sc.owner_draws {
+                let _ = writeln!(s, "  od {} rect=({},{},{},{})", o.od, o.x, o.y, o.w, o.h);
+            }
+        }
+        let _ = std::fs::write("out/ui_baked.txt", s);
+    }
     // The map page's and the lobby's pictures: MW2's `preview_<map>` images (streamed, in main/*.iwd), as
     // `map:<map>` icons, scaled to the 272-wide slot they fill.
     match zone_textures::main_dir(&a.game).map(|m| asset_transport::IwdIndex::open(&m)) {

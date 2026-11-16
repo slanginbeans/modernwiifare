@@ -44,7 +44,9 @@ Also say per round: did it crash (the log then has no summary line), did sound p
 so a script runs the same on every machine. Delete `autoplay.txt` afterwards, or the game plays it on every start.
 
 `tools/autoplay/menu_tour.txt` walks every menu and the HUD: the lobby, Game Setup, the map, mode and rules pages,
-a Team Deathmatch, the START menu over the game, Choose Class, Options (the safe area at 80% and back), End Game and
+Create-a-Class (the class page, the weapon type, weapon, attachment and perk popups, Rename, Reset Class), the
+Playercard popup and the Killstreak Rewards page, a Team Deathmatch (the class menu as it starts), the START menu
+over the game, Choose Class, Options (the safe area at 80% and back), End Game and
 its question, back to the lobby and the main menu.
 
 On the PC, `tools/dolphin-test.ps1 -Dolphin <Dolphin.exe>` (or `MWF_DOLPHIN`) runs a script in Dolphin on the

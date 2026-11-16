@@ -37,7 +37,13 @@ pub struct Page<'a> {
     pub backdrop: bool,
     /// The map whose preview picture the screen shows (`mp_rust`; empty: none).
     pub preview: &'a str,
+    /// The lines ticked, with a check box at each line's left (MW2's killstreak rows); empty: no boxes.
+    pub checks: &'a [bool],
 }
+
+/// The killstreak rows' check box (MW2's `ks_button_check_*`), and the bar behind a ticked row.
+const CHECK_SIZE: f32 = 20.0;
+const CHECK_BAR_RGBA: u32 = 0xcc99_1aff;
 
 /// MW2's main menu has no page name: ours goes above the first button, inside the 0.85 safe area (640 Ã— 0.075).
 const TITLE_X: f32 = 48.0;
@@ -116,6 +122,20 @@ fn button_x(ui: &UiPack, b: &ButtonStyle, s: &str, x: f32, w: f32) -> f32 {
     }
 }
 
+/// Below a popup's last row, its frame goes on this far (MW2's Game Setup popup).
+const POPUP_PAD: f32 = 2.0;
+
+/// How many rows of the list fit above the back button (or the bottom of the safe area).
+fn list_rows(screen: &wpk::ui::Screen, b: &ButtonStyle) -> usize {
+    let bottom = screen.back.map_or(440.0, |r| r[1] - b.h * 0.5);
+    (((bottom - b.y) / b.step) as usize).max(1)
+}
+
+/// The rows a popup shows for `lines` lines.
+fn popup_rows(screen: &wpk::ui::Screen, b: &ButtonStyle, lines: usize) -> usize {
+    lines.clamp(1, list_rows(screen, b))
+}
+
 /// Lay `page` out (falling back to the main menu's look when its screen isn't in the pack).
 pub fn layout(ui: &UiPack, page: &Page<'_>, out: &mut Vec<Quad>) {
     let Some(screen) = ui.screen(page.screen).or_else(|| ui.screen("main")) else {
@@ -148,8 +168,26 @@ pub fn layout(ui: &UiPack, page: &Page<'_>, out: &mut Vec<Quad>) {
                 .collect()
         })
         .unwrap_or_default();
+    // A popup's frame, sized to the rows it shows as MW2's scripts do (never smaller than it was baked).
+    let frame = screen
+        .owner_draws
+        .iter()
+        .find(|o| o.od == wpk::ui::od::POPUP_FRAME)
+        .zip(screen.buttons)
+        .map(|(o, b)| {
+            let rows = popup_rows(screen, &b, page.lines.len());
+            let list = b.y + rows as f32 * b.step - o.y + POPUP_PAD;
+            (o.y, o.h, o.h.max(list))
+        });
     for (n, q) in screen.quads.iter().enumerate() {
         out.extend(previews.iter().filter(|(at, _)| *at == n).map(|(_, p)| *p));
+        if let Some((top, baked, h)) = frame
+            && (q.y - top).abs() < 0.5
+            && (q.h < 0.5 || (q.h - baked).abs() < 0.5)
+        {
+            out.push(Quad { h, ..*q });
+            continue;
+        }
         // Over the frozen game: the screen's own opaque full-screen background becomes a dark veil (its translucent
         // layers, like the pause menu's dimming, stay).
         let full = q.w.abs() >= 600.0 && q.h.abs() >= 440.0;
@@ -228,14 +266,35 @@ pub fn layout(ui: &UiPack, page: &Page<'_>, out: &mut Vec<Quad>) {
             out,
         );
     }
-    let bottom = screen.back.map_or(440.0, |r| r[1] - b.h * 0.5);
-    let rows = (((bottom - b.y) / b.step) as usize).max(1);
+    let rows = list_rows(screen, &b);
     let text_h = b.text_scale * TEXT_EM;
     let small = ui.font("fonts/smallfont").unwrap_or(0);
     let values = page.slots.is_empty();
     for (row, i) in menu::window(page.selected, page.lines.len(), rows).enumerate() {
         let l = &page.lines[i];
         let y = b.y + row as f32 * b.step;
+        if let Some(&ticked) = page.checks.get(i) {
+            let icon = |name: &str, x: f32, w: f32, rgba: u32, out: &mut Vec<Quad>| {
+                if let Some(t) = ui.icon(name) {
+                    out.push(Quad {
+                        x,
+                        y,
+                        w,
+                        h: CHECK_SIZE,
+                        uv: [0.0, 0.0, 1.0, 1.0],
+                        rgba,
+                        texture: t,
+                    });
+                }
+            };
+            if ticked {
+                icon("ks_button_selected_bar", b.x, b.w, CHECK_BAR_RGBA, out);
+            }
+            icon("ks_button_check_bg", b.x, CHECK_SIZE, 0x0000_00ff, out);
+            if ticked {
+                icon("ks_button_check_fg", b.x, CHECK_SIZE, 0xffff_ffff, out);
+            }
+        }
         if i == page.selected && b.bar != NONE {
             out.push(Quad {
                 x: b.x,
@@ -515,6 +574,7 @@ mod tests {
             inline_values: false,
             backdrop: true,
             preview: "",
+            checks: &[],
         };
         let mut q = Vec::new();
         layout(&ui, &page, &mut q);
@@ -529,6 +589,71 @@ mod tests {
         assert!(q.iter().any(|q| q.x == 300.0));
         // The footer sits in the back button's rect.
         assert!(q.iter().any(|q| q.y >= 400.0));
+    }
+
+    fn lines<'a>(texts: &'a [&'a str]) -> Vec<PageLine<'a>> {
+        texts
+            .iter()
+            .map(|t| PageLine {
+                text: t,
+                value: None,
+                enabled: true,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_popup_frame_fits_its_rows_and_rows_get_check_boxes() {
+        let mut ui = pack();
+        let s = &mut ui.screens[0];
+        // At the popup's top: a frame quad baked without a height (sized by script), and a taller panel.
+        s.quads = vec![
+            Quad {
+                y: 26.0,
+                h: 0.0,
+                texture: 4,
+                ..Quad::default()
+            },
+            Quad {
+                y: 26.0,
+                h: 120.0,
+                texture: 5,
+                ..Quad::default()
+            },
+        ];
+        s.owner_draws.push(wpk::ui::OwnerDraw {
+            od: wpk::ui::od::POPUP_FRAME,
+            y: 26.0,
+            h: 0.0,
+            ..wpk::ui::OwnerDraw::default()
+        });
+        ui.icons = vec![
+            ("ks_button_check_bg".into(), 7),
+            ("ks_button_check_fg".into(), 8),
+        ];
+        let rows = lines(&["A", "B", "C"]);
+        let page = Page {
+            screen: "s",
+            title: "",
+            lines: &rows,
+            selected: 0,
+            footer: "",
+            slots: &[],
+            images: &[],
+            inline_values: false,
+            backdrop: true,
+            preview: "",
+            checks: &[true, false, false],
+        };
+        let mut q = Vec::new();
+        layout(&ui, &page, &mut q);
+        // Rows from y 30, 20 apart: three end at 90, the frame 2 below (64 from its top).
+        let h = |t: u16| q.iter().find(|q| q.texture == t).map(|q| q.h);
+        assert_eq!(h(4), Some(30.0 + 60.0 - 26.0 + POPUP_PAD));
+        // A quad of another height than the baked frame's stays as it is.
+        assert_eq!(h(5), Some(120.0));
+        assert_eq!(q.iter().filter(|q| q.texture == 7).count(), 3);
+        assert_eq!(q.iter().filter(|q| q.texture == 8).count(), 1);
     }
 
     #[test]
@@ -546,6 +671,7 @@ mod tests {
             inline_values: false,
             backdrop: true,
             preview: "",
+            checks: &[],
         };
         let mut q = Vec::new();
         layout(&ui, &page, &mut q);

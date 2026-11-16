@@ -27,8 +27,10 @@ pub const FONTS: [&str; 8] = [
 /// Screens baked from MW2 menus: (our name, MW2 menu, x offset in virtual pixels). The scoreboard page is drawn
 /// inside MW2's centred 544-wide scoreboard frame, so its centre-aligned items move left by half of that.
 /// The console's private match: its lobby, the Game Setup popup over it, the map, game mode and rules pages, and
-/// the yes / no popup (MW2's End Game question).
-pub const SCREENS: [(&str, &str, f32); 12] = [
+/// the yes / no popup (MW2's End Game question). Create-a-Class: the class page and its popups (weapon type, weapon,
+/// attachment, perk, reset class), the killstreak page and the playercard popup it opens from; the rename popup is
+/// the Game Setup popup's frame.
+pub const SCREENS: [(&str, &str, f32); 20] = [
     ("minimap", "minimap_fullscreen", 0.0),
     ("main", "main_text", 0.0),
     ("class_select", "changeclass", 0.0),
@@ -41,11 +43,37 @@ pub const SCREENS: [(&str, &str, f32); 12] = [
     ("modes", "settings_gametype", 0.0),
     ("rules", "settings_quick_dm", 0.0),
     ("yesno", "popup_endgame", 0.0),
+    ("cac_category", "popup_cac_weapon_primary", 0.0),
+    ("cac_weapon", "popup_cac_assault_primary", 0.0),
+    ("cac_attach", "popup_primary_attachments", 0.0),
+    ("cac_perk", "popup_cac_perk1", 0.0),
+    ("cac_reset", "popup_cac_template", 0.0),
+    ("streaks", "menu_cas_popup", 0.0),
+    ("playercard", "popup_callsign", 0.0),
+    ("rename", "popup_gamesetup", 0.0),
 ];
 
-/// MW2's popups size their frame from the number of buttons in a script (their rects have no height): the Game
-/// Setup popup's frame covers its title bar and three buttons.
-const POPUP_HEIGHT: f32 = 86.0;
+/// Screens baked as MW2 popups: their frame is sized by script to their buttons (`od::POPUP_FRAME`), and the text
+/// of the focused item shows whatever its visibility test.
+const POPUPS: [&str; 8] = [
+    "setup",
+    "cac_category",
+    "cac_weapon",
+    "cac_attach",
+    "cac_perk",
+    "cac_reset",
+    "playercard",
+    "rename",
+];
+
+/// A popup's own menu-depth header tabs (`ui_tabDepth`, laid out by script): left out.
+const TAB_DEPTH: &str = "s:75695f7461624465707468";
+/// The killstreak rows' text offset (MW2's name button, right of the check box), and the focused row's text colour
+/// (dark on MW2's white focus bar).
+const STREAK_TEXT_X: f32 = 24.0;
+const STREAK_FOCUS_RGBA: u32 = 0x1010_10ff;
+/// Items of PC-only features left out: IW4x's unlock-token badge.
+const LEFT_OUT_MATERIALS: [&str; 1] = ["ks_button_check_unlocked"];
 
 /// The SD (480-line) HUD menus, laid out at run time inside the safe area: (our name, MW2 menu).
 pub const HUDS: [(&str, &str); 3] = [
@@ -55,7 +83,44 @@ pub const HUDS: [(&str, &str); 3] = [
 ];
 
 /// Localized strings the front end shows by key (map names and descriptions are added by prefix).
-const STRINGS: [&str; 12] = [
+const STRINGS: &[&str] = &[
+    // Create-a-Class: the class page's buttons, the weapon types, reset class's templates, the playercard.
+    "MPUI_CREATE_A_CLASS_CAP",
+    "MENU_CREATE_A_CLASS_CAPS",
+    "MENU_PRIMARY_CAPS",
+    "MENU_SECONDARY_CAPS",
+    "MENU_EQUIPMENT_CAPS",
+    "MENU_SPECIAL_GRENADE_CAPS",
+    "MENU_PERK1_CAPS",
+    "MENU_PERK2_CAPS",
+    "MENU_PERK3_CAPS",
+    "MENU_DEATHSTREAK_CAPS",
+    "MENU_RENAME_CAPS",
+    "MENU_RESET_CLASS_CAPS",
+    "MENU_ATTACHMENTS_CAPS",
+    "MENU_ASSAULT_RIFLES_CAPS",
+    "MENU_SMGS_CAPS",
+    "MENU_LMGS_CAPS",
+    "MENU_SNIPER_RIFLES_CAPS",
+    "MENU_RIOT_SHIELD_CAPS",
+    "MENU_MACHINE_PISTOLS_CAPS",
+    "MENU_SHOTGUNS_CAPS",
+    "MENU_HANDGUNS_CAPS",
+    "MENU_ROCKETS_CAPS",
+    "CLASS_DEFAULT_ASSAULT",
+    "CLASS_DEFAULT_SPECOPS",
+    "CLASS_DEFAULT_HEAVYGUNNER",
+    "CLASS_DEFAULT_DEMOLITIONS",
+    "CLASS_DEFAULT_SNIPER",
+    "MENU_PLAYERCARD_CAPS",
+    "MENU_TITLE_CAPS",
+    "MENU_EMBLEM_CAPS",
+    "MENU_KILLSTREAK_REWARDS_CAPS",
+    "MENU_START_GAME_CAPS",
+    "MENU_GAME_SETUP_CAPS",
+    "MENU_CHANGE_MAP_CAPS",
+    "MENU_OPTIONS_CAPS",
+    "MENU_NONE",
     "MPUI_DEATHMATCH",
     "MPUI_WAR",
     "MPUI_DOMINATION",
@@ -88,7 +153,10 @@ const ITEM_TYPE_BUTTON: i32 = 1;
 const ITEM_TYPE_OWNERDRAW: i32 = 8;
 /// HUD images the game draws by name (`hud_iw4` compass pings and the radar sweep, the magazine's rounds), and the
 /// lobby's player rows.
-pub const ICONS: [&str; 13] = [
+pub const ICONS: [&str; 16] = [
+    "ks_button_check_bg",
+    "ks_button_check_fg",
+    "ks_button_selected_bar",
     "compassping_player",
     "compassping_friendly_mp",
     "compassping_grenade",
@@ -180,8 +248,10 @@ fn label_of(p: &hud_iw4::ScreenPlacement, fonts: &[Font], item: &Item, text: Str
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn bake_screen(
     name: &str,
+    popup: bool,
     menu: &Menu,
     p: &hud_iw4::ScreenPlacement,
     fonts: &[Font],
@@ -193,7 +263,47 @@ fn bake_screen(
     let mut labels = Vec::new();
     let mut owner_draws = Vec::new();
     let mut images: Vec<wpk::ui::ImageSlot> = Vec::new();
+    // The slots' places (rect, text offset, alignment), each kept once (MW2 has one item per unlock state).
+    let mut slot_places: Vec<[i32; 6]> = Vec::new();
+    let slot_key = |item: &Item| {
+        let r = place(p, &item.rect);
+        [
+            r.x as i32,
+            r.y as i32,
+            r.w as i32,
+            r.h as i32,
+            item.text_align_y as i32,
+            item.text_align_mode,
+        ]
+    };
     for item in &menu.items {
+        if LEFT_OUT_MATERIALS.contains(&material(&item.background)) {
+            continue;
+        }
+        // The focused item's picture in a chooser, or the player's killstreaks (`selected_field`).
+        if let Some(pick) = item
+            .material_exp
+            .as_deref()
+            .and_then(|d| selected_field(d, popup, &images))
+        {
+            if let Some(field) = pick {
+                let r = place(p, &item.rect);
+                if !images
+                    .iter()
+                    .any(|i| i.field == field && i.x == r.x && i.y == r.y)
+                {
+                    images.push(wpk::ui::ImageSlot {
+                        field,
+                        x: r.x,
+                        y: r.y,
+                        w: r.w,
+                        h: r.h,
+                        rgba: rgba(item.fore_color),
+                    });
+                }
+            }
+            continue;
+        }
         // An image chosen from the class (whatever its visibility: MW2 shows a perk's icon either way, Pro or not).
         if let Some(field) = item.material_exp.as_deref().and_then(image_field) {
             let r = place(p, &item.rect);
@@ -259,6 +369,27 @@ fn bake_screen(
             });
             continue;
         }
+        let tab = item
+            .visible
+            .as_deref()
+            .is_some_and(|v| v.contains(TAB_DEPTH));
+        // In a popup, the focused item's texts (name, description) show whatever their test.
+        if popup
+            && !tab
+            && !shown(item)
+            && item.text.is_empty()
+            && item.item_type != ITEM_TYPE_BUTTON
+            && item.style == WINDOW_STYLE_EMPTY
+            && item.font != 0
+            && item.fore_color[3] > 0.0
+        {
+            let key = slot_key(item);
+            if !slot_places.contains(&key) {
+                slot_places.push(key);
+                labels.push((label_kind::SLOT, label_of(p, fonts, item, String::new())));
+            }
+            continue;
+        }
         if !shown(item)
             || item.item_type == ITEM_TYPE_BUTTON
             || item.rect.w.abs() > SCROLLING_LAYER_W
@@ -271,8 +402,16 @@ fn bake_screen(
             && (item.style == WINDOW_STYLE_EMPTY || item.font != 0 || !item.text.is_empty())
         {
             let kind = if item.text.is_empty() {
+                let key = slot_key(item);
+                if popup && slot_places.contains(&key) {
+                    continue;
+                }
+                slot_places.push(key);
                 label_kind::SLOT
-            } else if !labels.iter().any(|(k, _)| *k == label_kind::TITLE) {
+            } else if !labels.iter().any(|(k, _)| *k == label_kind::TITLE)
+                && (!popup || item.rect.y == 0.0)
+            {
+                // A popup's title is its header at the frame's top.
                 label_kind::TITLE
             } else {
                 label_kind::TEXT
@@ -332,6 +471,38 @@ fn bake_screen(
             texture,
         });
     }
+    if popup {
+        // The frame's top (a popup's rects start at its y 0) and the height its frame was baked at (0: sized by
+        // script alone).
+        let origin = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+            horz_align: 1,
+            vert_align: 1,
+        };
+        let h = menu
+            .items
+            .iter()
+            .filter(|i| {
+                i.rect.y == 0.0
+                    && i.rect.h < 400.0
+                    && i.rect.w.abs() >= 200.0
+                    && i.style != WINDOW_STYLE_EMPTY
+            })
+            .map(|i| place(p, &i.rect).h)
+            .fold(0.0, f32::max);
+        owner_draws.push(OwnerDraw {
+            od: wpk::ui::od::POPUP_FRAME,
+            x: 0.0,
+            y: place(p, &origin).y,
+            w: 0.0,
+            h,
+            texture: NONE,
+            rgba: 0,
+        });
+    }
     report.quads += quads.len();
     let back = menu
         .items
@@ -345,7 +516,12 @@ fn bake_screen(
     let buttons: Vec<&Item> = menu
         .items
         .iter()
-        .filter(|i| i.item_type == ITEM_TYPE_BUTTON && shown(i) && i.text != BACK_TEXT)
+        .filter(|i| {
+            i.item_type == ITEM_TYPE_BUTTON
+                && (shown(i) || popup)
+                && i.text != BACK_TEXT
+                && i.rect.y >= 0.0
+        })
         .collect();
     let style = buttons.first().map(|b| {
         let r = place(p, &b.rect);
@@ -426,12 +602,105 @@ fn image_field(dump: &str) -> Option<u8> {
     wpk::ui::image_field::from_dvar(dvar)
 }
 
+/// What a material expression shows besides the class: the item a chooser has focused (MW2's `ui_selected_ref`
+/// looked up in a table, or the `ui_info_icon` dvar), with `+ "_upgrade"` its Pro version, or (the playercard) the
+/// player's killstreaks in turn (`ui_info_icon` only in a popup). `None`: neither; `Some(None)`: a variant left out
+/// (MW2's locked look).
+fn selected_field(dump: &str, popup: bool, images: &[wpk::ui::ImageSlot]) -> Option<Option<u8>> {
+    use wpk::ui::image_field::{SELECTED, SELECTED_PRO, STREAK_1};
+    let strings = dump_strings(dump);
+    let has = |s: &str| strings.iter().any(|x| x.eq_ignore_ascii_case(s));
+    // (`ui_info_icon` outside a popup is the map page's preview.)
+    if has("ui_selected_ref") || (popup && strings.len() == 1 && has("ui_info_icon")) {
+        if has("_locked") {
+            return Some(None);
+        }
+        return Some(Some(if has("_upgrade") {
+            SELECTED_PRO
+        } else {
+            SELECTED
+        }));
+    }
+    if strings
+        .iter()
+        .any(|x| x.to_ascii_lowercase().ends_with("killstreaktable.csv"))
+    {
+        let n = images.iter().filter(|i| i.field >= STREAK_1).count() as u8;
+        return Some((n < 3).then_some(STREAK_1 + n));
+    }
+    None
+}
+
+/// The order MW2's popups list their choices in, as strings the front end sorts by (`wpk::ui::order`):
+/// `order:cac`, the Create-a-Class popups' buttons (`cac_weapon_m4`, `cac_perk_specialty_marathon`,
+/// `cac_flash_grenade` as `m4`, `specialty_marathon`, `flash_grenade`), and `order:streaks`, the killstreak page's
+/// rows (the killstreak each row's test names first).
+fn list_orders(ui: &UiCapture) -> Vec<(String, String)> {
+    let mut names: Vec<&String> = ui
+        .menus
+        .keys()
+        .filter(|n| n.starts_with("popup_cac_"))
+        .collect();
+    // The perk, equipment, grenade and deathstreak popups first: One Man Army is also a secondary weapon's button.
+    let weapons = |n: &str| n.ends_with("_primary") || n.ends_with("_secondary");
+    names.sort_by_key(|n| (weapons(n), n.as_str()));
+    let mut cac: Vec<String> = Vec::new();
+    for n in names {
+        for i in &ui.menus[n].items {
+            if i.item_type != ITEM_TYPE_BUTTON {
+                continue;
+            }
+            let short = ["cac_weapon_", "cac_perk_", "cac_"]
+                .iter()
+                .find_map(|p| i.name.strip_prefix(p));
+            if let Some(s) = short.filter(|s| !s.is_empty() && !cac.iter().any(|c| c == s)) {
+                cac.push(s.to_owned());
+            }
+        }
+    }
+    let mut streaks: Vec<String> = Vec::new();
+    if let Some(m) = ui.menus.get("menu_cas_popup") {
+        for i in m.items.iter().filter(|i| i.item_type == ITEM_TYPE_BUTTON) {
+            if let Some(s) = i
+                .visible
+                .as_deref()
+                .and_then(|v| dump_strings(v).into_iter().next())
+                .filter(|s| !s.starts_with('@') && !streaks.contains(s))
+            {
+                streaks.push(s);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (base, names) in [
+        (wpk::ui::order::CAC, cac),
+        (wpk::ui::order::STREAKS, streaks),
+    ] {
+        // A pack string holds 255 bytes: the names go in numbered parts (`order:cac:0`, `order:cac:1` ...).
+        let mut part = String::new();
+        let mut n = 0;
+        for name in names {
+            if !part.is_empty() && part.len() + 1 + name.len() > wpk::ui::order::PART_MAX {
+                out.push((wpk::ui::order::part(base, n), std::mem::take(&mut part)));
+                n += 1;
+            }
+            if !part.is_empty() {
+                part.push(' ');
+            }
+            part.push_str(&name);
+        }
+        out.push((wpk::ui::order::part(base, n), part));
+    }
+    out
+}
+
 /// Bake the fonts and screens. `tex(material)` adds that material's colour texture to the pack (`TEXT` index);
 /// `localize` gives MW2's strings for the menus' `@KEY` text.
 pub fn bake(
     ui: &UiCapture,
     localize: &HashMap<String, String>,
     extra_icons: &[(String, String)],
+    extra_strings: &[(String, String)],
     mut tex: impl FnMut(&str) -> Option<u16>,
 ) -> (UiPack, BakeReport) {
     let mut report = BakeReport::default();
@@ -478,20 +747,26 @@ pub fn bake(
             let mut menu = menu.clone();
             for item in &mut menu.items {
                 item.rect.x += dx;
-                if ours == "setup" && item.rect.h == 0.0 && item.rect.w != 0.0 {
-                    item.rect.h = POPUP_HEIGHT;
-                }
             }
-            let menu = &menu;
-            screens.push(bake_screen(
+            let mut screen = bake_screen(
                 ours,
-                menu,
+                POPUPS.contains(&ours),
+                &menu,
                 &p,
                 &fonts,
                 localize,
                 &mut tex,
                 &mut report,
-            ));
+            );
+            // The killstreak rows: MW2 draws the name after the check box (its second button), not right-aligned.
+            if ours == "streaks"
+                && let Some(b) = screen.buttons.as_mut()
+            {
+                b.align = 0;
+                b.text_x = STREAK_TEXT_X;
+                b.focus_rgba = STREAK_FOCUS_RGBA;
+            }
+            screens.push(screen);
         }
     }
     report.screens = screens.len();
@@ -524,7 +799,10 @@ pub fn bake(
         })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
+    strings.extend(extra_strings.iter().cloned());
+    strings.extend(list_orders(ui));
     strings.sort();
+    strings.dedup_by(|a, b| a.0 == b.0);
     (
         UiPack {
             fonts,
@@ -708,7 +986,7 @@ mod tests {
         let mut ui = UiCapture::default();
         ui.menus.insert("main_text".into(), menu);
         let mut names = Vec::new();
-        let (pack, r) = bake(&ui, &HashMap::new(), &[], |m| {
+        let (pack, r) = bake(&ui, &HashMap::new(), &[], &[], |m| {
             names.push(m.to_owned());
             Some(names.len() as u16 - 1)
         });
@@ -722,6 +1000,49 @@ mod tests {
         assert!(names.iter().any(|n| n == "bar"));
         assert_eq!(b.align, 2);
         assert_eq!(r.missing_textures, 0);
+    }
+
+    #[test]
+    fn finds_chooser_and_killstreak_images() {
+        use wpk::ui::image_field::{PRIMARY, SELECTED, SELECTED_PRO, STREAK_1};
+        let hex = |s: &str| s.bytes().map(|b| format!("{b:02x}")).collect::<String>();
+        let pick = format!(
+            "op 16 op 74 s:{} op 17 1 op 17 op 81 s:{} op 1 op 17 3 op 1",
+            hex("mp/perkTable.csv"),
+            hex("ui_selected_ref")
+        );
+        assert_eq!(selected_field(&pick, true, &[]), Some(Some(SELECTED)));
+        let pro = format!("{pick} op 5 s:{}", hex("_upgrade"));
+        assert_eq!(selected_field(&pro, true, &[]), Some(Some(SELECTED_PRO)));
+        let locked = format!("{pick} op 5 s:{}", hex("_locked"));
+        assert_eq!(selected_field(&locked, false, &[]), Some(None));
+        // The info icon dvar: a popup's picture, but the map page's preview elsewhere.
+        let info = format!("op 16 op 81 s:{} op 1", hex("ui_info_icon"));
+        assert_eq!(selected_field(&info, true, &[]), Some(Some(SELECTED)));
+        assert_eq!(selected_field(&info, false, &[]), None);
+        // The playercard's killstreaks in turn.
+        let streak = format!(
+            "op 16 op 74 s:{} op 17 1 op 17 op 108 s:{}",
+            hex("mp/killstreakTable.csv"),
+            hex("killstreaks")
+        );
+        assert_eq!(selected_field(&streak, true, &[]), Some(Some(STREAK_1)));
+        let first = wpk::ui::ImageSlot {
+            field: STREAK_1,
+            ..Default::default()
+        };
+        assert_eq!(
+            selected_field(&streak, true, &[first]),
+            Some(Some(STREAK_1 + 1))
+        );
+        // A class field is not one of these.
+        let class = format!(
+            "op 16 op 74 s:{} op 17 4 op 17 op 81 s:{} op 1 op 17 6 op 1",
+            hex("mp/statsTable.csv"),
+            hex("loadoutPrimary")
+        );
+        assert_eq!(selected_field(&class, false, &[]), None);
+        assert_eq!(image_field(&class), Some(PRIMARY));
     }
 
     #[test]
@@ -789,7 +1110,7 @@ mod tests {
         ui.menus.insert("changeclass".into(), menu);
         let localize = HashMap::from([("TITLE_KEY".to_owned(), "CHOOSE".to_owned())]);
         let mut names = Vec::new();
-        let (pack, _) = bake(&ui, &localize, &[], |m| {
+        let (pack, _) = bake(&ui, &localize, &[], &[], |m| {
             names.push(m.to_owned());
             Some(names.len() as u16 - 1)
         });

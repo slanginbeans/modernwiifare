@@ -403,6 +403,10 @@ impl AppPath {
     }
 }
 
+/// The largest pack `load_pack` takes (a sanity check on the header's length; `common.wpk` is about 17 MiB with
+/// the menus, sounds and weapons, and stays in MEM2 for the whole run).
+const PACK_MAX: usize = 24 << 20;
+
 /// A whole pack file into MEM2 (flushed; GX and the DSP read it in place), checked; None when missing or bad.
 pub(crate) fn load_pack(path: &AppPath) -> Option<&'static [u8]> {
     let mut head = [0u8; wpk::HEADER_LEN];
@@ -411,7 +415,7 @@ pub(crate) fn load_pack(path: &AppPath) -> Option<&'static [u8]> {
         return None;
     }
     let len = u32::from_be_bytes([head[24], head[25], head[26], head[27]]) as usize;
-    if len > 16 << 20 {
+    if len > PACK_MAX {
         return None;
     }
     let p = unsafe { ffi::mwf_file_load_range(path.as_ptr(), 0, len as u32) };
@@ -772,6 +776,8 @@ struct Loadouts<'a> {
     class: Option<usize>,
     /// Cursor of the class list (kept between menus).
     cursor: &'a mut usize,
+    /// Ask for the class as the match starts (MW2's class menu on joining).
+    ask: bool,
 }
 
 /// A debug bullet path: (start, end) and when it was fired.
@@ -1017,6 +1023,8 @@ fn run_map(
             }
         };
     let mut perk_set = equip(&mut arsenal, gfx, class, debug.primary);
+    // The class menu at the first frame (`Loadouts::ask`).
+    let mut ask_class = loadouts.ask && !loadouts.classes.is_empty();
     // Debug: every killstreak reward at once.
     let all_rewards = || -> Vec<alloc::string::String> {
         loadouts
@@ -2553,6 +2561,29 @@ fn run_map(
         sections[section::HUD] = lap(&mut mark);
         let cpu_us = ffi::us().wrapping_sub(frame_start);
         gfx.frame_end();
+        // MW2 asks for a class as you join the match: its class menu over the first frame (B keeps the last one).
+        if ask_class {
+            ask_class = false;
+            unsafe { ffi::mwf_snd_stop_all() };
+            front::grab_screen();
+            if let Some(c) = front::pick_class(
+                gfx,
+                input,
+                loadouts.catalog,
+                &front::choose_class_title(),
+                loadouts.classes,
+                loadouts.cursor,
+                Some(&front::grabbed),
+            ) {
+                devlog::event(ffi::ms(), "class_change", format_args!("class={c}"));
+                class = Some(c);
+                perk_set = equip(&mut arsenal, gfx, class, debug.primary);
+            }
+            // The match waited: no time passed.
+            last = ffi::ms();
+            frame_start = ffi::us();
+            continue;
+        }
         let end = ffi::us();
         timing.add(end, end.wrapping_sub(frame_start), cpu_us, gfx.gpu_wait_us);
         auto_distance.update(
@@ -2607,6 +2638,10 @@ pub extern "C" fn mwf_game_main() -> i32 {
         .as_ref()
         .map(front::load_classes)
         .unwrap_or_default();
+    // The player's killstreaks (one set for every class, as in MW2).
+    let mut streaks = catalog
+        .as_ref()
+        .map_or([wpk::classes::NONE; 3], front::load_streaks);
     let mut input = front::Input::default();
     let (mut main_sel, mut map_sel, mut class_sel, mut edit_sel) = (0usize, 0usize, 0usize, 0usize);
     // The match setup, kept between matches; the rules from the user's scripts.
@@ -2702,14 +2737,30 @@ pub extern "C" fn mwf_game_main() -> i32 {
                             }
                             continue;
                         }
+                        front::Lobby::Playercard => {
+                            if let Some(cat) = catalog.as_ref() {
+                                front::playercard(&mut gfx, &mut input, cat, &mut streaks);
+                            }
+                            continue;
+                        }
                         front::Lobby::Start => {}
                     }
                     // The bots' count and skill are set in Game Rules.
                     front::save_debug(&debug);
-                    // Custom classes first, then MW2's defaults; the match starts with the class last chosen.
+                    // Custom classes first, then MW2's defaults, every one with the player's killstreaks; the match
+                    // asks for the class first, on the one last chosen.
                     let classes: Vec<wpk::classes::Loadout> = catalog
                         .as_ref()
-                        .map(|c| custom.iter().chain(&c.defaults).cloned().collect())
+                        .map(|c| {
+                            custom
+                                .iter()
+                                .chain(&c.defaults)
+                                .map(|l| wpk::classes::Loadout {
+                                    killstreaks: streaks,
+                                    ..l.clone()
+                                })
+                                .collect()
+                        })
                         .unwrap_or_default();
                     let class = (!classes.is_empty()).then(|| class_sel.min(classes.len() - 1));
                     let Some(&map) = maps.get(map_sel) else {
@@ -2726,6 +2777,7 @@ pub extern "C" fn mwf_game_main() -> i32 {
                             classes: &classes,
                             class,
                             cursor: &mut class_sel,
+                            ask: true,
                         },
                         (mode, limits),
                         &mut input,

@@ -36,7 +36,14 @@ button column (position, font, text placement, selection bar) and the back butto
   MW2's description (`MPUI_DESC_MAP_*`, the game type table's strings) in the right-hand panel;
 - the rules rows (`settings_quick_dm`): Game Rules, Options and Debug, each value drawn in its row;
 - class select (`changeclass`): the class panel on the right shows the focused class's weapons, perks and equipment;
-- Create-a-Class (`menu_cac_assault`): the panel shows the class being edited, or previews the focused choice;
+- Create-a-Class (`menu_cac_assault`): MW2's class page, the class being edited in its panel; over it MW2's popups
+  (`popup_cac_weapon_primary` for the weapon types, `popup_cac_assault_primary` for the weapons with the focused
+  one's picture, `popup_primary_attachments`, `popup_cac_perk1` for every one-item choice with the focused item's
+  icon, name and description and its Pro version's, `popup_cac_template` for Reset Class). A popup's frame is sized
+  to its rows as MW2's scripts do (`od::POPUP_FRAME`), and choices are listed in the order MW2's popups list them
+  (`order:cac`);
+- the killstreak page (`menu_cas_popup`): MW2's rows with their check boxes and kills, the focused killstreak's name,
+  icon and description, and the three chosen at the bottom; the playercard popup (`popup_callsign`) it opens from;
 - the in-game START menu (`class`): with the map and the mode on the right;
 - the yes / no popup (`popup_endgame`): MW2's End Game question;
 - scoreboard (`page_scoreboard`): MW2's columns (score, kills, assists, deaths); free-for-all scores 50 a kill.
@@ -54,15 +61,21 @@ pad). The flow is the Xbox 360's private match:
 - **Main menu**: Private Match, Create a Class, Options, Debug, Quit.
 - **Private Match** → the lobby: **Start Game**, **Game Setup** (the popup: Change Map, Change Game Mode, Game Rules:
   time limit and score limit, each starting at your scripts' value for the mode, the bots (0-7) and their difficulty),
-  **Create a Class**. Start Game loads the map with the class last chosen (your five custom classes, then MW2's five
-  default classes); the match ends back in the lobby.
+  **Create a Class**, **Playercard** (MW2's callsign popup: Title and Emblem are greyed out, there is no progression;
+  **Killstreak Rewards** picks your three killstreaks, saved to `killstreaks.dat`, for every class as in MW2). Start
+  Game loads the map and, as MW2 does when you join, asks for your class over the first frame (your five custom
+  classes, then MW2's five default classes; B keeps the one last chosen); the match ends back in the lobby.
 - **Team deathmatch** (`war.gsc`): you and two bots against three (allies tinted blue); team-mode points (100 a kill
   from `_rank.gsc`) go to the team's score; no friendly fire (MW2's default); bots and aim assist ignore teammates;
   spawns follow MW2's `getSpawnpoint_NearTeam` (far from enemies, near allies, out of enemy sight); teammates always
   show on the minimap; the scoreboard ends in victory, defeat or a draw. The minimap also shows grenades and
   explosions.
-- **Create a Class**: pick one of the five custom classes, then change its primary and secondary weapons, their
-  attachments, equipment, special grenade, perks 1-3, deathstreak and three killstreaks. Everything is unlocked.
+- **Create a Class**: pick one of the five custom classes, then MW2's class page: **Primary** / **Secondary** (the
+  weapon type popup, the weapon popup, then the attachment popup, and with Bling a second one; B steps back a popup),
+  **Equipment**, **Special Grenade**, **Perk 1-3**, **Deathstreak** (each its popup), **Rename** (letter by letter:
+  up / down change the letter, left / right move, A keeps it, B leaves it), **Reset Class** (copies one of MW2's
+  default classes, keeping the name). Everything is unlocked. Not here: camouflage (the guns would need their camo
+  textures).
   The rules are MW2's: primaries are assault rifles, SMGs, LMGs, sniper rifles and the riot shield; secondaries are
   machine pistols, shotguns, handguns and launchers; each weapon takes only its own attachments, never two that
   clash; a second attachment needs Bling in perk 1 (taken as Bling Pro, so the secondary gets one too). Leaving a

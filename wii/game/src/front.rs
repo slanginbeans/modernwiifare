@@ -12,7 +12,7 @@ use game_core::arena::{Limits, Mode};
 use game_core::camera::Camera;
 use game_core::gfx::Gfx;
 use game_core::hud::{self, Rect};
-use game_core::loadout::{self, FIELDS};
+use game_core::loadout::{self, Field};
 use game_core::menu::{self, Nav, Repeat, Step};
 use game_core::ui_page::{self, PageLine};
 pub use game_core::ui_page::{LobbyRow, ScoreRow};
@@ -142,6 +142,8 @@ const DISABLED: u32 = 0x505860ff;
 /// Footer hints (MW2's console prompts name the buttons the same way).
 pub const FOOTER_SELECT: &str = "A SELECT   B BACK";
 const FOOTER_CHANGE: &str = "A / LEFT / RIGHT CHANGE   B BACK";
+const FOOTER_RENAME: &str = "UP / DOWN LETTER   LEFT / RIGHT MOVE   A DONE   B CANCEL";
+const FOOTER_STREAKS: &str = "A CHOOSE   B DONE";
 
 /// Live text for a screen's empty slots (`wpk::ui::label_kind::SLOT`, in menu order) and the items its images show
 /// (`wpk::ui::image_field` order) for the focused line.
@@ -161,6 +163,8 @@ pub struct Page<'a> {
     pub under: Option<Layer<'a>>,
     pub over: Option<Layer<'a>>,
     pub preview: Option<Preview<'a>>,
+    /// The lines ticked (MW2's killstreak check boxes); empty: none.
+    pub checks: &'a [bool],
 }
 
 impl<'a> Page<'a> {
@@ -232,10 +236,6 @@ pub fn list(
     selected: &mut usize,
     footer: &str,
 ) -> Step {
-    let cam = Camera::new([0.0; 3], 0.0, 0.0);
-    let mut rects: Vec<Rect> = Vec::with_capacity(4096);
-    let mut slots: Vec<String> = Vec::new();
-    let mut images: Vec<String> = Vec::new();
     // Popups (over another page) use MW2's submenu focus sound.
     let over_sound = if page.under.is_some() {
         menu_sound::SUBMENU_OVER
@@ -262,14 +262,29 @@ pub fn list(
                 return other;
             }
         }
+        draw(gfx, page, title, lines, *selected, footer);
+    }
+}
+
+/// One frame of a list page (`list`'s look).
+fn draw(
+    gfx: &mut Shim,
+    page: &Page<'_>,
+    title: &str,
+    lines: &[Line],
+    selected: usize,
+    footer: &str,
+) {
+    let cam = Camera::new([0.0; 3], 0.0, 0.0);
+    let mut slots: Vec<String> = Vec::new();
+    let mut images: Vec<String> = Vec::new();
+    {
         unsafe { ffi::mwf_frame_begin(&cam.view(), cam.fovy, 4.0, 100.0, 0x1a1e24ff) };
         if let Some(u) = crate::ui::get() {
-            slots.clear();
-            images.clear();
             if let Some(p) = page.panel {
-                p(*selected, &mut slots, &mut images);
+                p(selected, &mut slots, &mut images);
             }
-            let preview = page.preview.map(|f| f(*selected)).unwrap_or_default();
+            let preview = page.preview.map(|f| f(selected)).unwrap_or_default();
             let page_lines: Vec<PageLine<'_>> = lines
                 .iter()
                 .map(|l| PageLine {
@@ -282,7 +297,7 @@ pub fn list(
                 screen: page.screen,
                 title,
                 lines: &page_lines,
-                selected: *selected,
+                selected,
                 footer,
                 slots: &slots,
                 images: &images,
@@ -290,6 +305,7 @@ pub fn list(
                 // Over something (the frozen game, the lobby) the screen's opaque background is left out.
                 backdrop: page.under.is_none(),
                 preview: &preview,
+                checks: page.checks,
             };
             u.page(|ui, q| {
                 if let Some(f) = page.under {
@@ -301,15 +317,15 @@ pub fn list(
                 }
             });
             gfx.frame_end();
-            continue;
+            return;
         }
-        rects.clear();
+        let mut rects: Vec<Rect> = Vec::with_capacity(4096);
         hud::text(&mut rects, 48, 40, 5, title);
         gfx.hud_rects(&rects, TITLE);
-        for (row, i) in menu::window(*selected, lines.len(), ROWS).enumerate() {
+        for (row, i) in menu::window(selected, lines.len(), ROWS).enumerate() {
             let l = &lines[i];
             let y = 96 + row as i16 * 22;
-            let colour = if i == *selected {
+            let colour = if i == selected {
                 SELECTED
             } else if l.enabled {
                 NORMAL
@@ -317,7 +333,7 @@ pub fn list(
                 DISABLED
             };
             rects.clear();
-            if i == *selected {
+            if i == selected {
                 hud::text(&mut rects, 32, y, 3, ">");
             }
             hud::text(&mut rects, 52, y, 3, &l.text);
@@ -430,11 +446,22 @@ const MODES: [Mode; 3] = [Mode::Ffa, Mode::Tdm, Mode::Dom];
 pub enum Lobby {
     Start,
     CreateAClass,
+    Playercard,
     Back,
 }
 
+/// The lobby's buttons (MW2's private lobby without the online ones: Barracks, Invite).
+fn lobby_lines() -> [Line; 4] {
+    [
+        Line::new(&mw2("MENU_START_GAME_CAPS", "START GAME")),
+        Line::new(&mw2("MENU_GAME_SETUP_CAPS", "GAME SETUP")),
+        Line::new(&mw2("MENU_CREATE_A_CLASS_CAPS", "CREATE A CLASS")),
+        Line::new(&mw2("MENU_PLAYERCARD_CAPS", "PLAYERCARD")),
+    ]
+}
+
 /// The private match lobby: START GAME, GAME SETUP (the popup with the map, the mode and the rules), CREATE A CLASS,
-/// with the players on the right and the map and mode in the lobby's slots.
+/// PLAYERCARD (the killstreaks), with the players on the right and the map and mode in the lobby's slots.
 pub fn lobby(
     gfx: &mut Shim,
     input: &mut Input,
@@ -442,11 +469,7 @@ pub fn lobby(
     players: &dyn Fn(Mode, usize) -> Vec<LobbyRow>,
     selected: &mut usize,
 ) -> Lobby {
-    let lines = [
-        Line::new("START GAME"),
-        Line::new("GAME SETUP"),
-        Line::new("CREATE A CLASS"),
-    ];
+    let lines = lobby_lines();
     loop {
         let rows = players(*setup.mode, usize::from(setup.debug.bots));
         let map = setup.maps.get(*setup.map).copied().unwrap_or("");
@@ -480,6 +503,7 @@ pub fn lobby(
             Step::Accept(0) if !setup.maps.is_empty() => return Lobby::Start,
             Step::Accept(1) => game_setup(gfx, input, setup, &rows, &info),
             Step::Accept(2) => return Lobby::CreateAClass,
+            Step::Accept(3) => return Lobby::Playercard,
             Step::Back => return Lobby::Back,
             _ => {}
         }
@@ -495,7 +519,7 @@ fn game_setup(
     info: &[String; 3],
 ) {
     let lines = [
-        Line::new("CHANGE MAP"),
+        Line::new(&mw2("MENU_CHANGE_MAP_CAPS", "CHANGE MAP")),
         Line::new("CHANGE GAME MODE"),
         Line::new("GAME RULES"),
     ];
@@ -503,23 +527,15 @@ fn game_setup(
     loop {
         let map = setup.maps.get(*setup.map).copied().unwrap_or("");
         // The lobby, dimmed, under the popup.
-        let lobby_lines = [
-            PageLine {
-                text: "START GAME",
+        let names = lobby_lines();
+        let lobby_lines: Vec<PageLine<'_>> = names
+            .iter()
+            .map(|l| PageLine {
+                text: &l.text,
                 value: None,
                 enabled: true,
-            },
-            PageLine {
-                text: "GAME SETUP",
-                value: None,
-                enabled: true,
-            },
-            PageLine {
-                text: "CREATE A CLASS",
-                value: None,
-                enabled: true,
-            },
-        ];
+            })
+            .collect();
         let under = |ui: &UiPack, q: &mut Vec<Quad>| {
             ui_page::layout(
                 ui,
@@ -534,6 +550,7 @@ fn game_setup(
                     inline_values: false,
                     backdrop: true,
                     preview: map,
+                    checks: &[],
                 },
                 q,
             );
@@ -739,6 +756,11 @@ fn cycle_debug(d: &mut game_core::debug::DebugSettings, item: game_core::debug::
     }
 }
 
+/// MW2's "Choose Class" title.
+pub fn choose_class_title() -> String {
+    String::from("CHOOSE CLASS")
+}
+
 /// Pick one of `classes` (custom first, then MW2's defaults) on MW2's class screen, the focused class shown in its
 /// panel; None = back. `under`: the frozen game, in a match.
 #[allow(clippy::too_many_arguments)]
@@ -770,7 +792,7 @@ pub fn pick_class(
     }
 }
 
-/// Create-a-Class: pick a custom class, edit it field by field, saved when leaving it.
+/// Create-a-Class: pick a custom class, edit it on MW2's class page, saved when leaving it.
 pub fn create_a_class(
     gfx: &mut Shim,
     input: &mut Input,
@@ -778,33 +800,71 @@ pub fn create_a_class(
     custom: &mut [Loadout],
     selected: &mut usize,
 ) {
-    while let Some(i) = pick_class(
-        gfx,
-        input,
-        Some(cat),
-        "CREATE A CLASS",
-        custom,
-        selected,
-        None,
-    ) {
+    let title = mw2("MENU_CREATE_A_CLASS_CAPS", "CREATE A CLASS");
+    while let Some(i) = pick_class(gfx, input, Some(cat), &title, custom, selected, None) {
         edit_class(gfx, input, cat, &mut custom[i]);
         save_classes(cat, custom);
     }
 }
 
-/// Edit a class field by field until B.
+/// The class page's buttons: the choosers, RENAME and RESET CLASS.
+fn class_lines() -> Vec<Line> {
+    let mut lines: Vec<Line> = loadout::CLASS_FIELDS
+        .iter()
+        .map(|&f| {
+            let (key, ours) = loadout::field_label(f);
+            Line::new(&mw2(key, ours))
+        })
+        .collect();
+    lines.push(Line::new(&mw2("MENU_RENAME_CAPS", "RENAME")));
+    lines.push(Line::new(&mw2("MENU_RESET_CLASS_CAPS", "RESET CLASS")));
+    lines
+}
+
+const RENAME: usize = loadout::CLASS_FIELDS.len();
+const RESET: usize = RENAME + 1;
+
+/// MW2's class page as it stands (the class in its panel, `sel` focused) and the popups' dimming over it.
+fn class_page(ui: &UiPack, q: &mut Vec<Quad>, cat: &Catalog, class: &Loadout, sel: usize) {
+    let names = class_lines();
+    let lines: Vec<PageLine<'_>> = names
+        .iter()
+        .map(|l| PageLine {
+            text: &l.text,
+            value: None,
+            enabled: true,
+        })
+        .collect();
+    let mut slots = Vec::new();
+    loadout::panel(cat, class, &mut slots);
+    let images: Vec<String> = loadout::images(cat, class).into_iter().collect();
+    ui_page::layout(
+        ui,
+        &ui_page::Page {
+            screen: "cac",
+            title: &mw2("MPUI_CREATE_A_CLASS_CAP", "CREATE A CLASS"),
+            lines: &lines,
+            selected: sel,
+            footer: "",
+            slots: &slots,
+            images: &images,
+            inline_values: false,
+            backdrop: true,
+            preview: "",
+            checks: &[],
+        },
+        q,
+    );
+    // MW2's popups dim what is under them (black at 0.35).
+    q.push(ui_page::fullscreen(ui.white, 0x0000_0059));
+}
+
+/// Edit a class on MW2's class page until B: PRIMARY / SECONDARY (weapon type, weapon, then attachments), EQUIPMENT,
+/// SPECIAL GRENADE, PERK 1-3, DEATHSTREAK (each its popup over the page), RENAME and RESET CLASS.
 pub fn edit_class(gfx: &mut Shim, input: &mut Input, cat: &Catalog, class: &mut Loadout) {
-    let mut field = 0usize;
+    let mut sel = 0usize;
+    let lines = class_lines();
     loop {
-        let lines: Vec<Line> = FIELDS
-            .iter()
-            .map(|&f| Line {
-                text: String::from(loadout::label(f)),
-                value: Some(loadout::value(cat, class, f)),
-                enabled: loadout::enabled(cat, class, f),
-            })
-            .collect();
-        let title = class.name.to_ascii_uppercase();
         let shown = class.clone();
         let panel = |_: usize, out: &mut Vec<String>, images: &mut Vec<String>| {
             loadout::panel(cat, &shown, out);
@@ -815,57 +875,622 @@ pub fn edit_class(gfx: &mut Shim, input: &mut Input, cat: &Catalog, class: &mut 
             panel: Some(&panel),
             ..Page::default()
         };
-        let Step::Accept(i) = list(gfx, input, &page, &title, &lines, &mut field, FOOTER_SELECT)
+        let title = mw2("MPUI_CREATE_A_CLASS_CAP", "CREATE A CLASS");
+        let Step::Accept(i) = list(gfx, input, &page, &title, &lines, &mut sel, FOOTER_SELECT)
         else {
             return;
         };
-        let f = FIELDS[i];
-        let options = loadout::choices(cat, class, f);
-        if options.is_empty() {
-            continue;
+        let under_class = class.clone();
+        let under = move |ui: &UiPack, q: &mut Vec<Quad>| class_page(ui, q, cat, &under_class, i);
+        match i {
+            RENAME => rename(gfx, input, &mut class.name, &under),
+            RESET => reset_class(gfx, input, cat, class, &under),
+            _ => match loadout::CLASS_FIELDS[i] {
+                f @ (Field::Primary | Field::Secondary) => {
+                    choose_weapon(gfx, input, cat, class, f == Field::Primary, &under)
+                }
+                f => choose_item(gfx, input, cat, class, f, &under),
+            },
         }
-        let names: Vec<Line> = options
-            .iter()
-            .map(|&v| {
-                let mut probe = class.clone();
-                loadout::set(cat, &mut probe, f, v);
-                Line::new(&loadout::value(cat, &probe, f))
-            })
-            .collect();
-        let current = options
-            .iter()
-            .position(|&v| {
-                let mut probe = class.clone();
-                loadout::set(cat, &mut probe, f, v);
-                loadout::value(cat, &probe, f) == loadout::value(cat, class, f)
-            })
-            .unwrap_or(0);
-        let mut pick = current;
-        // The panel previews the focused choice.
-        let base = class.clone();
-        let preview = |i: usize, out: &mut Vec<String>, images: &mut Vec<String>| {
-            let mut probe = base.clone();
-            if let Some(&v) = options.get(i) {
-                loadout::set(cat, &mut probe, f, v);
+    }
+}
+
+/// A chooser popup's texts and pictures for one item: name, description, Pro name and description, and its icon
+/// key with its Pro version's (`image_field::SELECTED`, `SELECTED_PRO`).
+#[derive(Default)]
+struct Info {
+    name: String,
+    desc: String,
+    pro_name: String,
+    pro_desc: String,
+    icon: String,
+    pro_icon: String,
+}
+
+impl Info {
+    /// Into a page's slots and images.
+    fn put(&self, slots: &mut Vec<String>, images: &mut Vec<String>) {
+        slots.extend([
+            self.name.clone(),
+            self.desc.clone(),
+            self.pro_name.clone(),
+            self.pro_desc.clone(),
+        ]);
+        images.resize(
+            usize::from(wpk::ui::image_field::SELECTED_PRO) + 1,
+            String::new(),
+        );
+        images[usize::from(wpk::ui::image_field::SELECTED)] = self.icon.clone();
+        images[usize::from(wpk::ui::image_field::SELECTED_PRO)] = self.pro_icon.clone();
+    }
+}
+
+/// A converter-made string (`desc:perk:<name>` ...), empty when the pack hasn't it.
+fn pack_string(key: &str) -> String {
+    crate::ui::get()
+        .and_then(|u| u.pack.string(key).map(String::from))
+        .unwrap_or_default()
+}
+
+/// A menu order (`wpk::ui::order`), its parts joined.
+fn order_string(base: &str) -> String {
+    let mut all = String::new();
+    for n in 0.. {
+        let part = pack_string(&wpk::ui::order::part(base, n));
+        if part.is_empty() {
+            break;
+        }
+        all.push_str(&part);
+        all.push(' ');
+    }
+    all
+}
+
+/// Sort `items` (indices into `list`) in the order MW2's menus list them (`wpk::ui::order` string `key`); names
+/// it doesn't list keep their catalog order after the rest.
+fn mw2_order(key: &str, list: &[wpk::classes::Item], items: &mut [u8]) {
+    let order = order_string(key);
+    if order.is_empty() {
+        return;
+    }
+    items.sort_by_key(|&i| {
+        list.get(usize::from(i))
+            .and_then(|it| wpk::ui::order::rank(&order, &it.name))
+            .unwrap_or(usize::MAX)
+    });
+}
+
+/// What the perk popup shows for item `v` of field `f`.
+fn item_info(cat: &Catalog, f: Field, v: u8) -> Info {
+    let mut probe = Loadout::default();
+    loadout::set(cat, &mut probe, f, v);
+    let mut info = Info {
+        name: loadout::value(cat, &probe, f),
+        icon: loadout::icon_key(cat, f, v),
+        ..Info::default()
+    };
+    if matches!(f, Field::Offhand | Field::Primary | Field::Secondary) {
+        return info;
+    }
+    if let Some(p) = cat.perks.get(usize::from(v)) {
+        info.desc = pack_string(&alloc::format!("desc:perk:{}", p.name));
+        if !p.upgrade.is_empty() {
+            info.pro_name = pack_string(&alloc::format!("name:perk:{}", p.upgrade));
+            info.pro_desc = pack_string(&alloc::format!("desc:perk:{}", p.upgrade));
+            info.pro_icon = alloc::format!("img:perk:{}", p.upgrade);
+        }
+    }
+    info
+}
+
+/// MW2's popup for one field (equipment, special grenade, a perk, the deathstreak) over the class page: the choices
+/// with the focused one's name, icon and description (and its Pro version) beside them.
+fn choose_item(
+    gfx: &mut Shim,
+    input: &mut Input,
+    cat: &Catalog,
+    class: &mut Loadout,
+    f: Field,
+    under: Layer<'_>,
+) {
+    let mut options = loadout::choices(cat, class, f);
+    if options.is_empty() {
+        return;
+    }
+    let items = if f == Field::Offhand {
+        &cat.offhands
+    } else {
+        &cat.perks
+    };
+    mw2_order(wpk::ui::order::CAC, items, &mut options);
+    let infos: Vec<Info> = options.iter().map(|&v| item_info(cat, f, v)).collect();
+    let lines: Vec<Line> = infos.iter().map(|i| Line::new(&i.name)).collect();
+    let current = loadout::value(cat, class, f);
+    let mut pick = infos.iter().position(|i| i.name == current).unwrap_or(0);
+    let panel = |i: usize, slots: &mut Vec<String>, images: &mut Vec<String>| {
+        if let Some(info) = infos.get(i) {
+            info.put(slots, images);
+        }
+    };
+    let page = Page {
+        screen: "cac_perk",
+        panel: Some(&panel),
+        under: Some(under),
+        ..Page::default()
+    };
+    let (key, ours) = loadout::field_label(f);
+    if let Step::Accept(k) = list(
+        gfx,
+        input,
+        &page,
+        &mw2(key, ours),
+        &lines,
+        &mut pick,
+        FOOTER_SELECT,
+    ) {
+        loadout::set(cat, class, f, options[k]);
+    }
+}
+
+/// PRIMARY or SECONDARY as MW2 does it: the weapon type popup, the weapon popup (its picture beside the list), then
+/// the attachment popup (and with Bling the second one). B steps back a popup.
+fn choose_weapon(
+    gfx: &mut Shim,
+    input: &mut Input,
+    cat: &Catalog,
+    class: &mut Loadout,
+    primary: bool,
+    under: Layer<'_>,
+) {
+    let field = if primary {
+        Field::Primary
+    } else {
+        Field::Secondary
+    };
+    let groups = loadout::groups(cat, primary);
+    if groups.is_empty() {
+        return;
+    }
+    let names: Vec<String> = groups
+        .iter()
+        .map(|&g| {
+            let (key, ours) = loadout::group_label(g);
+            mw2(key, ours)
+        })
+        .collect();
+    let lines: Vec<Line> = names.iter().map(|n| Line::new(n)).collect();
+    let mut gsel = loadout::group_of(cat, class, primary)
+        .and_then(|g| groups.iter().position(|&x| x == g))
+        .unwrap_or(0);
+    let (key, ours) = loadout::field_label(field);
+    let title = mw2(key, ours);
+    loop {
+        // A weapon type shows its first weapon's picture (the class's own when it is of that type).
+        let current = if primary {
+            class.primary
+        } else {
+            class.secondary
+        };
+        let panel = |i: usize, slots: &mut Vec<String>, images: &mut Vec<String>| {
+            let Some(&g) = groups.get(i) else {
+                return;
+            };
+            let mut weapons = loadout::weapons_in(cat, g);
+            mw2_order(wpk::ui::order::CAC, &cat.weapons, &mut weapons);
+            let w = if weapons.contains(&current) {
+                current
+            } else {
+                weapons.first().copied().unwrap_or(0)
+            };
+            Info {
+                name: names[i].clone(),
+                icon: loadout::icon_key(cat, field, w),
+                ..Info::default()
             }
-            loadout::panel(cat, &probe, out);
-            images.extend(loadout::images(cat, &probe));
+            .put(slots, images);
         };
         let page = Page {
-            screen: "cac",
-            panel: Some(&preview),
+            screen: "cac_category",
+            panel: Some(&panel),
+            under: Some(under),
             ..Page::default()
         };
-        if let Step::Accept(k) = list(
+        let Step::Accept(g) = list(gfx, input, &page, &title, &lines, &mut gsel, FOOTER_SELECT)
+        else {
+            return;
+        };
+        if pick_weapon(gfx, input, cat, class, field, groups[g], &names[g], under) {
+            return;
+        }
+    }
+}
+
+/// The weapon popup for weapon type `g`, then the attachments. False on B (back to the weapon types).
+#[allow(clippy::too_many_arguments)]
+fn pick_weapon(
+    gfx: &mut Shim,
+    input: &mut Input,
+    cat: &Catalog,
+    class: &mut Loadout,
+    field: Field,
+    g: u8,
+    title: &str,
+    under: Layer<'_>,
+) -> bool {
+    let mut weapons = loadout::weapons_in(cat, g);
+    mw2_order(wpk::ui::order::CAC, &cat.weapons, &mut weapons);
+    let infos: Vec<Info> = weapons.iter().map(|&w| item_info(cat, field, w)).collect();
+    let lines: Vec<Line> = infos.iter().map(|i| Line::new(&i.name)).collect();
+    let current = if field == Field::Primary {
+        class.primary
+    } else {
+        class.secondary
+    };
+    let mut wsel = weapons.iter().position(|&w| w == current).unwrap_or(0);
+    let panel = |i: usize, slots: &mut Vec<String>, images: &mut Vec<String>| {
+        if let Some(info) = infos.get(i) {
+            info.put(slots, images);
+        }
+    };
+    let page = Page {
+        screen: "cac_weapon",
+        panel: Some(&panel),
+        under: Some(under),
+        ..Page::default()
+    };
+    let Step::Accept(k) = list(gfx, input, &page, title, &lines, &mut wsel, FOOTER_SELECT) else {
+        return false;
+    };
+    if weapons[k] != current {
+        loadout::set(cat, class, field, weapons[k]);
+    }
+    let (first, second) = if field == Field::Primary {
+        (Field::PrimaryAttachment(0), Field::PrimaryAttachment(1))
+    } else {
+        (Field::SecondaryAttachment(0), Field::SecondaryAttachment(1))
+    };
+    if loadout::enabled(cat, class, first) {
+        pick_attachment(gfx, input, cat, class, first, under);
+        if loadout::enabled(cat, class, second) {
+            pick_attachment(gfx, input, cat, class, second, under);
+        }
+    }
+    true
+}
+
+/// MW2's attachment popup: NONE and the weapon's attachments, the focused one's icon beside them.
+fn pick_attachment(
+    gfx: &mut Shim,
+    input: &mut Input,
+    cat: &Catalog,
+    class: &mut Loadout,
+    f: Field,
+    under: Layer<'_>,
+) {
+    let options = loadout::choices(cat, class, f);
+    let infos: Vec<Info> = options
+        .iter()
+        .map(|&a| {
+            let mut probe = class.clone();
+            loadout::set(cat, &mut probe, f, a);
+            Info {
+                name: if a == 0 {
+                    mw2("MENU_NONE", "None")
+                } else {
+                    loadout::value(cat, &probe, f)
+                },
+                icon: loadout::icon_key(cat, f, a),
+                ..Info::default()
+            }
+        })
+        .collect();
+    let lines: Vec<Line> = infos.iter().map(|i| Line::new(&i.name)).collect();
+    let now = match f {
+        Field::PrimaryAttachment(k) => class.primary_attachments[k.min(1)],
+        Field::SecondaryAttachment(k) => class.secondary_attachments[k.min(1)],
+        _ => 0,
+    };
+    let mut pick = options.iter().position(|&a| a == now).unwrap_or(0);
+    let panel = |i: usize, slots: &mut Vec<String>, images: &mut Vec<String>| {
+        if let Some(info) = infos.get(i) {
+            info.put(slots, images);
+        }
+    };
+    let page = Page {
+        screen: "cac_attach",
+        panel: Some(&panel),
+        under: Some(under),
+        ..Page::default()
+    };
+    let (key, ours) = loadout::field_label(f);
+    if let Step::Accept(k) = list(
+        gfx,
+        input,
+        &page,
+        &mw2(key, ours),
+        &lines,
+        &mut pick,
+        FOOTER_SELECT,
+    ) {
+        loadout::set(cat, class, f, options[k]);
+    }
+}
+
+/// RESET CLASS: MW2's popup of the default classes; the chosen one's loadout replaces the class's (its name stays).
+fn reset_class(
+    gfx: &mut Shim,
+    input: &mut Input,
+    cat: &Catalog,
+    class: &mut Loadout,
+    under: Layer<'_>,
+) {
+    let lines: Vec<Line> = cat.defaults.iter().map(|d| Line::new(&d.name)).collect();
+    if lines.is_empty() {
+        return;
+    }
+    let page = Page {
+        screen: "cac_reset",
+        under: Some(under),
+        ..Page::default()
+    };
+    let mut pick = 0usize;
+    if let Step::Accept(k) = list(
+        gfx,
+        input,
+        &page,
+        &mw2("MENU_RESET_CLASS_CAPS", "RESET CLASS"),
+        &lines,
+        &mut pick,
+        FOOTER_SELECT,
+    ) {
+        let name = core::mem::take(&mut class.name);
+        *class = Loadout {
+            name,
+            ..cat.defaults[k].clone()
+        };
+        loadout::fix(cat, class);
+    }
+}
+
+/// The letters a class name is spelt with (up / down steps through them).
+const NAME_CHARS: &[u8] = b" ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!";
+/// MW2's class names fit its class buttons.
+const NAME_MAX: usize = 15;
+
+/// RENAME: the name letter by letter (MW2's console keyboard, on the pad): up / down change the letter, left / right
+/// move along, A keeps the name, B leaves it as it was.
+fn rename(gfx: &mut Shim, input: &mut Input, name: &mut String, under: Layer<'_>) {
+    let mut chars: Vec<u8> = name
+        .bytes()
+        .filter(|b| NAME_CHARS.contains(b))
+        .take(NAME_MAX)
+        .collect();
+    if chars.is_empty() {
+        chars.push(b'A');
+    }
+    let mut at = chars.len() - 1;
+    let page = Page {
+        screen: "rename",
+        under: Some(under),
+        ..Page::default()
+    };
+    let title = mw2("MENU_RENAME_CAPS", "RENAME");
+    input.settle();
+    loop {
+        let nav = input.poll();
+        if nav.back {
+            play_menu_sound(menu_sound::CLICK);
+            return;
+        }
+        if nav.accept {
+            play_menu_sound(menu_sound::CLICK);
+            let s: String = chars.iter().map(|&b| b as char).collect();
+            let s = s.trim();
+            if !s.is_empty() {
+                *name = String::from(s);
+            }
+            return;
+        }
+        let step = |c: u8, d: isize| {
+            let n = NAME_CHARS.len() as isize;
+            let i = NAME_CHARS.iter().position(|&x| x == c).unwrap_or(0) as isize;
+            NAME_CHARS[(i + d).rem_euclid(n) as usize]
+        };
+        if nav.up || nav.down {
+            chars[at] = step(chars[at], if nav.up { 1 } else { -1 });
+            play_menu_sound(menu_sound::SUBMENU_OVER);
+        }
+        if nav.left && at > 0 {
+            at -= 1;
+            play_menu_sound(menu_sound::SUBMENU_OVER);
+        }
+        if nav.right {
+            if at + 1 == chars.len() && chars.len() < NAME_MAX {
+                chars.push(b' ');
+            }
+            at = (at + 1).min(chars.len() - 1);
+            play_menu_sound(menu_sound::SUBMENU_OVER);
+        }
+        // The letter being changed in brackets.
+        let mut shown = String::new();
+        for (k, &c) in chars.iter().enumerate() {
+            if k == at {
+                shown.push('[');
+                shown.push(if c == b' ' { '_' } else { c as char });
+                shown.push(']');
+            } else {
+                shown.push(c as char);
+            }
+        }
+        let lines = [Line::new(&shown)];
+        draw(gfx, &page, &title, &lines, 0, FOOTER_RENAME);
+    }
+}
+
+/// The player's killstreaks from `killstreaks.dat` (names, one a line), else the first custom class's.
+pub fn load_streaks(cat: &Catalog) -> [u8; 3] {
+    let mut set = cat
+        .customs
+        .first()
+        .or(cat.defaults.first())
+        .map_or([wpk::classes::NONE; 3], |c| c.killstreaks);
+    if let Some(path) = AppPath::new("killstreaks.dat") {
+        let mut buf = [0u8; 256];
+        let n = unsafe { ffi::mwf_file_read(path.as_ptr(), 0, buf.len() as u32, buf.as_mut_ptr()) };
+        if n > 0
+            && let Ok(text) = core::str::from_utf8(&buf[..n as usize])
+        {
+            let mut read = [wpk::classes::NONE; 3];
+            let mut k = 0;
+            for name in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                if let Some(i) = cat.killstreaks.iter().position(|s| s.name == name)
+                    && k < 3
+                {
+                    read[k] = i as u8;
+                    k += 1;
+                }
+            }
+            if k > 0 {
+                set = read;
+            }
+        }
+    }
+    set
+}
+
+/// Save the player's killstreaks to `killstreaks.dat`; false when the write failed.
+pub fn save_streaks(cat: &Catalog, set: &[u8; 3]) -> bool {
+    let mut text = String::new();
+    for &s in set {
+        if let Some(k) = cat.killstreaks.get(usize::from(s)) {
+            text.push_str(&k.name);
+            text.push('\n');
+        }
+    }
+    let Some(path) = AppPath::new("killstreaks.dat") else {
+        return false;
+    };
+    unsafe {
+        ffi::mwf_file_write(path.as_ptr(), text.as_ptr(), text.len() as u32) == text.len() as i32
+    }
+}
+
+/// The lobby's PLAYERCARD popup (MW2's callsign popup): TITLE and EMBLEM (not here: there is no progression),
+/// KILLSTREAK REWARDS, with the player's three killstreaks shown under it.
+pub fn playercard(gfx: &mut Shim, input: &mut Input, cat: &Catalog, set: &mut [u8; 3]) {
+    let mut sel = 2usize;
+    loop {
+        let mut lines = [
+            Line::new(&mw2("MENU_TITLE_CAPS", "TITLE")),
+            Line::new(&mw2("MENU_EMBLEM_CAPS", "EMBLEM")),
+            Line::new(&mw2("MENU_KILLSTREAK_REWARDS_CAPS", "KILLSTREAK REWARDS")),
+        ];
+        lines[0].enabled = false;
+        lines[1].enabled = false;
+        let icons: Vec<String> = set
+            .iter()
+            .map(|&s| loadout::icon_key(cat, Field::Killstreak(0), s))
+            .collect();
+        let panel = |_: usize, _: &mut Vec<String>, images: &mut Vec<String>| {
+            let first = usize::from(wpk::ui::image_field::STREAK_1);
+            images.resize(first + 3, String::new());
+            for (k, i) in icons.iter().enumerate() {
+                images[first + k] = i.clone();
+            }
+        };
+        let dim = |ui: &UiPack, q: &mut Vec<Quad>| {
+            q.push(ui_page::fullscreen(ui.white, 0x0000_0099));
+        };
+        let page = Page {
+            screen: "playercard",
+            panel: Some(&panel),
+            under: Some(&dim),
+            ..Page::default()
+        };
+        match list(
             gfx,
             input,
             &page,
-            loadout::label(f).trim_start(),
-            &names,
-            &mut pick,
+            &mw2("MENU_PLAYERCARD_CAPS", "PLAYERCARD"),
+            &lines,
+            &mut sel,
             FOOTER_SELECT,
         ) {
-            loadout::set(cat, class, f, options[k]);
+            Step::Accept(2) => {
+                killstreaks(gfx, input, cat, set);
+                save_streaks(cat, set);
+            }
+            Step::Back => return,
+            _ => {}
+        }
+    }
+}
+
+/// MW2's Killstreak Rewards page: every killstreak with its kills, three of them ticked (A ticks or unticks), the
+/// focused one's name, icon and description on the right.
+pub fn killstreaks(gfx: &mut Shim, input: &mut Input, cat: &Catalog, set: &mut [u8; 3]) {
+    // MW2's rows (the killstreaks its page lists, in its order), else every killstreak by its kills.
+    let mut order: Vec<u8> = (0..cat.killstreaks.len().min(255) as u8).collect();
+    let listed = order_string(wpk::ui::order::STREAKS);
+    let rank = |k: &u8| wpk::ui::order::rank(&listed, &cat.killstreaks[usize::from(*k)].name);
+    if order.iter().any(|k| rank(k).is_some()) {
+        order.retain(|k| rank(k).is_some());
+        order.sort_by_key(rank);
+    } else {
+        order.sort_by_key(|&k| cat.killstreaks[usize::from(k)].kind);
+    }
+    let mut sel = 0usize;
+    loop {
+        let lines: Vec<Line> = order
+            .iter()
+            .map(|&k| {
+                let s = &cat.killstreaks[usize::from(k)];
+                Line::value(&s.display, alloc::format!("{}", s.kind))
+            })
+            .collect();
+        let checked: Vec<bool> = order.iter().map(|k| set.contains(k)).collect();
+        let panel = |i: usize, slots: &mut Vec<String>, images: &mut Vec<String>| {
+            let Some(&k) = order.get(i) else {
+                return;
+            };
+            let s = &cat.killstreaks[usize::from(k)];
+            slots.push(s.display.clone());
+            slots.push(pack_string(&alloc::format!("desc:streak:{}", s.name)));
+            // The three chosen, at the bottom: their icons and kills.
+            let first = usize::from(wpk::ui::image_field::STREAK_1);
+            images.resize(first + 3, String::new());
+            images[usize::from(wpk::ui::image_field::SELECTED)] =
+                loadout::icon_key(cat, Field::Killstreak(0), k);
+            for (n, &c) in set.iter().enumerate() {
+                images[first + n] = loadout::icon_key(cat, Field::Killstreak(0), c);
+                slots.push(
+                    cat.killstreaks
+                        .get(usize::from(c))
+                        .map_or_else(String::new, |i| alloc::format!("{}", i.kind)),
+                );
+            }
+        };
+        let page = Page {
+            screen: "streaks",
+            panel: Some(&panel),
+            checks: &checked,
+            values: true,
+            ..Page::default()
+        };
+        match list(
+            gfx,
+            input,
+            &page,
+            &mw2("MENU_KILLSTREAK_REWARDS_CAPS", "KILLSTREAK REWARDS"),
+            &lines,
+            &mut sel,
+            FOOTER_STREAKS,
+        ) {
+            Step::Accept(i) => {
+                loadout::toggle_streak(cat, set, order[i]);
+            }
+            Step::Adjust(..) => {}
+            _ => return,
         }
     }
 }
@@ -1033,6 +1658,7 @@ pub fn scoreboard(gfx: &mut Shim, input: &mut Input, title: &str, rows: &[ScoreR
                 inline_values: false,
                 backdrop: true,
                 preview: "",
+                checks: &[],
             };
             u.page(|ui, q| {
                 if grabbed_ok {

@@ -2,7 +2,7 @@
 //! by the same code as the Wii's front end (`game_core::ui_page`), to check the menus without a Wii. Output: one
 //! 640 × 480 PNG per screen.
 
-use game_core::loadout::{self, FIELDS};
+use game_core::loadout::{self, CLASS_FIELDS, Field};
 use game_core::ui_page::{self, Page, PageLine, ScoreRow};
 use gx_texture::image::Image;
 use wpk::classes::Catalog;
@@ -10,7 +10,7 @@ use wpk::records::{self, TextureRecord};
 use wpk::ui::{Quad, UiPack};
 
 /// The screens rendered (the names `ui_bake::SCREENS` gives them).
-pub const SCREENS: [&str; 10] = [
+pub const SCREENS: [&str; 12] = [
     "main",
     "class_select",
     "pause",
@@ -21,6 +21,8 @@ pub const SCREENS: [&str; 10] = [
     "maps",
     "modes",
     "rules",
+    "cac_perk",
+    "streaks",
 ];
 
 /// Draw `q` over `img` (nearest texel, texture × colour, alpha blended).
@@ -246,17 +248,76 @@ pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
             (Some(c), Some(l)) => {
                 loadout::panel(c, l, &mut slots);
                 images.extend(loadout::images(c, l));
-                let texts = FIELDS
+                let mut texts: Vec<String> = CLASS_FIELDS
                     .iter()
-                    .map(|&f| loadout::label(f).to_owned())
+                    .map(|&f| loadout::field_label(f).1.to_owned())
                     .collect();
-                let values = FIELDS
-                    .iter()
-                    .map(|&f| Some(loadout::value(c, l, f)))
-                    .collect();
-                ("EDIT CLASS", texts, values, "A CHANGE   B DONE")
+                texts.extend(s(&["RENAME", "RESET CLASS"]));
+                ("CREATE A CLASS", texts, Vec::new(), "A SELECT   B BACK")
             }
-            _ => ("EDIT CLASS", Vec::new(), Vec::new(), "A CHANGE   B DONE"),
+            _ => (
+                "CREATE A CLASS",
+                Vec::new(),
+                Vec::new(),
+                "A SELECT   B BACK",
+            ),
+        },
+        // The perk popup with the catalog's perk 1 choices, the first focused (its icon, description, Pro version).
+        "cac_perk" => match &cat {
+            Some(c) => {
+                let probe = wpk::classes::Loadout::default();
+                let options = loadout::choices(c, &probe, Field::Perk(0));
+                let names = options
+                    .iter()
+                    .filter_map(|&v| c.perks.get(usize::from(v)).map(|p| p.display.clone()))
+                    .collect();
+                if let Some(p) = options.first().and_then(|&v| c.perks.get(usize::from(v))) {
+                    let text = |k: String| ui.string(&k).unwrap_or("").to_owned();
+                    slots.extend([
+                        p.display.clone(),
+                        text(format!("desc:perk:{}", p.name)),
+                        text(format!("name:perk:{}", p.upgrade)),
+                        text(format!("desc:perk:{}", p.upgrade)),
+                    ]);
+                    images.resize(
+                        usize::from(wpk::ui::image_field::SELECTED_PRO) + 1,
+                        String::new(),
+                    );
+                    images[usize::from(wpk::ui::image_field::SELECTED)] =
+                        format!("img:perk:{}", p.name);
+                    images[usize::from(wpk::ui::image_field::SELECTED_PRO)] =
+                        format!("img:perk:{}", p.upgrade);
+                }
+                ("PERK 1", names, Vec::new(), "A SELECT   B BACK")
+            }
+            None => ("PERK 1", Vec::new(), Vec::new(), ""),
+        },
+        // The killstreak page with every killstreak and its kills, the first focused.
+        "streaks" => match &cat {
+            Some(c) => {
+                let names = c.killstreaks.iter().map(|k| k.display.clone()).collect();
+                let values = c
+                    .killstreaks
+                    .iter()
+                    .map(|k| Some(format!("{}", k.kind)))
+                    .collect();
+                if let Some(k) = c.killstreaks.first() {
+                    slots.push(k.display.clone());
+                    slots.push(
+                        ui.string(&format!("desc:streak:{}", k.name))
+                            .unwrap_or("")
+                            .to_owned(),
+                    );
+                    images.resize(
+                        usize::from(wpk::ui::image_field::SELECTED) + 1,
+                        String::new(),
+                    );
+                    images[usize::from(wpk::ui::image_field::SELECTED)] =
+                        format!("streak:{}", k.name);
+                }
+                ("KILLSTREAK REWARDS", names, values, "A CHOOSE   B DONE")
+            }
+            None => ("KILLSTREAK REWARDS", Vec::new(), Vec::new(), ""),
         },
         "scoreboard" => {
             slots.push("A CONTINUE".to_owned());
@@ -322,9 +383,14 @@ pub fn render(common: &[u8], screen: &str) -> Result<Image, String> {
             footer,
             slots: &slots,
             images: &images,
-            inline_values: screen == "rules",
+            inline_values: screen == "rules" || screen == "streaks",
             backdrop: true,
             preview: "",
+            checks: if screen == "streaks" {
+                &[true, true, false, true]
+            } else {
+                &[]
+            },
         },
         &mut quads,
     );

@@ -41,10 +41,79 @@ press B
 press B
 wait 10
 shot 08_lobby_tdm
-# Start the game.
+# Create-a-Class: the class list, MW2's class page and its popups.
+press DOWN
+press A
+wait 10
+shot 20_cac_list
+press A
+wait 10
+shot 21_cac_page
+# PRIMARY: weapon type, weapon, attachment.
+press A
+wait 10
+shot 22_cac_types
+press A
+wait 10
+shot 23_cac_weapons
+press DOWN
+wait 5
+shot 24_cac_weapon_next
+press A
+wait 10
+shot 25_cac_attach
+press DOWN
+wait 5
+shot 26_cac_attach_next
+press B
+wait 10
+# PERK 1.
+times 4 press DOWN
+press A
+wait 10
+shot 27_cac_perk
+press DOWN
+wait 5
+shot 28_cac_perk_next
+press B
+# RENAME (a letter up, then B leaves the name as it was), RESET CLASS.
+times 4 press DOWN
+press A
+wait 10
 press UP
+wait 5
+shot 29_cac_rename
+press B
+press DOWN
+press A
+wait 10
+shot 30_cac_reset
+press B
+press B
+press B
+wait 10
+# PLAYERCARD: the killstreaks.
+press DOWN
+press A
+wait 10
+shot 31_playercard
+press A
+wait 10
+shot 32_killstreaks
+press A
+wait 5
+shot 33_killstreak_off
+press A
+press B
+press B
+wait 10
+# Start the game: MW2's class menu first.
+times 3 press UP
 press A
 wait 700
+shot 34_class_on_join
+press A
+wait 60
 shot 09_hud
 hold R
 wait 40

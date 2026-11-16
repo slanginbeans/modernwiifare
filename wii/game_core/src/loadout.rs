@@ -6,7 +6,8 @@
 //! - Attachments: the weapon's own list (statsTable), never two that `attachmentcombos` forbids. A second attachment
 //!   needs Bling (`specialty_bling`) in perk 1; with everything unlocked Bling is taken as Bling Pro, so it opens the
 //!   secondary's second attachment too.
-//! - Perks by slot; equipment and deathstreak from their own slots; three different killstreaks.
+//! - Perks by slot; equipment and deathstreak from their own slots; three different killstreaks (one set for the
+//!   player, as MW2 keeps them, in order of their kills).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -26,44 +27,135 @@ pub enum Field {
     Killstreak(usize),
 }
 
-/// The fields in menu order.
-pub const FIELDS: [Field; 15] = [
+/// The class page's choosers in MW2's order (`menu_cac_assault`: primary, secondary, equipment, special grenade,
+/// perks 1 to 3, deathstreak; rename and reset class follow them). Attachments are picked after the weapon.
+pub const CLASS_FIELDS: [Field; 8] = [
     Field::Primary,
-    Field::PrimaryAttachment(0),
-    Field::PrimaryAttachment(1),
     Field::Secondary,
-    Field::SecondaryAttachment(0),
-    Field::SecondaryAttachment(1),
     Field::Equipment,
     Field::Offhand,
     Field::Perk(0),
     Field::Perk(1),
     Field::Perk(2),
     Field::Deathstreak,
-    Field::Killstreak(0),
-    Field::Killstreak(1),
-    Field::Killstreak(2),
 ];
 
-/// Our menu labels (not MW2's text).
-pub fn label(f: Field) -> &'static str {
-    match f {
-        Field::Primary => "PRIMARY",
-        Field::PrimaryAttachment(0) => "  ATTACHMENT",
-        Field::PrimaryAttachment(_) => "  ATTACHMENT 2",
-        Field::Secondary => "SECONDARY",
-        Field::SecondaryAttachment(0) => "  ATTACHMENT",
-        Field::SecondaryAttachment(_) => "  ATTACHMENT 2",
-        Field::Equipment => "EQUIPMENT",
-        Field::Offhand => "SPECIAL GRENADE",
-        Field::Perk(0) => "PERK 1",
-        Field::Perk(1) => "PERK 2",
-        Field::Perk(_) => "PERK 3",
-        Field::Deathstreak => "DEATHSTREAK",
-        Field::Killstreak(0) => "KILLSTREAK 1",
-        Field::Killstreak(1) => "KILLSTREAK 2",
-        Field::Killstreak(_) => "KILLSTREAK 3",
+/// The weapon types of the primary and secondary popups, in MW2's order.
+pub const PRIMARY_GROUPS: [u8; 5] = [
+    group::ASSAULT,
+    group::SMG,
+    group::LMG,
+    group::SNIPER,
+    group::RIOT,
+];
+pub const SECONDARY_GROUPS: [u8; 4] = [
+    group::MACHINE_PISTOL,
+    group::SHOTGUN,
+    group::PISTOL,
+    group::LAUNCHER,
+];
+
+/// A weapon type's name in MW2's popups: its localize key and our text.
+pub fn group_label(g: u8) -> (&'static str, &'static str) {
+    match g {
+        group::ASSAULT => ("MENU_ASSAULT_RIFLES_CAPS", "ASSAULT RIFLES"),
+        group::SMG => ("MENU_SMGS_CAPS", "SUBMACHINE GUNS"),
+        group::LMG => ("MENU_LMGS_CAPS", "LIGHT MACHINE GUNS"),
+        group::SNIPER => ("MENU_SNIPER_RIFLES_CAPS", "SNIPER RIFLES"),
+        group::RIOT => ("MENU_RIOT_SHIELD_CAPS", "RIOT SHIELD"),
+        group::MACHINE_PISTOL => ("MENU_MACHINE_PISTOLS_CAPS", "MACHINE PISTOLS"),
+        group::SHOTGUN => ("MENU_SHOTGUNS_CAPS", "SHOTGUNS"),
+        group::PISTOL => ("MENU_HANDGUNS_CAPS", "HANDGUNS"),
+        _ => ("MENU_ROCKETS_CAPS", "LAUNCHERS"),
     }
+}
+
+/// A class page button's localize key and our text.
+pub fn field_label(f: Field) -> (&'static str, &'static str) {
+    match f {
+        Field::Primary => ("MENU_PRIMARY_CAPS", "PRIMARY"),
+        Field::Secondary => ("MENU_SECONDARY_CAPS", "SECONDARY"),
+        Field::Equipment => ("MENU_EQUIPMENT_CAPS", "EQUIPMENT"),
+        Field::Offhand => ("MENU_SPECIAL_GRENADE_CAPS", "SPECIAL GRENADE"),
+        Field::Perk(0) => ("MENU_PERK1_CAPS", "PERK 1"),
+        Field::Perk(1) => ("MENU_PERK2_CAPS", "PERK 2"),
+        Field::Perk(_) => ("MENU_PERK3_CAPS", "PERK 3"),
+        Field::Deathstreak => ("MENU_DEATHSTREAK_CAPS", "DEATHSTREAK"),
+        Field::PrimaryAttachment(_) | Field::SecondaryAttachment(_) => {
+            ("MENU_ATTACHMENTS_CAPS", "ATTACHMENTS")
+        }
+        Field::Killstreak(_) => ("MENU_KILLSTREAK_REWARDS_CAPS", "KILLSTREAK REWARDS"),
+    }
+}
+
+/// The weapon types a weapon field offers that have a weapon in the catalog.
+pub fn groups(c: &Catalog, primary: bool) -> Vec<u8> {
+    let all: &[u8] = if primary {
+        &PRIMARY_GROUPS
+    } else {
+        &SECONDARY_GROUPS
+    };
+    all.iter()
+        .copied()
+        .filter(|&g| c.weapons.iter().any(|w| w.kind == g))
+        .collect()
+}
+
+/// The catalog's weapons of type `g`, in table order.
+pub fn weapons_in(c: &Catalog, g: u8) -> Vec<u8> {
+    (0..c.weapons.len())
+        .filter(|&i| c.weapons[i].kind == g)
+        .map(|i| i as u8)
+        .collect()
+}
+
+/// The weapon type of the weapon a field holds.
+pub fn group_of(c: &Catalog, l: &Loadout, primary: bool) -> Option<u8> {
+    let w = if primary { l.primary } else { l.secondary };
+    c.weapons.get(usize::from(w)).map(|w| w.kind)
+}
+
+/// The icon key of the item at index `v` of a field's list (`img:weapon:m4`, `img:perk:specialty_marathon`); empty
+/// for none.
+pub fn icon_key(c: &Catalog, f: Field, v: u8) -> String {
+    let (list, kind): (&[wpk::classes::Item], &str) = match f {
+        Field::Primary | Field::Secondary => (&c.weapons, "weapon"),
+        Field::PrimaryAttachment(_) | Field::SecondaryAttachment(_) => {
+            (&c.attachments, "attachment")
+        }
+        Field::Offhand => (&c.offhands, "weapon"),
+        Field::Killstreak(_) => (&c.killstreaks, "streak"),
+        _ => (&c.perks, "perk"),
+    };
+    match list.get(usize::from(v)) {
+        Some(i) if !i.name.is_empty() && i.name != "none" && i.name != "specialty_null" => {
+            if kind == "streak" {
+                alloc::format!("streak:{}", i.name)
+            } else {
+                alloc::format!("img:{kind}:{}", i.name)
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// The player's killstreaks (MW2 keeps one set for every class): `k` in or out. Three at most, kept in order of
+/// the kills they cost, empty slots (`NONE`) last. False when it can't go in (three are chosen already).
+pub fn toggle_streak(c: &Catalog, set: &mut [u8; 3], k: u8) -> bool {
+    if let Some(at) = set.iter().position(|&s| s == k) {
+        set[at] = NONE;
+    } else if let Some(free) = set.iter().position(|&s| s == NONE) {
+        set[free] = k;
+    } else {
+        return false;
+    }
+    let cost = |s: u8| {
+        c.killstreaks
+            .get(usize::from(s))
+            .map_or(u16::MAX, |i| u16::from(i.kind))
+    };
+    set.sort_by_key(|&s| (s == NONE, cost(s)));
+    true
 }
 
 fn get(l: &Loadout, f: Field) -> u8 {
@@ -350,6 +442,41 @@ mod tests {
         set(&c, &mut l, Field::Primary, 1);
         assert_eq!(l.primary_attachments, [0, 0]);
         assert!(!enabled(&c, &l, Field::PrimaryAttachment(0)));
+    }
+
+    #[test]
+    fn weapon_types_and_icons() {
+        let c = cat();
+        assert_eq!(groups(&c, true), [group::ASSAULT, group::RIOT]);
+        assert_eq!(groups(&c, false), [group::PISTOL]);
+        assert_eq!(weapons_in(&c, group::RIOT), [1]);
+        let mut l = Loadout::default();
+        assert_eq!(group_of(&c, &l, true), None);
+        l.primary = 1;
+        assert_eq!(group_of(&c, &l, true), Some(group::RIOT));
+        assert_eq!(icon_key(&c, Field::Primary, 2), "img:weapon:pistol");
+        assert_eq!(icon_key(&c, Field::PrimaryAttachment(0), 0), "");
+        assert_eq!(icon_key(&c, Field::Killstreak(0), 1), "streak:b");
+        assert_eq!(icon_key(&c, Field::Perk(0), 0), "img:perk:specialty_bling");
+    }
+
+    #[test]
+    fn the_players_streaks_toggle_and_stay_in_cost_order() {
+        let mut c = cat();
+        // Costs: a 7, b 3, c 5, d 9.
+        for (k, cost) in c.killstreaks.iter_mut().zip([7, 3, 5, 9]) {
+            k.kind = cost;
+        }
+        let mut set = [NONE; 3];
+        assert!(toggle_streak(&c, &mut set, 0));
+        assert!(toggle_streak(&c, &mut set, 1));
+        assert_eq!(set, [1, 0, NONE]);
+        assert!(toggle_streak(&c, &mut set, 2));
+        assert_eq!(set, [1, 2, 0]);
+        // A fourth doesn't go in; taking one out frees its place.
+        assert!(!toggle_streak(&c, &mut set, 3));
+        assert!(toggle_streak(&c, &mut set, 2));
+        assert_eq!(set, [1, 0, NONE]);
     }
 
     #[test]
