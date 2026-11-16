@@ -51,6 +51,7 @@ pub mod smoke;
 pub mod telemetry;
 pub mod ui_page;
 pub mod ui_text;
+pub mod view_kick;
 pub mod viewmodel;
 pub mod weapon_anim;
 pub mod weapon_sound;

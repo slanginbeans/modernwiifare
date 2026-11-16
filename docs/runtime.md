@@ -94,7 +94,7 @@ it (once fully pushed, full forward reaches IW4's sprint threshold). ADS zooms t
 (IW4L `calc_fov`), and the first-person gun comes up to its sights through the weapon's ADS clips (see below).
 
 Controls in a match (IW4L movement and the map's collision): main stick move, C-stick look, **A** jump, **B** stance (tap: crouch / stand, hold 0.3 s: prone / stand; IW4L's console stance button)
-(held), **Z** sprint, **L** ADS, **R** fire, **X** reload, **Y** switch weapon (the gun drops, then the other raises,
+(held), **Z** sprint / hold breath (aimed with a scoped rifle; one button for both, as MW2's console `+breath_sprint`), **L** ADS, **R** fire, **X** reload, **Y** switch weapon (the gun drops, then the other raises,
 as in MW2), **D-pad right** melee, **D-pad up** lethal grenade (hold to cook), **D-pad down** tactical grenade,
 **D-pad left** calls in your newest killstreak reward. **Z + D-pad up** toggles free fly (main
 stick, C-stick, L/R triggers down/up, B fast); leaving free fly drops the player where the camera is.
@@ -124,7 +124,7 @@ accepts, **B** / **START** / **BACK** go back). It uses MW2's own 360 layouts (`
 | **Y** | switch weapon | switch weapon |
 | **LB** / **RB** | tactical / lethal grenade (hold to cook) | the same |
 | **LT** / **RT** | aim down sights / fire | the same |
-| left stick click | sprint | sprint |
+| left stick click | sprint / hold breath | sprint / hold breath |
 | right stick click | melee | crouch, hold for prone |
 | D-pad right | killstreak reward | the same |
 | **START** | pause | pause |
@@ -199,6 +199,16 @@ bullet leaves in a random direction inside it, and the crosshair ticks sit on th
 Recoil is IW4L's model with each weapon's own kick numbers (`KICK` in `common.wpk`): every shot kicks the view
 (capped at 8°, settling over ~80 ms springs; later shots follow the kicked view, so the gun climbs as in MW2) and
 the viewmodel (gun kick within the weapon's maximum pitch / yaw).
+The camera's feel (`game_core::view_kick`, IW4L's `weapon_iw4::view_bob` put together as IW4L's first-person camera
+does): the eye bobs with your steps (up and down and sideways by stance, sprint and ADS; Lightweight bobs less),
+dips on a landing as deep as the fall (`crash_land_view_dip`: falls over 12 units, at most 24 units, back over 450
+ms), kicks away from a hit (towards the attacker's side; a fall or your own grenade kicks it up, IW4's 0.2° a point,
+5° to 90°, over 100 ms out and 400 ms back) and, aimed with a scope, sways at idle by the weapon's ADS idle numbers.
+Holding breath (Z / left stick click while fully aimed; IW4L's `movement_iw4` breath timer, 4.5 s, 5 s longer with
+`specialty_holdbreath`) stills the sway; when the breath runs out the sway is worse until it recovers, and the
+viewmodel's ADS idle sway follows the same scale. The angles also move your aim (the screen's centre is where shots
+go); the eye's bob and dip only move the drawn camera. Memory: about 70 bytes of state, no pack data. IW4L's values;
+a trace against MW2 is still to do.
 Effects (`effects.rs`, `game_core::fx`, the common pack's `FXDF`): MW2's own effect definitions, played as IW4
 plays their one-shot elements (count, delay and life ranges, spawn origin and sphere / cylinder offsets, the local
 and world velocity graphs, gravity) and drawn as textured sprites whose size, colour and alpha follow the elements'
@@ -287,6 +297,12 @@ Placeholder until the death cam / killcam flow is ported (ADR 0007): the 3 s res
 
 ## Movement status
 - `pmove` is IW4L's, unchanged; the context uses MW2's MP dvar defaults (190 speed, 800 gravity, jump 39, sprint ×1.5).
+- Mantles: jump (or walk with Marathon Pro's auto-mantle) at a ledge whose brush is marked for mantling climbs it
+  (on mp_rust 72 mantle brushes, 80 of the faces tried by `player::tests::mantles_on_the_real_map` climbable). The
+  climb's path is IW4L's `CreateAnimsMantleRootDelta`: straight up by the ledge's height band and 16 units in over
+  400 ms, then 31 units over the top over 200 ms for a mantle over; MW2 moves along the mantle clips' root tracks
+  (IW4L `sim::mantle_xanim`), which aren't converted yet. Nothing animates the mantle (the viewmodel is lowered by
+  pmove's weapon state; the third-person mantle clips aren't played).
 - Traces: world brushes through the BSP plus the triangle mesh (`clipmap_iw4::trace_brush_and_mesh`). Glass is
   always solid. Not yet: brush models (doors, movers), other players, penetration recovery.
 - C-stick look speed (200°/s yaw, 140°/s pitch at full tilt, linear past a 12-count dead zone) is a placeholder. It

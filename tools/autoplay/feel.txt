@@ -1,0 +1,86 @@
+# Movement and camera feel (game_core::autoplay syntax): a mantle on mp_rust, a jump's landing dip, the view bob
+# while running, and holding breath on a scoped rifle. Run with tools/dolphin-test.ps1 -Maps mp_rust -Script
+# tools/autoplay/feel.txt; the match log has mantle_start / mantle_end, land_dip and breath_hold / breath_release.
+wait 90
+shot 01_main
+# Private match lobby, START GAME.
+press A
+wait 10
+press A
+wait 700
+# MW2's class menu: five custom classes, then the defaults (Grenadier, First Recon, Overwatch, Scout Sniper, ...).
+times 8 press DOWN
+wait 5
+shot 02_class_menu
+press A
+wait 60
+shot 03_spawned
+# DEBUG (START, the 4th line): bots don't attack, bots frozen, god mode, so nothing interrupts the checks. These are
+# saved in debug.dat on the card and toggle each run: delete it first (tools/dolphin-test.ps1 starts clean only if
+# out/dolphin/sd/apps/mwf_game/debug.dat is gone).
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+press A
+press DOWN
+press A
+press DOWN
+press A
+wait 5
+shot 03b_debug
+# B leaves the debug menu straight back to the match (another B would crouch).
+press B
+wait 20
+# A ledge on mp_rust found by player::tests::mantles_on_the_real_map: a crate face, 33 units up, facing +y.
+warp 1189 420 -239 90
+wait 30
+shot 04_at_ledge
+log mantle: forward + jump at the ledge
+stick 0 120
+press A 4
+wait 4
+shot 05_mantle_early
+wait 8
+shot 06_mantle_mid
+wait 30
+stick 0 0
+wait 20
+shot 07_on_ledge
+# A jump on the spot: the landing dips the view.
+log jump for the landing dip
+press A 4
+wait 30
+shot 08_landed
+wait 30
+# Running: the view bobs (two shots half a step apart).
+warp 1189 300 -239 0
+wait 30
+stick 0 120
+wait 40
+shot 09_run_a
+wait 9
+shot 10_run_b
+stick 0 0
+wait 30
+# Scoped: aim (L), then hold breath (Z, MW2's +breath_sprint) for two seconds, then let go.
+log ads then hold breath
+triggers 255 0
+hold L
+wait 60
+shot 11_scoped
+hold Z
+wait 120
+shot 12_breath_held
+# Held past MW2's 4.5 s: the breath runs out (the log's breath_release with the gasp's timer).
+wait 240
+shot 13_breath_out
+release Z
+wait 60
+shot 14_breath_recovering
+release L
+triggers 0 0
+wait 20
+log done
+quit

@@ -31,12 +31,17 @@ for modes, killstreaks, last stand and deathstreaks; we don't (ADR 0007), so for
 Feel changes in this round take IW4L's code as the reference (host tests against its values); a trace against MW2
 is still to do for each.
 
-Bugs: **mantle** moves nothing (`player.rs` passes `ZeroMantleRootDelta`; IW4L has `CreateAnimsMantleRootDelta`);
+Bugs: ~~**mantle** moves nothing~~ fixed (2026-11-15): pmove gets IW4L's `CreateAnimsMantleRootDelta`, so a mantle
+climbs over 400 / 600 ms (with the zero delta the player was put on the ledge at once and stood there for the mantle's
+length). Mantles trigger on our collision (mp_rust: 72 mantle brushes). Still straight lines: MW2's paths are the
+mantle clips' root tracks (IW4L `sim::mantle_xanim`), not converted; no mantle animation plays.
 **launchers** (RPG, AT4, Javelin, Stinger, Thumper) fire hitscan bullets (no projectile code; IW4L `sim` missile,
 `think_projectile`, guidance, lock-on).
 
-Gameplay, IW4L has code: camera view bob / landing dip / hit view kick / idle sway and hold breath
-(`weapon_iw4::view_bob`; the breath button isn't sent); riot shield blocking (`sim` shield, `is_shield`); weapon drops
+Gameplay, IW4L has code: ~~camera view bob / landing dip / hit view kick / idle sway and hold breath~~ done
+(2026-11-15, `game_core::view_kick` over `weapon_iw4::view_bob`; breath on the sprint button as MW2's console
+`+breath_sprint`; IW4L's values, a trace against MW2 still to do; not yet: the viewmodel's own landing dip,
+`viewweapon_land_origin_z`); riot shield blocking (`sim` shield, `is_shield`); weapon drops
 and pickups, Scavenger (`sim` item); underbarrel grenade launcher / shotgun (`weapon_iw4::weapon_change` alternate)
 and akimbo (dual-wield ammo, two hands); hit boxes turned with the body and bullets through players (`sim`
 bullet_collision, `fire_extended`); glass (`entity_iw4::glass`); killcam (`killcam_iw4` timing; we need a pose ring);

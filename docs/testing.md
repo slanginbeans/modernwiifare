@@ -39,7 +39,8 @@ Also say per round: did it crash (the log then has no summary line), did sound p
 `<app folder>/autoplay.txt`, when it is on the card, plays the GameCube pad from a script and saves screenshots
 (`game_core::autoplay`; the Wii side is `wii/game/src/autoplay.rs`): one command a line, `wait N`,
 `press A+UP [N]`, `hold` / `release`, `stick X Y`, `cstick X Y`, `triggers L R`, `times N <command>`,
-`shot NAME` (the next frame as `<app folder>/shots/NAME.bmp`), `log TEXT` (a line in the match log), `quit`
+`shot NAME` (the next frame as `<app folder>/shots/NAME.bmp`), `log TEXT` (a line in the match log), `warp X Y Z YAW`
+(in a match: the player to that map spot, dropped onto the floor, facing YAW degrees), `quit`
 (switches the console off). Frames are pad reads: one a frame in the menus and the match, none while a map loads,
 so a script runs the same on every machine. Delete `autoplay.txt` afterwards, or the game plays it on every start.
 
@@ -48,6 +49,11 @@ Create-a-Class (the class page, the weapon type, weapon, attachment and perk pop
 Playercard popup and the Killstreak Rewards page, a Team Deathmatch (the class menu as it starts), the START menu
 over the game, Choose Class, Options (the safe area at 80% and back), End Game and
 its question, back to the lobby and the main menu.
+
+`tools/autoplay/feel.txt` (mp_rust) checks the movement and camera feel: a mantle up a crate (the spot from
+`player::tests::mantles_on_the_real_map`), a jump's landing dip, the view bob while running, and holding breath on
+the Scout Sniper class's scoped rifle. The match log gets `warp`, `mantle_start` / `mantle_end`, `land_dip` and
+`breath_hold` / `breath_release` lines.
 
 On the PC, `tools/dolphin-test.ps1 -Dolphin <Dolphin.exe>` (or `MWF_DOLPHIN`) runs a script in Dolphin on the
 built game (`dist\apps\mwf_game`, `out\packs`): it sets up its own Dolphin profile and an SD card folder under

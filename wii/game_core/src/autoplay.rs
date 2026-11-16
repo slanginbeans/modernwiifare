@@ -8,6 +8,8 @@
 //! - `times N <command>`: the command N times.
 //! - `shot NAME`: a screenshot of the frame drawn next, to `<app folder>/shots/NAME.bmp`.
 //! - `log TEXT`: a line in the match log.
+//! - `warp X Y Z YAW`: in a match, put the player at map position X Y Z (dropped onto the floor below) facing YAW
+//!   degrees, to test a spot (a mantle, a drop).
 //! - `quit`: switch the console off (Dolphin stops and writes the SD folder back).
 //!
 //! Buttons: A B X Y Z L R START UP DOWN LEFT RIGHT. Frames are pad reads: one a frame in the menus and the match,
@@ -28,6 +30,7 @@ enum Cmd {
     Triggers(u8, u8),
     Shot(String),
     Log(String),
+    Warp([i32; 4]),
     Quit,
 }
 
@@ -44,6 +47,8 @@ pub struct Frame {
     /// Take a screenshot after this frame is drawn.
     pub shot: Option<String>,
     pub log: Option<String>,
+    /// Put the player at (x, y, z) facing yaw degrees.
+    pub warp: Option<[i32; 4]>,
     pub quit: bool,
 }
 
@@ -116,6 +121,12 @@ fn parse_line(line: &str, out: &mut Vec<Cmd>) -> Result<(), String> {
         }
         "shot" => out.push(Cmd::Shot(String::from(rest))),
         "log" => out.push(Cmd::Log(String::from(rest))),
+        "warp" => out.push(Cmd::Warp([
+            num(args.next())?,
+            num(args.next())?,
+            num(args.next())?,
+            num(args.next())?,
+        ])),
         "quit" => out.push(Cmd::Quit),
         other => return Err(alloc::format!("unknown command {other}")),
     }
@@ -145,6 +156,7 @@ impl Script {
         let mut f = Frame {
             shot: None,
             log: None,
+            warp: None,
             quit: false,
             ..self.pad.clone()
         };
@@ -175,6 +187,10 @@ impl Script {
                     f.log = Some(s);
                     break;
                 }
+                Cmd::Warp(w) => {
+                    f.warp = Some(w);
+                    break;
+                }
                 Cmd::Quit => {
                     f.quit = true;
                     break;
@@ -184,6 +200,7 @@ impl Script {
         Frame {
             shot: f.shot,
             log: f.log,
+            warp: f.warp,
             quit: f.quit,
             ..self.pad.clone()
         }
@@ -213,6 +230,18 @@ mod tests {
         let frames: Vec<u16> = (0..9).map(|_| s.frame().held).collect();
         assert_eq!(frames.iter().filter(|&&h| h != 0).count(), 1);
         assert!(s.done());
+    }
+
+    #[test]
+    fn warp_takes_a_spot() {
+        let mut s = Script::parse(
+            "warp 1189 420 -239 90
+wait 1",
+        )
+        .unwrap();
+        assert_eq!(s.frame().warp, Some([1189, 420, -239, 90]));
+        assert_eq!(s.frame().warp, None);
+        assert!(Script::parse("warp 1 2").is_err());
     }
 
     #[test]

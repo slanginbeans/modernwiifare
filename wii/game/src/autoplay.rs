@@ -11,6 +11,7 @@ struct State {
     script: Script,
     last_held: u16,
     shot: Option<String>,
+    warp: Option<[i32; 4]>,
     quit: bool,
 }
 
@@ -43,6 +44,7 @@ pub fn init() {
                     script,
                     last_held: 0,
                     shot: None,
+                    warp: None,
                     quit: false,
                 })
             };
@@ -64,8 +66,16 @@ pub fn frame() -> Option<Frame> {
     if let Some(line) = &f.log {
         devlog::event(ffi::ms(), "autoplay", format_args!("{line}"));
     }
+    if f.warp.is_some() {
+        s.warp = f.warp;
+    }
     s.quit |= f.quit;
     Some(f)
+}
+
+/// A `warp` the script asked for, once (the match puts the player there).
+pub fn take_warp() -> Option<[i32; 4]> {
+    state()?.warp.take()
 }
 
 pub fn last_held() -> u16 {
