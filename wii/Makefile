@@ -52,7 +52,7 @@ $(BUILD)/spike_a_gx.elf: $(BUILD)/main_spike_a.o $(COMMON) $(RUSTLIB)
 $(BUILD)/spike_b_net.elf: $(BUILD)/main_spike_b.o $(COMMON) $(RUSTLIB)
 	$(CC) $(LDFLAGS) $(BUILD)/main_spike_b.o $(COMMON) $(RUSTLIB) $(LIBS) -Wl,-Map,$@.map -o $@
 
-GAME_SHIM := $(BUILD)/shim_world.o $(BUILD)/shim_usbpad.o
+GAME_SHIM := $(BUILD)/shim_world.o $(BUILD)/shim_usbpad.o $(BUILD)/shim_ps.o
 $(BUILD)/game.elf: $(BUILD)/main_game.o $(COMMON) $(GAME_SHIM) $(GAMELIB)
 	$(CC) $(LDFLAGS) $(BUILD)/main_game.o $(COMMON) $(GAME_SHIM) $(GAMELIB) $(GAME_LIBS) -Wl,-Map,$@.map -o $@
 

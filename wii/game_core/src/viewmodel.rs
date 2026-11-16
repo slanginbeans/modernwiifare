@@ -19,9 +19,11 @@ pub const IDENTITY: Mtx34 = [
     [0.0, 0.0, 1.0, 0.0],
 ];
 
+/// `q` at unit length: a reciprocal square root and four multiplies (`wpk::fmath`: the Wii has no square root
+/// instruction, and a divide costs ~30 cycles).
 fn qnorm(q: Quat) -> Quat {
-    let l = libm::sqrtf(q.iter().map(|v| v * v).sum::<f32>()).max(1e-12);
-    q.map(|v| v / l)
+    let inv = wpk::fmath::rsqrt(q.iter().map(|v| v * v).sum::<f32>().max(1e-24));
+    q.map(|v| v * inv)
 }
 
 /// Normalized linear interpolation (shortest arc).

@@ -180,8 +180,8 @@ lists, quantized indexed vertices, strips, cells and portals, short TEV chains, 
 opaque surfaces and CPU/GPU overlap. Done from that comparison: a steady 30 fps (Options > FRAME RATE, as the Wii's
 Call of Duty ports ran) and the GPU's own counters in the match log (`docs/testing.md`), so a hardware log says
 whether a map is GPU-, fill- or CPU-bound. Next from it, in order: per-instance CPU work in world submission
-(GX-indexed matrix loads, fewer array rebinds and vertex-cache flushes), characters on the GX matrix palette with
-frustum / distance culling and a far LOD, paired-singles maths for what stays on the CPU (and `opt-level=3`), the
+(GX-indexed matrix loads, fewer array rebinds and vertex-cache flushes), paired-singles maths for the rest of what
+stays on the CPU (and `opt-level=3`), the
 built-but-off pack toggles (`--small-dl`, `--tiled-uv`, `--small-props`, `--slim-views`, `--adpcm`) for MEM2 on the
 big maps, then TMEM preloading, CI palettes for UI, a particle coverage cap.
 1. **World vertex load** (~12-25 ms on big maps): draw distance with fog and model LOD scale are in (debug menu),
@@ -200,8 +200,12 @@ big maps, then TMEM preloading, CI palettes for UI, a particle coverage cap.
    origins.
 4. Viewmodel and characters: skinned straight into their MEM2 buffers with a multiply for the weights (no copy, no
    divide). The viewmodel's rigid vertices (one bone at full weight) are placed by GX with their bone's matrix (a
-   matrix index per vertex, at most ten per draw); only blended vertices are skinned on the CPU. Not yet: the same
-   for characters, strips for the viewmodel's triangles.
+   matrix index per vertex, at most ten per draw); only blended vertices are skinned on the CPU. Characters: done
+   2026-11-16 the same way, with paired-single skinning (`shim_ps.c`), no software square roots in posing
+   (`wpk::fmath`), and bodies outside the view or past the far plane posed only for their hit boxes and not drawn
+   (`docs/runtime.md`). Not yet: strips for the viewmodel's and characters' triangles, culling bodies in cells the
+   portals don't reach (needs the world's cell lookup), a far LOD (the converter already reads the lightest),
+   the pose itself (two clips sampled over every bone: ~75% of `bod` in Dolphin now), measured on hardware.
 5. ~~Weapon-file hitch at spawn~~ done differently: a whole class set is ~4-8 MB (files average 2.1 MB), too much to
    keep every class's loaded, so the next life's files stream in during the death screen (192 KB a frame, from 1 s
    after death); what's left at the respawn loads then.

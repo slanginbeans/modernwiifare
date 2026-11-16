@@ -226,7 +226,8 @@ impl TrackRef<'_> {
 
     fn quat(&self, i: usize) -> [f32; 4] {
         let [x, y, z] = self.i16x3(self.keys * 2 + i * 6).map(|v| v / 32767.0);
-        let w = libm::sqrtf((1.0 - x * x - y * y - z * z).max(0.0));
+        // `fmath`: no square root instruction on the Wii.
+        let w = crate::fmath::sqrt(1.0 - x * x - y * y - z * z);
         [x, y, z, w]
     }
 
@@ -244,8 +245,8 @@ impl TrackRef<'_> {
             qb = qb.map(|v| -v);
         }
         let q: [f32; 4] = core::array::from_fn(|k| qa[k] + (qb[k] - qa[k]) * w);
-        let len = libm::sqrtf(q.iter().map(|v| v * v).sum::<f32>()).max(1e-9);
-        Some(q.map(|v| v / len))
+        let inv = crate::fmath::rsqrt(q.iter().map(|v| v * v).sum::<f32>().max(1e-18));
+        Some(q.map(|v| v * inv))
     }
 
     /// The translation delta at frame `f`, or `None` (the bind translation).
