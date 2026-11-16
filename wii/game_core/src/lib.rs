@@ -37,6 +37,7 @@ pub mod grenade;
 pub mod gun;
 pub mod hud;
 pub mod hud_mw2;
+pub mod killstreaks;
 pub mod life;
 pub mod loadout;
 pub mod look;

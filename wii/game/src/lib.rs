@@ -20,6 +20,7 @@ mod front;
 mod objects;
 mod rt;
 mod sound;
+mod streaks;
 mod ui;
 mod view;
 
@@ -1103,6 +1104,14 @@ fn run_map(
         }
         a.equips = equips;
         a.blockers = blockers;
+        streaks::setup(
+            a,
+            common,
+            weapons,
+            equips,
+            &spawn_list,
+            world.minimap.as_ref().map(|m| &m.0),
+        );
         // Time the bots (telemetry `bai` / `bmv` / `bgun`).
         a.clock = Some(clock_us);
     }
@@ -1173,6 +1182,8 @@ fn run_map(
         Vec::new()
     };
     let mut reward_note: Option<(&'static str, u32)> = None;
+    // The killstreaks past the radar ones (`streaks.rs`).
+    let mut ks = streaks::Shell::default();
     // The HUD's score popup: your score last frame, the points just scored and when.
     let mut last_score = 0u32;
     let mut popup: Option<(u32, u32)> = None;
@@ -1411,6 +1422,11 @@ fn run_map(
                             }
                         }
                         (Some(Action::RefillRewards), _) => rewards = all_rewards(),
+                        (Some(Action::Give(i)), _) => {
+                            if let Some(n) = wpk::streaks::NAMES.get(usize::from(i)) {
+                                rewards.push(alloc::string::String::from(*n));
+                            }
+                        }
                         (Some(Action::ResetClock), _) => {
                             clock = MatchClock::with_limit(now, setup.1.time_limit_ms);
                         }
@@ -1467,6 +1483,11 @@ fn run_map(
                     done: false,
                 });
                 reward_note = Some(("TACTICAL NUKE INCOMING", now));
+            } else if let Some(a) = arena.as_mut()
+                && let Some(c) = clip.as_ref()
+                && let Some(p) = player.as_ref()
+                && ks.call(a, c, &r, p.eye(), cam.forward(), p.ps.velocity, now)
+            {
             } else {
                 reward_note = Some(("THAT KILLSTREAK IS NOT IN THIS BUILD YET", now));
             }
@@ -1518,7 +1539,17 @@ fn run_map(
             _ => None,
         };
         let x_held = ctl.held(act::USE);
-        let reload_held = x_held && knife_near.is_none();
+        // A crate in reach: X held takes it (`_airdrop.gsc` capture) instead of reloading.
+        let crate_near = match (arena.as_mut(), player.as_ref()) {
+            (Some(a), Some(p)) if life.alive() && !flying => {
+                ks.capture(a, p.ps.origin, x_held && knife_near.is_none(), now)
+            }
+            _ => {
+                ks.capture = None;
+                false
+            }
+        };
+        let reload_held = x_held && knife_near.is_none() && !crate_near;
         // C4: X pressed, let go within 0.5 s, pressed again within 0.5 s detonates it.
         match (x_held, x_down_ms) {
             (true, None) => {
@@ -1597,7 +1628,49 @@ fn run_map(
             (Some(p), Some(c)) if !flying && life.alive() => {
                 // Fixed 60 Hz for the player, like IW4 at 60 fps (usercmds of 16 / 17 ms): the fire rate and
                 // movement don't depend on the frame rate. A slow frame runs several steps.
-                for _ in 0..player_ticks {
+                // Fire went down this frame (the trigger has no press of its own).
+                let fire_down = ks.fire_pressed(ctl.held(act::FIRE));
+                // Carrying a sentry: fire sets it down (where it may stand) instead of shooting.
+                let carrying = arena.as_ref().is_some_and(|a| a.carries_sentry(0));
+                if carrying
+                    && fire_down
+                    && let Some(a) = arena.as_mut()
+                    && a.place_sentry(0, now)
+                {
+                    devlog::event(now, "sentry", format_args!("placed"));
+                }
+                // Flying a remote killstreak: the body stands still and the sticks fly it.
+                let remote =
+                    ks.busy() || arena.as_ref().is_some_and(|a| streaks::remote(a).is_some());
+                // The air strikes' target screen.
+                if ks.busy()
+                    && let Some(a) = arena.as_mut()
+                    && let Some(name) = ks.target_input(
+                        a,
+                        c,
+                        world.minimap.as_ref().map(|m| &m.0),
+                        ctl.stick_l,
+                        ctl.stick_r,
+                        ctl.pressed(act::JUMP) || fire_down,
+                        ctl.pressed(act::STANCE),
+                        dt,
+                        now,
+                    )
+                {
+                    rewards.push(alloc::string::String::from(name));
+                }
+                if let Some(a) = arena.as_mut()
+                    && remote
+                {
+                    streaks::steer(
+                        a,
+                        ctl.stick_r,
+                        ctl.held(act::FIRE),
+                        ctl.pressed(act::SWITCH),
+                        dt,
+                    );
+                }
+                for _ in 0..if remote { 0 } else { player_ticks } {
                     if !life.alive() {
                         break;
                     }
@@ -1680,7 +1753,7 @@ fn run_map(
                             ),
                             sprint: ctl.held(act::SPRINT),
                             ads: ads_held,
-                            fire: ctl.held(act::FIRE),
+                            fire: ctl.held(act::FIRE) && !carrying,
                             reload: reload_held,
                         },
                         &weapon_move,
@@ -1753,7 +1826,7 @@ fn run_map(
                             c,
                             tick_ms,
                             &GunInput {
-                                fire: ctl.held(act::FIRE),
+                                fire: ctl.held(act::FIRE) && !carrying,
                                 reload: reload_held,
                                 // Melee: the right stick click (360, Default) or D-pad right (GameCube).
                                 melee: ctl.held(act::MELEE),
@@ -1929,7 +2002,8 @@ fn run_map(
         }
         let _ = lap(&mut mark);
         if let (Some(a), Some(c)) = (arena.as_mut(), clip.as_ref()) {
-            a.human_present = !flying && player.is_some();
+            // Up in a Chopper Gunner or AC-130 you are out of the fight below.
+            a.human_present = !flying && player.is_some() && !streaks::in_vehicle(a);
             a.fighters[0].life = life;
             a.update_bots(
                 c,
@@ -1944,6 +2018,17 @@ fn run_map(
             a.update_grenades(c, dt, now, &mut events);
             a.update_objects(c, now, &mut events);
             a.update_objectives(dt * 1000.0, now, &mut events);
+            a.update_killstreaks(c, dt, now, &mut events);
+            ks.after_update(
+                a,
+                &mut rewards,
+                || {
+                    for g in arsenal.guns.iter_mut().flatten() {
+                        g.refill_ammo();
+                    }
+                },
+                now,
+            );
             a.footsteps(c, &mut events);
             life = a.fighters[0].life;
             // Hits slow you (IW4 damage timer, set on the arena's copy of you).
@@ -2132,6 +2217,14 @@ fn run_map(
             sections[section::BOT_MOVE] = a.bot_cost.move_us;
             sections[section::BOT_GUN] = a.bot_cost.gun_us;
         }
+        // A remote killstreak's view (the Predator's).
+        let remote_cam = arena.as_ref().and_then(streaks::remote);
+        if let Some(c) = remote_cam {
+            cam = Camera { aspect, ..c };
+            // Seen from the sky: the whole far plane, no map fog.
+            world.draw_distance = 0.0;
+            world.map_fog = false;
+        }
         let stats = world.draw(gfx, &cam, scratch);
         // Destructible objects, as part of the world.
         if let (Some(p), Some(a)) = (props.as_ref(), arena.as_ref()) {
@@ -2298,6 +2391,7 @@ fn run_map(
                     }
                 }
             }
+            streaks::stand_ins(a, &mut boxes, &mut box_colours);
             unsafe {
                 ffi::mwf_draw_boxes(
                     &cam.view(),
@@ -2314,6 +2408,7 @@ fn run_map(
         sections[section::BODIES] = lap(&mut mark);
         if !flying
             && life.alive()
+            && remote_cam.is_none()
             && let (Some(v), Some(g), Some(p)) = (
                 arsenal.views[arsenal.active].as_mut(),
                 arsenal.guns[arsenal.active].as_ref(),
@@ -2525,6 +2620,11 @@ fn run_map(
                 hud::text(&mut hud_rects, 200, 360, 2, text);
                 gfx.hud_rects(&hud_rects, 0xffd040e0);
             }
+            if let Some(a) = arena.as_ref() {
+                ks.draw_targeting(gfx, &mut hud_rects, a, world.minimap.as_ref());
+                streaks::draw_remote_hud(gfx, &mut hud_rects, a, now);
+            }
+            ks.draw_hud(gfx, &mut hud_rects, now);
             if let Some(r) = rewards.last().filter(|_| !mw2) {
                 let mut line = Str::default();
                 line.push_str("D-PAD LEFT: ");

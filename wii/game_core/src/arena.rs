@@ -325,6 +325,8 @@ pub struct Arena {
     pub objects: crate::destructible::Objects,
     /// What they asked for since the last [`Arena::update_objects`].
     object_out: Vec<crate::destructible::Out>,
+    /// The killstreaks in play (`crate::killstreaks`).
+    pub streaks: crate::killstreaks::Streaks,
 }
 
 fn dist2(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -490,6 +492,7 @@ impl Arena {
             spawn_count: 0,
             objects: crate::destructible::Objects::default(),
             object_out: Vec::new(),
+            streaks: crate::killstreaks::Streaks::default(),
         };
         a.fighters.push(Fighter::new(human, gun(0), None, &rules));
         for i in 1..=bots {
@@ -696,6 +699,22 @@ impl Arena {
         now: u32,
         out: &mut Vec<Event>,
     ) {
+        // A killstreak helicopter in the bullet's way before the wall takes it (`crate::killstreaks::air`).
+        if !self.streaks.helis.is_empty() {
+            let heli_damage = facts.damage as f32 * self.fighters[from].bullet_scale;
+            let hostile: Vec<bool> = (0..self.fighters.len())
+                .map(|i| self.enemies(from, i))
+                .collect();
+            if crate::killstreaks::air::bullet_hits_heli(
+                &mut self.streaks,
+                &hostile,
+                shot.start,
+                shot.end,
+                heli_damage,
+            ) {
+                return;
+            }
+        }
         let mut best: Option<(f32, usize, u8)> = None;
         for (i, f) in self.fighters.iter().enumerate() {
             if i == from || !f.life.alive() || (i == 0 && !self.human_present) {
@@ -836,7 +855,7 @@ impl Arena {
     /// `victim` takes `d` from `from` at hit location `loc` along `dir`: the damage timer, the events, and the kill's
     /// points.
     #[allow(clippy::too_many_arguments)]
-    fn hurt(
+    pub(crate) fn hurt(
         &mut self,
         from: usize,
         victim: usize,
@@ -893,8 +912,18 @@ impl Arena {
                     self.team_score[team] += limits.kill_score;
                 }
                 let k = &mut self.fighters[from];
-                if k.brain.is_some() && uav_kills > 0 && k.streak == uav_kills {
-                    k.uav_until = Some(now.wrapping_add(rules.uav_time_ms));
+                // A bot's killstreaks (`crate::killstreaks`): its set, or the UAV alone without one.
+                if k.brain.is_some() {
+                    let streak = k.streak;
+                    self.streaks.fit(from + 1);
+                    if self.streaks.sets[from].iter().all(Option::is_none) {
+                        if uav_kills > 0 && streak == uav_kills {
+                            self.fighters[from].uav_until =
+                                Some(now.wrapping_add(rules.uav_time_ms));
+                        }
+                    } else {
+                        self.streaks.on_kill(from, streak);
+                    }
                 }
             }
         }
@@ -1159,7 +1188,7 @@ impl Arena {
     /// An object's explosion on the players (IW4 `RadiusDamage`): `max` at `origin` down to `min` at `range`, by how
     /// much of each player the blast sees; from `attacker` (none: the object, so a death is the victim's own).
     #[allow(clippy::too_many_arguments)]
-    fn blast_players(
+    pub(crate) fn blast_players(
         &mut self,
         clip: &MapClip<'_>,
         origin: [f32; 3],

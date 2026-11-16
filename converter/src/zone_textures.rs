@@ -342,6 +342,7 @@ impl AssetLinkSink for Collector {
         // ... and MW2's destructible types (`destructibles.rs`).
         if crate::player_anims::SOURCES.contains(&name)
             || crate::destructibles::SCRIPTS.contains(&name)
+            || crate::streak_rules::SCRIPTS.contains(&name)
         {
             let bytes = if zlib_compressed {
                 asset_transport::inflate_zlib(data).unwrap_or_default()

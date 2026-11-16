@@ -48,6 +48,7 @@ mod simplify;
 mod sounds;
 mod stamp;
 mod static_models;
+mod streak_rules;
 mod tex_report;
 mod texture;
 mod ui_bake;
@@ -1635,6 +1636,18 @@ fn run_common(args: &[String]) -> ExitCode {
         println!("  kept MW2's stock value for: {}", missing.join(", "));
     }
     b.section(wpk::tag::RULES, 0, rules.encode());
+    let streaks = streak_rules::read(&scripts);
+    println!(
+        "killstreak rules: {} of {} values read from the killstreak scripts ({} killstreaks)",
+        streaks.found.count_ones(),
+        wpk::streaks::found::ALL.count_ones(),
+        streak_rules::STREAKS
+    );
+    let missing = streak_rules::missing(&streaks);
+    if !missing.is_empty() {
+        println!("  kept MW2's stock value for: {}", missing.join(", "));
+    }
+    b.section(wpk::tag::STREAK_RULES, 0, streaks.encode());
     match built {
         Some((ui, r)) => {
             println!(

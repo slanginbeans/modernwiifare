@@ -31,6 +31,7 @@ pub mod quant;
 pub mod records;
 pub mod rules;
 pub mod sound;
+pub mod streaks;
 pub mod strips;
 pub mod ui;
 pub mod view;
@@ -146,6 +147,8 @@ pub mod tag {
     pub const UI: Tag = *b"UIPK";
     /// Match rules from the user's game-type scripts ([`crate::rules::Rules`], in `common.wpk`).
     pub const RULES: Tag = *b"RULE";
+    /// Killstreak rules from the user's killstreak scripts ([`crate::streaks::StreakRules`], in `common.wpk`).
+    pub const STREAK_RULES: Tag = *b"KSRL";
     /// Weapons (`weapon::WeaponRecord`): combat numbers of every weapon (in `common.wpk`).
     pub const WEAPONS: Tag = *b"WEAP";
     /// World visibility (`vis::Vis`): cell BSP, cells, portals.

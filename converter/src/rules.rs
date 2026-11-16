@@ -43,7 +43,7 @@ pub const SCRIPTS: [&str; 15] = [
 ];
 
 /// The text without `/* */` and `//` comments (scanned in order, so a `//*` line comment isn't a block).
-fn strip_comments(text: &str) -> String {
+pub(crate) fn strip_comments(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     loop {
@@ -69,7 +69,7 @@ fn strip_comments(text: &str) -> String {
 }
 /// The body of function `name`'s definition (a line starting with `name(`), up to its closing brace at the start
 /// of a line.
-fn function_body<'t>(text: &'t str, name: &str) -> Option<&'t str> {
+pub(crate) fn function_body<'t>(text: &'t str, name: &str) -> Option<&'t str> {
     let mut at = 0;
     for line in text.split_inclusive('\n') {
         if line.trim_start().starts_with(name)
@@ -94,7 +94,7 @@ fn speed_scale_after(text: &str, from: usize) -> Option<f32> {
 }
 
 /// Every call of `func` (any module prefix) with its arguments, unquoted and trimmed, from offset `from` on.
-fn calls(text: &str, func: &str, from: usize) -> Vec<(usize, Vec<String>)> {
+pub(crate) fn calls(text: &str, func: &str, from: usize) -> Vec<(usize, Vec<String>)> {
     let mut out = Vec::new();
     let mut at = from;
     while let Some(i) = text[at..].find(func).map(|i| i + at) {
@@ -120,12 +120,12 @@ fn calls(text: &str, func: &str, from: usize) -> Vec<(usize, Vec<String>)> {
     out
 }
 
-fn number(s: &str) -> Option<f32> {
+pub(crate) fn number(s: &str) -> Option<f32> {
     s.trim().trim_end_matches(';').trim().parse().ok()
 }
 
 /// The value of the first `name = <number>;`.
-fn assignment(text: &str, name: &str) -> Option<f32> {
+pub(crate) fn assignment(text: &str, name: &str) -> Option<f32> {
     text.split([';', '{', '}', '\n']).find_map(|l| {
         let (lhs, rhs) = l.split_once('=')?;
         if lhs.trim() != name || rhs.starts_with('=') {

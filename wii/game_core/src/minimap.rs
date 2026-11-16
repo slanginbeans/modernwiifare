@@ -63,6 +63,43 @@ impl Frame {
         })
     }
 
+    /// The whole map, north up, fitted into screen `rect` (the killstreaks' target screen, MW2's `minimap` view
+    /// for `beginLocationSelection`), centred on world point `centre`.
+    pub fn whole(m: &Minimap, rect: [f32; 4], centre: [f32; 2]) -> Option<Frame> {
+        let bounds = compass_map_bounds_from_corners(m.northwest, m.southeast, m.north_yaw)?;
+        let n = bounds.north;
+        let size = bounds.world_size;
+        let scale =
+            (rect[2] / libm::fabsf(size[0]).max(1.0)).min(rect[3] / libm::fabsf(size[1]).max(1.0));
+        Some(Frame {
+            bounds,
+            east: [n[1], -n[0]],
+            south: [-n[0], -n[1]],
+            rect,
+            centre: [rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5],
+            scale,
+            player: centre,
+            forward: n,
+            right: [n[1], -n[0]],
+        })
+    }
+
+    /// The middle of the map (its image's centre) in world units.
+    pub fn map_centre(m: &Minimap) -> Option<[f32; 2]> {
+        let b = compass_map_bounds_from_corners(m.northwest, m.southeast, m.north_yaw)?;
+        let n = b.north;
+        let (east, south) = ([n[1], -n[0]], [-n[0], -n[1]]);
+        Some([
+            b.upper_left[0] + east[0] * b.world_size[0] * 0.5 + south[0] * b.world_size[1] * 0.5,
+            b.upper_left[1] + east[1] * b.world_size[0] * 0.5 + south[1] * b.world_size[1] * 0.5,
+        ])
+    }
+
+    /// The world directions of screen right and up.
+    pub fn axes(&self) -> ([f32; 2], [f32; 2]) {
+        (self.right, self.forward)
+    }
+
     /// Texture coordinates of world point `p` on the minimap image.
     fn uv(&self, p: [f32; 2]) -> [f32; 2] {
         let d = [
