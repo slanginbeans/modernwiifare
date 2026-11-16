@@ -25,6 +25,9 @@ use wpk::records::Record;
 use wpk::vis::{ALWAYS, Vis};
 
 use crate::camera::{Camera, ZFAR, ZNEAR, dot, sub};
+
+/// The near plane of views from high above the map ([`World::skip_vis`]).
+pub const SKY_NEAR: f32 = 64.0;
 use crate::gfx::{DrawState, Gfx, Mtx34, TexDesc};
 use crate::sky;
 
@@ -205,8 +208,8 @@ pub struct World<'a> {
     pub lod_scale: f32,
     /// Draw the map's own fog (MW2's `setExpFog`, when the pack has one).
     pub map_fog: bool,
-    /// Draw every cell, skipping the portal walk (the killstreaks' views from high above the map, where the eye's
-    /// cell sees nothing below).
+    /// A view from high above the map (the killstreaks'): every cell is drawn, skipping the portal walk (the eye's
+    /// cell sees nothing below), and the near plane is [`SKY_NEAR`] (the world 15 000 units off keeps its depth).
     pub skip_vis: bool,
     fog: Option<records::Fog>,
 }
@@ -548,7 +551,8 @@ impl<'a> World<'a> {
     ) -> FrameStats {
         let mut stats = FrameStats::default();
         let far = self.far();
-        let frustum = cam.frustum(ZNEAR, far);
+        let near = if self.skip_vis { SKY_NEAR } else { ZNEAR };
+        let frustum = cam.frustum(near, far);
         if let Some(v) = self.vis.as_mut().filter(|_| !self.skip_vis) {
             stats.in_cell = v.update(cam, &frustum.planes, scratch);
             stats.cells_visible = v
@@ -559,7 +563,7 @@ impl<'a> World<'a> {
                 .min(v.cell_ranges.len() as u32);
         }
         let cell_of = |cells: &[u16], i: usize| cells.get(i).copied().unwrap_or(ALWAYS);
-        gfx.frame_begin(&cam.view(), cam.fovy, ZNEAR, far, CLEAR);
+        gfx.frame_begin(&cam.view(), cam.fovy, near, far, CLEAR);
         gfx.fog(self.fog_ramp());
         if let Some(faces) = self.sky {
             let rot = cam.view_rotation();

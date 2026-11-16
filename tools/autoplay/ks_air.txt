@@ -1,0 +1,98 @@
+# The killstreaks that stay in the air (game_core::autoplay syntax): stealth bomber, attack helicopter, Chopper Gunner,
+# AC-130, called from the debug menu's GIVE lines; bots passive, god mode (delete debug.dat first).
+wait 90
+press A
+wait 10
+# START GAME (free-for-all on the first map).
+press A
+wait 700
+press A
+wait 60
+shot ka01_spawn
+# Debug: bots don't attack, god mode, the rest from GIVE lines.
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+press A
+press DOWN
+press DOWN
+press A
+press B
+wait 20
+# The stealth bomber (line 37): the target screen, A at once.
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 37 press DOWN
+press A
+wait 20
+press LEFT
+wait 20
+press A
+times 4 wait 60
+shot ks22_stealth
+times 6 wait 60
+shot ks23_stealth_after
+# The attack helicopter (line 35): look up for it.
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 35 press DOWN
+press A
+wait 20
+press LEFT
+cstick 0 127
+wait 60
+cstick 0 0
+times 6 wait 60
+shot ks24_heli
+times 6 wait 60
+shot ks25_heli_later
+# The Chopper Gunner (line 39): fire for two seconds.
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 39 press DOWN
+press A
+wait 20
+press LEFT
+times 6 wait 60
+shot ks26_gunner_view
+hold R
+wait 120
+release R
+shot ks27_gunner_fired
+times 3 wait 60
+# The AC-130 (line 40): the 105, then Y to the 40.
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 40 press DOWN
+press A
+wait 20
+press LEFT
+wait 60
+shot ks28_ac130_view
+press R
+wait 90
+shot ks29_ac130_105
+press Y
+wait 10
+hold R
+wait 60
+release R
+shot ks30_ac130_40
+times 4 wait 60
+log air tour done
+wait 30
+quit

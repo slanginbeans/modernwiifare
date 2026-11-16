@@ -1570,7 +1570,7 @@ fn run_map(
         let x_held = ctl.held(act::USE);
         // A crate in reach: X held takes it (`_airdrop.gsc` capture) instead of reloading.
         let crate_near = match (arena.as_mut(), player.as_ref()) {
-            (Some(a), Some(p)) if life.alive() && !flying => {
+            (Some(a), Some(p)) if life.alive() && !flying && streaks::remote(a).is_none() => {
                 ks.capture(a, p.ps.origin, x_held && knife_near.is_none(), now)
             }
             _ => {

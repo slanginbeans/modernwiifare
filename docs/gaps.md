@@ -41,9 +41,10 @@ and pickups, Scavenger (`sim` item); underbarrel grenade launcher / shotgun (`we
 and akimbo (dual-wield ammo, two hands); hit boxes turned with the body and bullets through players (`sim`
 bullet_collision, `fire_extended`); glass (`entity_iw4::glass`); killcam (`killcam_iw4` timing; we need a pose ring);
 killstreak primitives (sentry turrets, Predator `remote_missile`, helicopters, care package marker; the flow is
-hand-written from MW2's scripts); perks and deathstreaks with no effect yet (Cold-Blooded, Scrambler, Ninja,
+hand-written from MW2's scripts: done, see 11); perks and deathstreaks with no effect yet (Cold-Blooded, Scrambler, Ninja,
 Hardline, One Man Army, Last Stand, Copycat, Painkiller, Martyrdom, Final Stand); silenced weapons off the radar;
-bot upgrades from IW4L `bots` (memory confidence, weapon switching, low-health recover, varied loadouts, perks).
+bot upgrades from IW4L `bots` (memory confidence, weapon switching, low-health recover, varied loadouts: done in
+`bot.rs` / `arena.rs`, IW4L's values host-tested, a trace against MW2 still to do; perks: another change).
 
 Presentation, IW4L has code: other players' gunfire, `MP_hit_alert`, melee sounds; looping effect elements
 (`fx_iw4::looping_spawn_schedule`: lingering smoke, fire) and tracers (`fx_iw4::beam`); light-grid lighting for the
@@ -93,9 +94,15 @@ scripted Dolphin runs, the PC menu preview.
     danger indicator; Danger Close.
 11. **Minimap and killstreaks**: the HUD minimap (map pack `MINI`: MW2's `setupMiniMap` frame, the script's
     `compassmaxrange`; turned with the view; firing pings), kill streaks with your class's streak costs, the UAV
-    (radar sweep and ping fade from IW4L's compass, duration from `_uav.gsc`), bots' UAVs. EMP and the nuke: done. Counter-UAV: done (``_uav.gsc``: as long as a UAV, jams the enemies' radar: your minimap dims and shows nothing but you; bots under it lose their UAV's knowledge). Not yet: the other
-    streaks (care package, predator, sentry, harrier, airstrike, helicopters, AC-130), EMP's HUD blackout, bots calling Counter-UAVs / EMPs / nukes,
-    Cold-Blooded / Scrambler on the radar, the minimap's fading edge and scan-line pass order.
+    (radar sweep and ping fade from IW4L's compass, duration from `_uav.gsc`), bots' UAVs. EMP and the nuke: done. Counter-UAV: done (``_uav.gsc``: as long as a UAV, jams the enemies' radar: your minimap dims and shows nothing but you; bots under it lose their UAV's knowledge).
+    The other streaks: done (`game_core::killstreaks`, values from the killstreak scripts in `KSRL`): care package and
+    emergency airdrop (marker, Little Bird / C-130, crate odds, capture), Predator (IW4L `remote_missile`), sentry (IW4L
+    placement and turret aim), precision airstrike, Harrier, stealth bomber (target screen on the minimap), attack
+    helicopter, Pave Low, Chopper Gunner, AC-130; bots call every one of them, Counter-UAVs, EMPs and nukes included.
+    A trace against MW2 is still to do for their timings. Not yet: their world models (stand-in boxes), sounds and
+    effects, the maps' helicopter paths (stand-in circles), kill cams, flares, shooting down sentries and the AC-130,
+    EMP's HUD blackout and effect on killstreaks, the Predator / AC-130 overlays, Cold-Blooded / Scrambler on the
+    radar, the minimap's fading edge and scan-line pass order.
 10. **Perks** (`game_core::perks`): a class's three perks and their Pro perks (perkTable's upgrade column;
     everything unlocked) become IW4's `ps.perks` bits that IW4L's movement and weapon code read (Marathon,
     Sleight of Hand, Steady Aim and their Pros, Commando's flag, ...); move speed by the primary's class and
