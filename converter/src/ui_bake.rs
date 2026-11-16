@@ -811,6 +811,8 @@ pub fn bake(
             icons,
             hud,
             strings,
+            weapons: Vec::new(),
+            rumbles: Vec::new(),
         },
         report,
     )

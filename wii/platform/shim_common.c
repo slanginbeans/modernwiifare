@@ -112,6 +112,16 @@ void mwf_pad_read(int chan, mwf_pad *out) {
     out->r = PAD_TriggerR(chan);
 }
 
+static int8_t motor_on[4];
+
+void mwf_pad_rumble(int chan, int on) {
+    if (chan < 0 || chan > 3) return;
+    on = on ? 1 : 0;
+    if (motor_on[chan] == on) return;
+    motor_on[chan] = (int8_t)on;
+    PAD_ControlMotor(chan, on ? PAD_MOTOR_RUMBLE : PAD_MOTOR_STOP);
+}
+
 double mwf_ffi_echo(float a, double b, int32_t c) {
     return (double)a + b + (double)c;
 }

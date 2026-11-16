@@ -14,7 +14,8 @@
  *   2: D-pad up 0x01, down 0x02, left 0x04, right 0x08, start 0x10, back 0x20, left stick 0x40, right stick 0x80
  *   3: LB 0x01, RB 0x02, guide 0x04, A 0x10, B 0x20, X 0x40, Y 0x80
  *   4: left trigger, 5: right trigger (0..255), 6..13: LX, LY, RX, RY (int16 little-endian, up is positive).
- * LED command on the OUT endpoint: 01 03 nn, nn 6..9 = player 1..4 lit. */
+ * LED command on the OUT endpoint: 01 03 nn, nn 6..9 = player 1..4 lit.
+ * Rumble command on the OUT endpoint: 00 08 00 bb ss 00 00 00 (bb the big motor, ss the small one; xpad). */
 #include <gccore.h>
 #include <ogc/irq.h>
 #include <ogc/usb.h>
@@ -165,6 +166,24 @@ void mwf_x360_scan(void) {
         rescan = RESCAN_FRAMES;
         look_for_pad();
     }
+}
+
+static u8 rumble_msg[32] ATTRIBUTE_ALIGN(32);
+static int rumble_sent = -1;
+
+void mwf_x360_rumble(uint8_t big, uint8_t small) {
+    int key = (big << 8) | small;
+    if (fd < 0 || lost) {
+        rumble_sent = -1;
+        return;
+    }
+    if (key == rumble_sent) return;
+    rumble_sent = key;
+    memset(rumble_msg, 0, sizeof(rumble_msg));
+    rumble_msg[1] = 0x08;
+    rumble_msg[3] = big;
+    rumble_msg[4] = small;
+    USB_WriteIntrMsg(fd, ep_out, 8, rumble_msg);
 }
 
 void mwf_x360_read(mwf_x360 *out) {

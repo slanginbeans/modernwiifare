@@ -123,6 +123,18 @@ impl Ui {
         }
     }
 
+    /// Draw turned quads (MW2's crosshair sides, the hit arrows) through `mwf_ui_verts`, one call a quad.
+    pub fn draw_free(&mut self, quads: &[game_core::hud_fx::FreeQuad]) {
+        for f in quads {
+            let Some(&handle) = self.handles.get(usize::from(f.texture)) else {
+                continue;
+            };
+            if handle >= 0 {
+                unsafe { ffi::mwf_ui_verts(handle, f.v.as_ptr(), 1) };
+            }
+        }
+    }
+
     /// Lay quads out with `f` (from the pack) and draw them.
     pub fn page(&mut self, f: impl FnOnce(&UiPack, &mut Vec<Quad>)) {
         let mut q = core::mem::take(&mut self.quads);

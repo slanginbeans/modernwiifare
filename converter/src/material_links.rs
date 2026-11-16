@@ -358,6 +358,9 @@ pub struct Links {
     pub weapon_pen: Vec<wpk::weapon::PenRecord>,
     /// Each weapon's HUD icon material (`hudIcon`; parallel to `weapons`).
     pub weapon_hud_icons: Vec<Option<String>>,
+    /// Each weapon's notetrack rumble map (`notetrackRumbleMapKeys` / `Values`: note -> rumble; parallel to
+    /// `weapons`), for the HUD's rumble (`hud_mw2::Rumbler`).
+    pub weapon_rumble_notes: Vec<Vec<(String, String)>>,
     /// The penetration depth table (`info/bullet_penetration_mp`), by type and surface.
     pub pen_table: Option<[[f32; 31]; 4]>,
     /// Each weapon's explosion effect's sight blockers (parallel to `weapons`).
@@ -625,6 +628,23 @@ impl Links {
             .and_then(|slot| self.material_name(slot))
             .map(str::to_owned);
         self.weapon_hud_icons.push(hud_icon);
+        let mut rumble_notes = Vec::new();
+        if let (Some(k), Some(v)) = (w.notetrack_rumble_keys, w.notetrack_rumble_values) {
+            for i in 0..16 {
+                let name = |p: Ptr| {
+                    s.u16_at(p, i * 2)
+                        .ok()
+                        .filter(|&id| id != 0)
+                        .and_then(|id| self.script_string(s, id))
+                        .filter(|n| !n.is_empty())
+                        .map(str::to_owned)
+                };
+                if let (Some(note), Some(rumble)) = (name(k), name(v)) {
+                    rumble_notes.push((note, rumble));
+                }
+            }
+        }
+        self.weapon_rumble_notes.push(rumble_notes);
         self.weapon_pen.push(wpk::weapon::PenRecord {
             kind: w.penetrate_type,
             multiplier: w.penetrate_multiplier,

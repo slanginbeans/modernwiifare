@@ -326,8 +326,9 @@ impl AssetLinkSink for Collector {
         zlib_compressed: bool,
     ) -> fastfile_iw4::Result<()> {
         self.links.raw_file(data, zlib_compressed);
-        // The game-type scripts the match rules are read from (`rules.rs`).
-        if crate::rules::SCRIPTS.contains(&name) {
+        // The game-type scripts the match rules are read from (`rules.rs`), and MW2's rumbles (`rumble/<name>`,
+        // read by `build_ui` for the HUD's rumble).
+        if crate::rules::SCRIPTS.contains(&name) || name.starts_with("rumble/") {
             let bytes = if zlib_compressed {
                 asset_transport::inflate_zlib(data).unwrap_or_default()
             } else {

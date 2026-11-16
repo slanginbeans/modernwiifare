@@ -140,6 +140,8 @@ pub struct Gun {
     spread: AimSpreadState,
     /// Spread cone of the last frame, degrees (for the crosshair).
     pub spread_degrees: f32,
+    /// The stance's spread cone (min, max) of the last frame, degrees (MW2's crosshair, `hud_fx::Crosshair`).
+    spread_cone: (f32, f32),
     rng: u32,
     /// ADS fraction of the last frame.
     ads_frac: f32,
@@ -193,6 +195,7 @@ impl Gun {
                 spread_override_state: SpreadOverrideState::None as i32,
             },
             spread_degrees: 0.0,
+            spread_cone: (0.0, 0.0),
             rng: 0x1234_5678 ^ index,
             ads_frac: 0.0,
             kick: None,
@@ -444,6 +447,11 @@ impl Gun {
         }
     }
 
+    /// The crosshair's inputs: the last frame's spread cone (min, max degrees) and aim spread scale (0..255).
+    pub fn hud_spread(&self) -> ((f32, f32), f32) {
+        (self.spread_cone, self.spread.aim_spread_scale)
+    }
+
     /// Viewmodel kick, degrees (pitch, yaw).
     pub fn gun_kick(&self) -> [f32; 2] {
         self.gun_recoil.angles
@@ -582,6 +590,7 @@ impl Gun {
             &self.facts.spread_facts(),
             1.0,
         );
+        self.spread_cone = (cone.min, cone.max);
         self.spread_degrees = fire_weapon_spread_degrees(
             cone,
             self.facts.ads_spread,

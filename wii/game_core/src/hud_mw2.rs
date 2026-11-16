@@ -10,6 +10,9 @@
 //! - The d-pad's killstreak, the kill feed over the score bar, the hitmarker and points at the crosshair, notices
 //!   at the top.
 //!
+//! - Over the play view (`hud_fx`): the scope overlay, blood, EMP static, MW2's crosshair, the hit-direction arrows,
+//!   teammates' names and the killstreak splash.
+//!
 //! Without the layouts in the pack (an older `common.wpk`) the same items go to fixed places.
 
 use alloc::vec::Vec;
@@ -18,6 +21,7 @@ use hud_iw4::ScreenPlacement;
 use wpk::ui::{HudItem, NONE, Quad, UiPack, od};
 
 use crate::hud::heapless_str::Str;
+use crate::hud_fx::{self, FeedLine, FreeQuad};
 
 /// The weapon in hand.
 #[derive(Clone, Copy, Debug)]
@@ -51,8 +55,8 @@ pub struct State<'a> {
     pub objectives: &'a str,
     /// Time left, when the match has a time limit.
     pub clock_ms: Option<u32>,
-    /// Kill feed lines (newest last) with whether they involve you.
-    pub feed: &'a [(&'a str, bool)],
+    /// Kill feed lines (newest last).
+    pub feed: &'a [FeedLine<'a>],
     pub hitmarker: bool,
     /// Points just scored and when.
     pub popup: Option<(u32, u32)>,
@@ -64,6 +68,19 @@ pub struct State<'a> {
     pub respawn_in: Option<u32>,
     /// A nuke's countdown, seconds.
     pub nuke_in: Option<u32>,
+    /// MW2's crosshair (None: not drawn).
+    pub crosshair: Option<hud_fx::Crosshair<'a>>,
+    /// The weapon's scope overlay: its facts, the ADS fraction and direction.
+    pub scope: Option<(&'a wpk::ui::HudWeapon, f32, bool)>,
+    /// The hit-direction arrows and the view's yaw (degrees).
+    pub damage: Option<(&'a hud_fx::DamageDirections, f32)>,
+    pub blood: hud_fx::Blood,
+    /// Teammates' names: screen position, distance scale, alpha, name.
+    pub names: &'a [([f32; 2], f32, f32, &'a str)],
+    /// The killstreak splash: the streak's name and when it was earned.
+    pub splash: Option<(&'a str, u32)>,
+    /// Jammed by an enemy EMP: the frame number (the static's grain moves with it).
+    pub emp: Option<u32>,
 }
 
 /// MW2's console default for the HUD's safe area on an SD TV, the share of the screen the HUD keeps inside.
@@ -527,13 +544,129 @@ fn scorebar(h: &mut Hud<'_>, s: &State<'_>) {
     }
 }
 
-/// Lay the HUD out.
-pub fn layout(ui: &UiPack, s: &State<'_>, q: &mut Vec<Quad>) {
+/// MW2's friendly name colour (`g_TeamColor_MyTeam`'s console default, light blue).
+const FRIENDLY: u32 = 0x99cc_ffff;
+
+/// The kill feed (MW2's game message window 0, `hud_iw4::gamemsg`): bottom left over the score bar, newest lowest,
+/// each line "killer [kill icon] victim", fading in and out.
+fn feed(h: &mut Hud<'_>, s: &State<'_>, objectives_y: &mut f32) {
+    use hud_iw4::{GAME_MSG_WIN0_LINE_COUNT, GAME_MSG_WIN0_TEXT_SCALE as SCALE, GAME_MSG_WIN0_X, game_msg_win0_line_y};
+    let font = h.ui.font("fonts/normalfont");
+    let mut k = 0;
+    for line in s.feed.iter().rev() {
+        if k >= GAME_MSG_WIN0_LINE_COUNT {
+            break;
+        }
+        let Some(a) = hud_fx::feed_alpha(s.now.wrapping_sub(line.at)) else {
+            continue;
+        };
+        let y_v = game_msg_win0_line_y(k) + hud_iw4::game_msg_win0_char_height();
+        let [mut x, y, _, _] = h.rect(GAME_MSG_WIN0_X, y_v, 0.0, 0.0, USER_MIN, USER_MAX);
+        let name = if line.mine { YELLOW } else { DIM };
+        let width = |h: &Hud<'_>, t: &str| {
+            font.and_then(|i| h.ui.fonts.get(i))
+                .or_else(|| h.ui.fonts.first())
+                .map_or(0.0, |f| crate::ui_text::width(f, t, SCALE))
+        };
+        if let Some(killer) = line.killer {
+            h.text_in(font, "fonts/normalfont", killer, x, y, SCALE, alpha(name, a), 0);
+            x += width(h, killer) + 4.0;
+        }
+        let icon = line
+            .icon
+            .filter(|w| w.kill_icon != NONE)
+            .map(|w| (hud_fx::kill_icon(w), w.kill_icon))
+            .or_else(|| {
+                (line.headshot != NONE).then_some((((25.2, 25.2), (0.0, 1.0)), line.headshot))
+            });
+        if let Some((((iw, ih), (s0, s1)), t)) = icon {
+            let c = h.p.scale_virtual_to_real;
+            let (iw, ih) = (iw * c[0], ih * c[1]);
+            h.quad([x, y - ih * 0.8, iw, ih], [s0, 0.0, s1, 1.0], alpha(WHITE, a), t);
+            x += iw + 4.0;
+        } else if line.killer.is_some() {
+            h.text_in(font, "fonts/normalfont", "killed", x, y, SCALE, alpha(DIM, a), 0);
+            x += width(h, "killed") + 4.0;
+        }
+        h.text_in(font, "fonts/normalfont", line.victim, x, y, SCALE, alpha(name, a), 0);
+        k += 1;
+    }
+    let top = game_msg_win0_line_y(k.max(1));
+    *objectives_y = h.rect(0.0, top, 0.0, 0.0, USER_MIN, USER_MAX)[1];
+}
+
+/// The killstreak splash (MW2's splash table: icon, title, description, duration), top centre.
+fn splash(h: &mut Hud<'_>, name: &str, at: u32, now: u32) {
+    let key = |p: &str| {
+        let mut k = alloc::string::String::from(p);
+        k.push_str(name);
+        k
+    };
+    let ms = h
+        .ui
+        .string(&key("splash:ms:"))
+        .and_then(|v| v.parse::<i32>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(2500);
+    let slot = hud_iw4::activate_splash(0, 0, ms, 0, at as i32).1;
+    if slot.expired(now as i32) {
+        return;
+    }
+    let a = hud_fx::splash_alpha(now.wrapping_sub(at) as i32, ms);
+    let top = h.rect(0.0, 0.0, 0.0, 0.0, USER_CENTER, USER_MIN);
+    let cx = top[0];
+    let mut y = top[1] + 34.0;
+    if h.icon(&key("splash:"), [cx - 28.0, y, 56.0, 56.0], alpha(WHITE, a)) {
+        y += 56.0;
+    }
+    let title = h
+        .ui
+        .string(&key("splash:text:"))
+        .map_or_else(|| name.to_ascii_uppercase(), alloc::string::String::from);
+    let title = hud_iw4::splash_replace_optional(&title, 0);
+    h.text("fonts/objectivefont", &title, cx, y + 22.0, 0.42, alpha(YELLOW, a), 1);
+    if let Some(d) = h.ui.string(&key("splash:desc:")).map(alloc::string::String::from) {
+        h.text("fonts/normalfont", &d, cx, y + 40.0, 0.3, alpha(WHITE, a), 1);
+    }
+}
+
+/// The full-screen layers under the HUD: the scope overlay, blood and the EMP's static.
+fn overlays(h: &mut Hud<'_>, s: &State<'_>) {
+    if let Some((w, frac, to_ads)) = s.scope {
+        hud_fx::scope(w, frac, to_ads, h.ui.white, h.q);
+    }
+    s.blood.quad(h.ui.icon("splatter_alt").unwrap_or(NONE), h.q);
+    if let Some(frame) = s.emp {
+        hud_fx::emp_static(h.ui.icon("ac130_overlay_grain").unwrap_or(NONE), frame, h.q);
+    }
+}
+
+/// Lay the HUD out: quads, and turned quads drawn over them (the crosshair and the hit arrows).
+pub fn layout(ui: &UiPack, s: &State<'_>, q: &mut Vec<Quad>, free: &mut Vec<FreeQuad>) {
     let mut h = Hud {
         ui,
         p: placement(s.safe_area),
         q,
     };
+    overlays(&mut h, s);
+    if let Some(c) = &s.crosshair {
+        c.quads(free);
+    }
+    if let Some((d, yaw)) = s.damage {
+        d.quads(s.now as i32, yaw, ui.icon("hit_direction").unwrap_or(NONE), free);
+    }
+    // Teammates' names over their heads.
+    for &(p, scale, a, name) in s.names {
+        h.text(
+            "fonts/normalfont",
+            name,
+            p[0],
+            p[1],
+            hud_iw4::OVERHEAD_NAME_SIZE_DEFAULT * 0.5 * scale,
+            alpha(FRIENDLY, a),
+            1,
+        );
+    }
     weaponbar(&mut h, s);
     scorebar(&mut h, s);
     // The d-pad's killstreak, ready to call in.
@@ -549,24 +682,15 @@ pub fn layout(ui: &UiPack, s: &State<'_>, q: &mut Vec<Quad>) {
         key.push_str(r);
         h.icon(&key, rect, WHITE);
     }
-    // Over the score bar: the objectives and the kill feed.
-    let mut y = h.rect(0.0, -70.0, 0.0, 0.0, USER_MIN, USER_MAX)[1];
+    // Over the score bar: the kill feed, the objectives over it.
+    let mut y = 0.0;
+    feed(&mut h, s, &mut y);
     let x = h.rect(4.0, 0.0, 0.0, 0.0, USER_MIN, USER_MAX)[0];
     if !s.objectives.is_empty() {
-        h.text("fonts/hudsmallfont", s.objectives, x, y, 0.3, DIM, 0);
-        y -= 16.0;
+        h.text("fonts/hudsmallfont", s.objectives, x, y - 4.0, 0.3, DIM, 0);
     }
-    for (line, mine) in s.feed.iter().rev() {
-        h.text(
-            "fonts/hudsmallfont",
-            line,
-            x,
-            y,
-            0.3,
-            if *mine { YELLOW } else { DIM },
-            0,
-        );
-        y -= 15.0;
+    if let Some((name, at)) = s.splash {
+        splash(&mut h, name, at, s.now);
     }
     // The crosshair: MW2's hitmarker image, and the points just scored.
     if s.hitmarker {
