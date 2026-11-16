@@ -35,6 +35,18 @@ pub const NO_BONE: u16 = u16::MAX;
 pub struct PlayerAnims<'a> {
     pub clips: Anims<'a>,
     pub script: Script,
+    /// Each clip's move speed (`PANS`: big-endian f32 units/s; 0 or absent: played at rate 1).
+    pub speeds: &'a [u8],
+}
+
+impl PlayerAnims<'_> {
+    /// Clip `clip`'s move speed (IW4L `AnimClip::move_speed`, 0 for IW4's stationary clips).
+    pub fn move_speed(&self, clip: u16) -> f32 {
+        let at = usize::from(clip) * 4;
+        self.speeds
+            .get(at..at + 4)
+            .map_or(0.0, |b| f32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    }
 }
 
 /// A character model's links to the animations: the model bone of each animation bone (by name), and its
@@ -46,6 +58,10 @@ pub struct Rig {
     pub controllers: [u16; 3],
     /// `tag_weapon_right` (where the third-person weapon goes), or [`NO_BONE`].
     pub weapon: u16,
+    /// `tag_weapon_left` (a riot shield in the hands) and `tag_shield_back` (a riot shield carried as the other
+    /// weapon), or [`NO_BONE`].
+    pub weapon_left: u16,
+    pub shield_back: u16,
 }
 
 impl Rig {
@@ -63,19 +79,51 @@ impl Rig {
                 .collect(),
             controllers: [find("back_low"), find("back_mid"), find("back_up")],
             weapon: find("tag_weapon_right"),
+            weapon_left: find("tag_weapon_left"),
+            shield_back: find("tag_shield_back"),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Playing {
     clip: u16,
-    start_ms: u32,
     moving: bool,
+    /// The clip's time (ms) at `anchor_ms`, from where it runs on at `rate` (IW4L `XAnimTreeRuntime::set_rate`).
+    anchor_ms: u32,
+    anchor_time: f32,
+    rate: f32,
+}
+
+impl Playing {
+    /// The clip's time (seconds) at `now`.
+    fn time(&self, now: u32) -> f32 {
+        (self.anchor_time + now.wrapping_sub(self.anchor_ms) as f32 * self.rate) / 1000.0
+    }
+
+    /// Run at `rate` from `from_ms` on (IW4L sets the rate measured over a frame, then advances the tree by that
+    /// frame: the new rate covers the frame just measured). Never before the clip's own anchor.
+    fn set_rate(&mut self, rate: f32, from_ms: u32) {
+        let from = if (from_ms.wrapping_sub(self.anchor_ms) as i32) < 0 {
+            self.anchor_ms
+        } else {
+            from_ms
+        };
+        self.anchor_time += from.wrapping_sub(self.anchor_ms) as f32 * self.rate;
+        self.anchor_ms = from;
+        self.rate = rate;
+    }
+}
+
+/// Where and when a body part's rate was last measured (IW4L `ClientAnimSample`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct RateSample {
+    origin: [f32; 3],
+    time_ms: i32,
 }
 
 /// One body part's animation: what plays, what it is fading from, and how long an event holds it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Part {
     cur: Option<Playing>,
     prev: Option<Playing>,
@@ -83,6 +131,7 @@ struct Part {
     blend_ms: u32,
     /// An event's animation holds the part until then.
     hold_until_ms: u32,
+    rate: RateSample,
 }
 
 impl Part {
@@ -100,6 +149,8 @@ impl Part {
     }
 
     /// Play `clip` (`None`: no animation on this part). `restart`: start it again when it is already playing.
+    /// `phase`: where in the clip to start (0..1), else its start.
+    #[allow(clippy::too_many_arguments)]
     fn play(
         &mut self,
         clip: Option<u16>,
@@ -108,6 +159,7 @@ impl Part {
         torso: bool,
         now: u32,
         restart: bool,
+        phase: Option<f32>,
     ) {
         let same = self.cur.map(|p| p.clip) == clip;
         if same && !restart {
@@ -126,8 +178,10 @@ impl Part {
         self.prev = old;
         self.cur = clip.map(|clip| Playing {
             clip,
-            start_ms: now,
             moving,
+            anchor_ms: now,
+            anchor_time: phase.unwrap_or(0.0),
+            rate: 1.0,
         });
         self.blend_start_ms = now;
         self.blend_ms = blend.max(0) as u32;
@@ -265,14 +319,23 @@ impl Body {
             if p.held(now) && !force {
                 return;
             }
-            p.play(
-                clip,
-                !torso && moving(movetype),
-                cmd.blend_ms,
-                torso,
-                now,
-                hold,
-            );
+            let moves = !torso && moving(movetype);
+            // IW4L: a moving looping legs clip after another one carries on at the same point of its cycle.
+            let phase = match (p.cur, clip) {
+                (Some(old), Some(new)) if moves && old.moving && !hold && old.clip != new => {
+                    let looped = |c: u16| anims.clips.clip(usize::from(c));
+                    match (looped(old.clip), looped(new)) {
+                        (Some(a), Some(b)) if a.looping() && b.looping() && a.duration() > 0.0 => {
+                            let t = old.time(now) / a.duration();
+                            let frac = t - libm::floorf(t);
+                            Some(frac * b.duration() * 1000.0)
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            p.play(clip, moves, cmd.blend_ms, torso, now, hold, phase);
             if hold {
                 p.hold_until_ms = now.wrapping_add(duration);
             }
@@ -331,6 +394,42 @@ impl Body {
         true
     }
 
+    /// Each body part's playback rate from how fast the player at `origin` moves against its clip's move speed
+    /// (IW4L `apply_player_anim_rates` / `anim_iw4::client_anim_playback_rate`, once per frame before the pose).
+    pub fn rates(&mut self, anims: &PlayerAnims, origin: [f32; 3], now: u32) {
+        for p in [&mut self.legs, &mut self.torso] {
+            let Some(cur) = p.cur.as_mut() else {
+                continue;
+            };
+            let now_i = now as i32;
+            if now_i < p.rate.time_ms {
+                p.rate.time_ms = 0;
+            }
+            let Some(rate) = anim_iw4::client_anim_playback_rate(
+                origin,
+                p.rate.origin,
+                now_i,
+                p.rate.time_ms,
+                anims.move_speed(cur.clip),
+                false,
+            ) else {
+                continue;
+            };
+            if rate != cur.rate {
+                cur.set_rate(rate, p.rate.time_ms as u32);
+            }
+            p.rate = RateSample {
+                origin,
+                time_ms: now_i,
+            };
+        }
+    }
+
+    /// Whether the legs play a clip whose time runs at other than its own pace (for tests and the log).
+    pub fn legs_rate(&self) -> f32 {
+        self.legs.cur.map_or(1.0, |c| c.rate)
+    }
+
     /// Turn the legs and torso toward `view_yaw` (degrees): the torso follows within 90 degrees, the legs once the
     /// view is 20 degrees away (at once while moving). Returns (legs yaw, torso yaw).
     pub fn turn(&mut self, view_yaw: f32, moving: bool, now: u32) -> (f32, f32) {
@@ -373,7 +472,7 @@ impl Body {
         s.reset(model);
         let sample = |p: &Playing, rot: &mut [[f32; 4]], tr: &mut [[f32; 3]]| {
             if let Some(c) = anims.clips.clip(usize::from(p.clip)) {
-                let f = c.frame_at(now.wrapping_sub(p.start_ms) as f32 / 1000.0);
+                let f = c.frame_at(p.time(now));
                 apply(&c, f, rig, rot, tr);
             }
         };
@@ -440,7 +539,7 @@ impl Body {
                 .map(|k| angles[k]);
             let world = match (bone.parent, control) {
                 (p, Some(a)) if p >= 0 => {
-                    // world rotation = root × control × root⁻¹ × parent rotation, at the parent's point.
+                    // world rotation = root Ã— control Ã— rootâ»Â¹ Ã— parent rotation, at the parent's point.
                     let parent = out[p as usize];
                     let root = out[0];
                     let c = mtx(set_angles(a), [0.0; 3]);
@@ -537,7 +636,7 @@ impl Scratch {
         self.copy_base_to_b();
     }
 
-    /// a = a → b by `w`.
+    /// a = a â†’ b by `w`.
     fn blend_b_into_a(&mut self, w: f32) {
         for i in 0..self.rot.len() {
             self.rot[i] = nlerp(self.rot[i], self.rot_b[i], w);
@@ -550,7 +649,9 @@ impl Scratch {
 /// The movement type for the script (IW4L `movement_iw4::footsteps_anim_move_type`), `None` in the air (the legs
 /// keep what they play).
 pub fn movetype(ps: &playerstate_iw4::PlayerState, forward: i8, right: i8) -> Option<u8> {
-    movement_iw4::footsteps_anim_move_type(ps, forward, right, false)
+    // A mantle plays its clip's movement type (`MANTLE_UP_*`, then `MANTLE_OVER_*`).
+    crate::mantle_path::anim_move_type(ps)
+        .or_else(|| movement_iw4::footsteps_anim_move_type(ps, forward, right, false))
 }
 
 /// What the movement events need of a player from frame to frame.
@@ -636,7 +737,8 @@ pub fn conditions(
     let mut c = Conditions::default();
     c.set_value(anim_iw4::ANIM_COND_MOUNTED, 0);
     c.set_value(ANIM_COND_FIRING, u32::from(firing));
-    c.set_value(anim_iw4::ANIM_COND_FASTMANTLE, 0);
+    // IW4: the fast mantle tree (`mantle_flags` bit 6, Marathon Pro's quick climb).
+    c.set_value(anim_iw4::ANIM_COND_FASTMANTLE, (ps.mantle_flags >> 6) & 1);
     if let Some(h) = held {
         c.set_bit(ANIM_COND_PLAYERANIMTYPE, h.anim_type);
         c.set_bit(ANIM_COND_WEAPONCLASS, h.class);
@@ -785,6 +887,7 @@ mod tests {
     fn script_drives_legs_torso_and_death() {
         let bytes = anims_bytes();
         let anims = PlayerAnims {
+            speeds: &[],
             clips: Anims::parse(&bytes).unwrap(),
             script: script(),
         };
@@ -862,6 +965,7 @@ mod tests {
         assert_eq!(rig.controllers[0], 1);
         let bytes = wpk::player_anim::encode(&[]);
         let anims = PlayerAnims {
+            speeds: &[],
             clips: Anims::parse(&bytes).unwrap(),
             script: Script::default(),
         };
@@ -869,7 +973,7 @@ mod tests {
         let (mut s, mut w) = (Scratch::default(), Vec::new());
         b.pose(&anims, &rig, &vm, 0, 0.0, 0.0, false, &mut s, &mut w);
         let straight = w[2];
-        // Looking 45 degrees down: back_low takes 0.2 × 90 = 18 degrees of pitch; the bone above leans forward
+        // Looking 45 degrees down: back_low takes 0.2 Ã— 90 = 18 degrees of pitch; the bone above leans forward
         // (+x).
         b.pose(&anims, &rig, &vm, 0, 45.0, 0.0, false, &mut s, &mut w);
         assert!(
@@ -878,6 +982,77 @@ mod tests {
             w[2],
             straight
         );
+    }
+
+    /// The run clip plays at the rate the player moves against its move speed (IW4L `client_anim_playback_rate`),
+    /// and a clip with no move speed at 1.
+    #[test]
+    fn playback_rate_follows_the_move_speed() {
+        let bytes = anims_bytes();
+        // Clip 1 (run) moves at 100 units/s; the others are stationary.
+        let speeds: Vec<u8> = [0.0f32, 100.0, 0.0, 0.0]
+            .iter()
+            .flat_map(|v| v.to_be_bytes())
+            .collect();
+        let anims = PlayerAnims {
+            speeds: &speeds,
+            clips: Anims::parse(&bytes).unwrap(),
+            script: script(),
+        };
+        let c = Conditions::default();
+        let mut b = Body::new(0);
+        b.moves(&anims, 10, &c, 1000);
+        // The first sample only anchors (IW4L: no last time, rate 1).
+        b.rates(&anims, [0.0; 3], 1000);
+        assert_eq!(b.legs_rate(), 1.0);
+        // 200 units/s against 100: twice as fast (IW4L's cap is 2).
+        b.rates(&anims, [20.0, 0.0, 0.0], 1100);
+        let want = anim_iw4::client_anim_playback_rate(
+            [20.0, 0.0, 0.0],
+            [0.0; 3],
+            1100,
+            1000,
+            100.0,
+            false,
+        );
+        assert_eq!(Some(b.legs_rate()), want);
+        assert!((b.legs_rate() - 2.0).abs() < 1e-4, "{}", b.legs_rate());
+        // 50 units/s: half.
+        b.rates(&anims, [25.0, 0.0, 0.0], 1200);
+        assert!((b.legs_rate() - 0.5).abs() < 1e-4, "{}", b.legs_rate());
+        // The clip's time ran 100 ms Ã— 2 then 100 ms Ã— 0.5 since it started.
+        let legs = b.legs.cur.unwrap();
+        assert!((legs.time(1200) - 0.25).abs() < 1e-4, "{}", legs.time(1200));
+        // Standing still: IW4L's floor of 0.1.
+        b.rates(&anims, [25.0, 0.0, 0.0], 1300);
+        assert!((b.legs_rate() - 0.1).abs() < 1e-4, "{}", b.legs_rate());
+        // Idle (no move speed) plays at 1 however fast the player moves.
+        let mut b = Body::new(0);
+        b.moves(&anims, 1, &c, 1000);
+        b.rates(&anims, [0.0; 3], 1000);
+        b.rates(&anims, [50.0, 0.0, 0.0], 1100);
+        assert_eq!(b.legs_rate(), 1.0);
+    }
+
+    /// A mantle plays its clip's movement type: IW4's `MANTLE_ROOT` + the up clip, then the over clip.
+    #[test]
+    fn a_mantle_picks_the_mantle_movement_type() {
+        let mut ps = playerstate_iw4::PlayerState::ZERO;
+        assert_eq!(crate::mantle_path::anim_move_type(&ps), None);
+        ps.pm_flags |= playerstate_iw4::pm_flags::MANTLE;
+        ps.mantle_trans_index = 0;
+        ps.mantle_flags = playerstate_iw4::mantle_flags::OVER;
+        ps.mantle_timer = 10;
+        let up = movement_iw4::mantle::trans_up_anim(0) as u8;
+        let over = movement_iw4::mantle::trans_over_anim(0) as u8;
+        assert_eq!(movetype(&ps, 0, 0), Some(21 + up));
+        assert_eq!(
+            anim_iw4::ANIM_MT_NAMES[usize::from(21 + up)],
+            "MANTLE_UP_57"
+        );
+        ps.mantle_timer = 401;
+        assert_eq!(movetype(&ps, 0, 0), Some(21 + over));
+        assert!(anim_iw4::ANIM_MT_NAMES[usize::from(21 + over)].starts_with("MANTLE_OVER"));
     }
 
     #[test]

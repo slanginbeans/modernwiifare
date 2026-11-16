@@ -386,6 +386,106 @@ fn raw_parts(
     }
 }
 
+/// An XAnim's root (delta) translation track, as IW4L's `asset_anim::xanim_catalog` copies it.
+fn raw_delta_trans(
+    s: &ZoneStream<'_>,
+    geo: &fastfile_iw4::XAnimDeltaTransGeometry,
+) -> Option<xmodel_runtime::RawDeltaTrans> {
+    let f3 = |p: Ptr, off: usize| -> Option<[f32; 3]> {
+        Some([
+            s.f32_at(p, off).ok()?,
+            s.f32_at(p, off + 4).ok()?,
+            s.f32_at(p, off + 8).ok()?,
+        ])
+    };
+    if let Some(c) = geo.constant {
+        return Some(xmodel_runtime::RawDeltaTrans {
+            size: 0,
+            small: geo.small != 0,
+            mins: f3(c, 0)?,
+            ..Default::default()
+        });
+    }
+    let ms = geo.mins_step?;
+    let n = usize::from(geo.size) + 1;
+    let indices = if geo.indices_are_bytes {
+        read_array(geo.indices, n, 1, |p, o| s.u8_at(p, o).ok())
+            .into_iter()
+            .map(u16::from)
+            .collect()
+    } else {
+        read_array(geo.indices, n, 2, |p, o| s.u16_at(p, o).ok())
+    };
+    let packed_n = if geo.small != 0 { 3 * n } else { 6 * n };
+    Some(xmodel_runtime::RawDeltaTrans {
+        size: geo.size,
+        small: geo.small != 0,
+        mins: f3(ms, 0)?,
+        step: f3(ms, 12)?,
+        indices,
+        packed: read_array(geo.frames, packed_n, 1, |p, o| s.u8_at(p, o).ok()),
+    })
+}
+
+/// Each player animation's move speed (units/s: its root track's start-to-end distance over its length, IW4L
+/// `AnimClip::move_speed`; 0 without a root track), in `list`'s order. The characters play a moving clip at the
+/// rate the player moves against it (IW4L `client_anim_playback_rate`).
+pub fn player_anim_move_speeds(s: &ZoneStream<'_>, links: &Links, list: &[String]) -> Vec<f32> {
+    list.iter()
+        .map(|name| {
+            let Some((_, g)) = links
+                .xanims
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            else {
+                return 0.0;
+            };
+            let mut raw = raw_parts(s, links, name, g);
+            raw.flags = g.flags;
+            raw.delta_trans = raw_delta_trans(s, &g.delta_trans);
+            AnimClip::from_parts(&raw).map_or(0.0, |c| c.move_speed())
+        })
+        .collect()
+}
+
+/// The mantle clips (IW4L `movement_iw4::MANTLE_XANIM_NAMES`, then the fast tree's `_FR` names): each one's length
+/// and its root track sampled at every frame (`wpk::mantle`). pmove moves a mantling player along these paths, as
+/// IW4L's `sim::mantle_xanim::MantleXAnimBind` does.
+pub fn bake_mantle_clips(s: &ZoneStream<'_>, links: &Links) -> Vec<wpk::mantle::Clip> {
+    let names = movement_iw4::MANTLE_XANIM_NAMES
+        .iter()
+        .chain(movement_iw4::MANTLE_XANIM_NAMES_FR.iter());
+    names
+        .map(|name| {
+            let Some((_, g)) = links
+                .xanims
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            else {
+                return wpk::mantle::Clip::default();
+            };
+            let mut raw = raw_parts(s, links, name, g);
+            raw.flags = g.flags;
+            raw.delta_trans = raw_delta_trans(s, &g.delta_trans);
+            let Ok(clip) = AnimClip::from_parts(&raw) else {
+                return wpk::mantle::Clip::default();
+            };
+            let frames = usize::from(clip.numframes);
+            let samples = if clip.has_delta() {
+                (0..=frames)
+                    .map(|f| clip.abs_delta_trans(f as f32 / frames.max(1) as f32))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            wpk::mantle::Clip {
+                length_msec: clip.length_msec().max(1) as u32,
+                samples,
+            }
+        })
+        .collect()
+}
+
 /// Bake a clip to `numframes + 1` evenly spaced poses. Tracks are matched to bones by name (first match, as IW4
 /// applies a track to the first bone of that name); a track that never sets rotation keeps the bind rotation.
 fn bake(clip: &AnimClip, slot_id: u8, bone_of: &HashMap<&str, usize>, bind_rot: &[Quat]) -> Clip {

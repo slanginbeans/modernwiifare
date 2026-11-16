@@ -1400,7 +1400,14 @@ fn run_common(args: &[String]) -> ExitCode {
             player_anims::dump(&parsed);
         }
         let anims = viewmodel::bake_player_anims(s, links, &parsed.anims);
-        (views, failed, (anims, parsed), (held, held_tex))
+        let mantle = viewmodel::bake_mantle_clips(s, links);
+        let speeds = viewmodel::player_anim_move_speeds(s, links, &parsed.anims);
+        (
+            views,
+            failed,
+            (anims, parsed, mantle, speeds),
+            (held, held_tex),
+        )
     });
     let (mut collector, (views, failed, player_anims, (held, mut held_tex))) = match walked {
         Ok(x) => x,
@@ -1643,7 +1650,7 @@ fn run_common(args: &[String]) -> ExitCode {
         wpk::records::encode(&blockers),
     );
     // Player animations by bone name.
-    let ((panm, panb, missing_anims), parsed) = player_anims;
+    let ((panm, panb, missing_anims), parsed, mantle, speeds) = player_anims;
     let full_panm = wpk::player_anim::encode(&panm.clips);
     let panm_bytes = if a.slim_anims {
         let slim: Vec<_> = panm
@@ -1995,6 +2002,40 @@ fn run_common(args: &[String]) -> ExitCode {
         parsed.script.encode(),
     );
     b.section(wpk::tag::PLAYER_ANIMS, panm.clips.len() as u32, panm_bytes);
+    let mantle_bytes = wpk::mantle::encode(&mantle);
+    println!(
+        "mantle paths: {} of {} clips, {} with a root track, {} bytes",
+        mantle.iter().filter(|c| c.length_msec > 0).count(),
+        mantle.len(),
+        mantle.iter().filter(|c| !c.samples.is_empty()).count(),
+        mantle_bytes.len()
+    );
+    b.section(wpk::tag::MANTLE, mantle.len() as u32, mantle_bytes);
+    // Each clip's move speed, 0 where IW4 keeps the rate at 1 (`player_anims::stationary`).
+    let speeds: Vec<f32> = speeds
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            if player_anims::stationary(&parsed.script, i as u16) {
+                0.0
+            } else {
+                v
+            }
+        })
+        .collect();
+    println!(
+        "player animation speeds: {} of {} clips move",
+        speeds.iter().filter(|v| **v > 0.0).count(),
+        speeds.len()
+    );
+    b.section(
+        wpk::tag::PLAYER_ANIM_SPEEDS,
+        speeds.len() as u32,
+        speeds
+            .iter()
+            .flat_map(|v| v.to_bits().to_be_bytes())
+            .collect(),
+    );
     b.section(
         wpk::tag::PLAYER_ANIM_BONES,
         panb.len() as u32,

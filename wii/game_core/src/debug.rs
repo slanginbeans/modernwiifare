@@ -397,13 +397,17 @@ pub enum Action {
     /// opponent for test scripts now that bots take a random class each life. Last in the list, so adding it moved no
     /// script's row.
     BotRifles,
+    /// For the rest of the match half the bots hold MW2's riot shield (an M4 holstered) and the other half carry it
+    /// on the back (the M4 in hand): the shield's two places on the body, for test scripts. Pressed again, the
+    /// halves swap. After `BotRifles`, so no script's row moved.
+    BotShields,
 }
 
 /// The rewards [`Action::Give`] offers: the care package through the AC-130.
 pub const GIVE_FIRST: u8 = 2;
 pub const GIVE_LAST: u8 = 12;
 
-pub const ACTIONS: [Action; 23] = [
+pub const ACTIONS: [Action; 24] = [
     Action::TeleportSpawn,
     Action::TeleportObjective,
     Action::BotInFront,
@@ -427,6 +431,7 @@ pub const ACTIONS: [Action; 23] = [
     Action::Give(11),
     Action::Give(12),
     Action::BotRifles,
+    Action::BotShields,
 ];
 
 impl Action {
@@ -444,6 +449,7 @@ impl Action {
             Action::ResetClock => "RESET MATCH CLOCK",
             Action::WriteLog => "WRITE THE LOG NOW",
             Action::BotRifles => "BOTS: RIFLES ONLY",
+            Action::BotShields => "BOTS: RIOT SHIELDS",
             Action::Give(i) => match i {
                 2 => "GIVE CARE PACKAGE",
                 3 => "GIVE SENTRY GUN",

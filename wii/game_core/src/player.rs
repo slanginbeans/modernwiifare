@@ -5,9 +5,9 @@
 //! first guess and must be tuned against the 360 reference (feel-parity skill) before anyone calls it right.
 
 use movement_iw4::{
-    AdsFracContext, AdsIntentContext, AirMoveContext, CmdScaleWalkContext,
-    CreateAnimsMantleRootDelta, FlatMantleAnimLength, JumpLaunchContext, MeleeChargeWeaponDelays,
-    MoveBounds, PmoveSingleContext, SprintContext, ViewAngleClamp, WalkMoveContext, pmove,
+    AdsFracContext, AdsIntentContext, AirMoveContext, CmdScaleWalkContext, JumpLaunchContext,
+    MeleeChargeWeaponDelays, MoveBounds, PmoveSingleContext, SprintContext, ViewAngleClamp,
+    WalkMoveContext, pmove,
 };
 use playerstate_iw4::{ENTITYNUM_NONE, PlayerState, UserCmd, buttons};
 
@@ -165,13 +165,6 @@ impl Default for WeaponMove {
     }
 }
 
-/// The mantle's root motion: IW4L's `CreateAnimsMantleRootDelta`, a straight line from the start to each clip's end
-/// (forward 16 units and up by the transition height, then over the ledge), over `FlatMantleAnimLength`'s 400 / 200
-/// ms. MW2 moves along the mantle clips' own root tracks (IW4L `sim::mantle_xanim`); those curves are not converted
-/// yet, so the path is straight where MW2's bends. Before this the root delta was zero: `mantle::enter` put the
-/// player at the ledge's end at once and the mantle "played" standing still there.
-const MANTLE_ROOT: CreateAnimsMantleRootDelta = CreateAnimsMantleRootDelta;
-
 /// IW4 `player_sprintTime` (seconds).
 const PLAYER_SPRINT_TIME: f32 = 4.0;
 
@@ -317,6 +310,23 @@ impl Player {
 
     /// Run one frame with absolute view angles and move amounts (bots). Same as [`Player::update`] otherwise.
     pub fn steer(&mut self, clip: &MapClip<'_>, st: &Steer, w: &WeaponMove, msec: i32) -> i32 {
+        self.steer_with(
+            clip,
+            st,
+            w,
+            msec,
+            crate::mantle_path::MantleAnims::current(),
+        )
+    }
+
+    fn steer_with(
+        &mut self,
+        clip: &MapClip<'_>,
+        st: &Steer,
+        w: &WeaponMove,
+        msec: i32,
+        anims: crate::mantle_path::MantleAnims,
+    ) -> i32 {
         self.yaw = st.yaw - libm::floorf(st.yaw / 360.0) * 360.0;
         self.pitch = st.pitch.clamp(-85.0, 85.0);
         let mut btn = 0;
@@ -365,8 +375,10 @@ impl Player {
             &mut cmd,
             context(self.old_buttons, w),
             clip,
-            &FlatMantleAnimLength::default(),
-            &MANTLE_ROOT,
+            // The mantle moves along MW2's mantle clips' root tracks over their lengths (`mantle_path`, IW4L's
+            // `sim::mantle_xanim`); without them, IW4L's straight `CreateAnimsMantleRootDelta` over 400 / 200 ms.
+            &anims,
+            &anims,
         );
         self.old_buttons = btn;
         result.pml.fall_damage
@@ -695,6 +707,75 @@ mod tests {
         assert!(end[0] > 64.0, "over the edge: {end:?}");
     }
 
+    /// With MW2's clips installed the mantle takes the clips' lengths and follows their root tracks, as IW4L's
+    /// `sim::mantle_xanim::MantleXAnimBind` feeds `mantle::sample_root_track`: here up clips that rise first and move
+    /// in at the end, over 600 ms.
+    #[test]
+    fn a_mantle_follows_the_clip_root_track() {
+        use crate::mantle_path::{MantleAnims, MantlePaths};
+        use movement_iw4::mantle::{create_anims_end_delta, sample_root_track};
+        let mut clips = std::vec![wpk::mantle::Clip::default(); wpk::mantle::CLIPS];
+        for (i, c) in clips.iter_mut().enumerate() {
+            let anim = (i % wpk::mantle::TREE) as i32;
+            let end = create_anims_end_delta(anim);
+            *c = match anim {
+                1..=7 => wpk::mantle::Clip {
+                    length_msec: 600,
+                    samples: std::vec![[0.0; 3], [0.0, 0.0, end[2] * 0.8], end],
+                },
+                8..=10 => wpk::mantle::Clip {
+                    length_msec: 250,
+                    samples: std::vec![[0.0; 3], end],
+                },
+                _ => wpk::mantle::Clip::default(),
+            };
+        }
+        let paths: &'static MantlePaths =
+            std::boxed::Box::leak(std::boxed::Box::new(MantlePaths::new(clips)));
+        let anims = MantleAnims(Some(paths));
+        let c = ledge_clip(40.0);
+        let clip = MapClip::new(&c);
+        let mut p = Player::spawn(&clip, [20.0, 0.0, 10.0], 0.0);
+        run(&mut p, &clip, MovePad::default(), 300);
+        let mut frames = std::vec::Vec::new();
+        for _ in 0..120 {
+            let st = Steer {
+                yaw: 0.0,
+                pitch: 0.0,
+                forward: 127,
+                jump: true,
+                ..Steer::default()
+            };
+            p.steer_with(&clip, &st, &WeaponMove::default(), 16, anims);
+            if p.ps.pm_flags & playerstate_iw4::pm_flags::MANTLE != 0 {
+                let want = sample_root_track(&p.ps, p.ps.mantle_timer, &anims, &anims);
+                frames.push((p.ps.mantle_timer, p.ps.origin, want));
+            }
+        }
+        // 600 ms of up clip at 16 ms frames (no over: the ledge's faces aren't marked mantle-over).
+        assert!(
+            (35..=40).contains(&frames.len()),
+            "{} mantle frames",
+            frames.len()
+        );
+        let (t0, o0, w0) = frames[0];
+        for &(t, o, w) in &frames {
+            for k in 0..3 {
+                let got = o[k] - o0[k];
+                let want = w[k] - w0[k];
+                assert!(
+                    (got - want).abs() < 0.5,
+                    "t {t} (from {t0}) axis {k}: {got} vs IW4L {want}"
+                );
+            }
+        }
+        // Halfway the player has risen most of the way but not yet moved in (a straight line would be half in).
+        let (_, mid, _) = frames.iter().find(|f| f.0 >= 300).copied().unwrap();
+        assert!(mid[0] - o0[0] < 2.0, "moved in early: {mid:?} from {o0:?}");
+        let end = p.ps.origin;
+        assert!((end[2] - 40.0).abs() < 2.0, "on the ledge: {end:?}");
+    }
+
     /// Looks for mantle brushes in a locally converted `out/packs/mp_rust.wpk` and mantles one (skipped when absent).
     /// Prints the spot for `tools/autoplay/mantle.txt`.
     #[test]
@@ -777,6 +858,75 @@ mod tests {
         assert!(
             !worked.is_empty(),
             "at least one mantle works on our collision"
+        );
+    }
+
+    /// MW2's mantle clips from a locally converted `out/packs/common.wpk` (skipped when absent): each one's length
+    /// and root path against IW4L's flat fallback, and the mp_rust crate of `tools/autoplay/feel.txt` climbed on them.
+    #[test]
+    fn mw2_mantle_paths_from_the_pack() {
+        use crate::mantle_path::{MantleAnims, MantlePaths};
+        use movement_iw4::{MantleRootDelta, MantleXAnimLength};
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../out/packs/");
+        let (Ok(common), Ok(rust)) = (
+            std::fs::read(std::format!("{dir}common.wpk")),
+            std::fs::read(std::format!("{dir}mp_rust.wpk")),
+        ) else {
+            std::println!("no local packs, skipped");
+            return;
+        };
+        let Some(paths) = wpk::Pack::parse(&common, false)
+            .ok()
+            .and_then(|p| p.section(wpk::tag::MANTLE).map(|s| s.data.to_vec()))
+            .and_then(|b| MantlePaths::parse(&b))
+        else {
+            std::println!("common.wpk has no MNTL (an older pack), skipped");
+            return;
+        };
+        let (found, with_paths) = paths.counts();
+        std::println!("{found} mantle clips, {with_paths} with a root track");
+        for fast in [false, true] {
+            for anim in 1..=10 {
+                let end = paths.abs_delta(fast, anim, 1.0);
+                let mid = paths.abs_delta(fast, anim, 0.5);
+                std::println!(
+                    "  fast={fast} anim={anim}: {} ms, mid {mid:?}, end {end:?} (IW4L straight end {:?})",
+                    paths.length_msec(fast, anim),
+                    movement_iw4::mantle::create_anims_end_delta(anim)
+                );
+            }
+        }
+        assert!(found > 0, "the converter found the mantle clips");
+        let paths: &'static MantlePaths = std::boxed::Box::leak(std::boxed::Box::new(paths));
+        let anims = MantleAnims(Some(paths));
+        let Ok(pack) = wpk::Pack::parse(&rust, true) else {
+            return;
+        };
+        let c = Clip::decode(pack.section(wpk::tag::CLIP).unwrap().data).unwrap();
+        let clip = MapClip::new(&c);
+        let mut p = Player::spawn(&clip, [1189.0, 420.0, -239.0], 90.0);
+        run(&mut p, &clip, MovePad::default(), 300);
+        let start = p.ps.origin;
+        let mut frames = 0;
+        for _ in 0..90 {
+            let st = Steer {
+                yaw: 90.0,
+                forward: 127,
+                jump: true,
+                ..Steer::default()
+            };
+            p.steer_with(&clip, &st, &WeaponMove::default(), 16, anims);
+            if p.ps.pm_flags & playerstate_iw4::pm_flags::MANTLE != 0 {
+                frames += 1;
+            }
+        }
+        std::println!(
+            "mp_rust crate: from {start:?} to {:?} in {frames} mantle frames",
+            p.ps.origin
+        );
+        assert!(
+            frames > 0 && p.ps.origin[2] > start[2] + 20.0,
+            "climbed the crate"
         );
     }
 }

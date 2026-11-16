@@ -15,7 +15,7 @@ use playerstate_iw4::{ENTITYNUM_NONE, PlayerState};
 use weapon_iw4::{
     VIEW_DAMAGE_UNDIRECTED, VIEW_ORG_BOB_Z_MIN_OFS, ViewAngleBobInputs, ViewOrgBobInputs,
     WeaponIdleInputs, crash_land_fall_height, crash_land_view_dip, damage_feedback_kick,
-    land_origin_z, view_angle_bob, view_damage_angles, view_org_bob,
+    land_origin_z, view_angle_bob, view_damage_angles, view_org_bob, viewweapon_land_origin_z,
 };
 
 /// What the held weapon changes in the view (from its `WFPV` record and combat facts).
@@ -37,6 +37,10 @@ pub struct ViewPose {
     pub origin: [f32; 3],
     /// The landing dip this frame (units, negative down), part of `origin`.
     pub land: f32,
+    /// The held weapon's own landing dip (IW4L `viewweapon_land_origin_z`: a quarter of the view's, on the same 150 ms
+    /// down / 300 ms back), in the weapon's view-relative (forward, left, up) frame: added to its placement
+    /// (`weapon_view::Placed::origin`), as IW4L's `apply_viewweapon_land_view`.
+    pub weapon_land: [f32; 3],
 }
 
 /// The view's state between frames (IW4L `SessionViewKick`'s first-person fields).
@@ -163,7 +167,7 @@ impl ViewKick {
             ps.viewangles[1] + angles[1],
             ps.viewangles[2] + angles[2],
         ];
-        let (_, right, _) = math_iw4::angle_vectors(view);
+        let (fwd, right, up) = math_iw4::angle_vectors(view);
         let mut origin = [
             ob.horizontal * right[0],
             ob.horizontal * right[1],
@@ -176,10 +180,15 @@ impl ViewKick {
         if origin[2] < min {
             origin[2] = min;
         }
+        // IW4L: the world-down dip of the weapon seen along the view's axes (forward, right, up); ours is (forward,
+        // left, up).
+        let wz = viewweapon_land_origin_z(now.wrapping_sub(self.land_time), self.land_change);
+        let weapon_land = [wz * fwd[2], -wz * right[2], wz * up[2]];
         ViewPose {
             angles,
             origin,
             land,
+            weapon_land,
         }
     }
 
@@ -298,6 +307,18 @@ mod tests {
         let back = k.frame(&ps, None, 1300, 0.016);
         assert!(back.land < 0.0 && back.land > deepest.land, "{back:?}");
         assert_eq!(k.frame(&ps, None, 1450, 0.016).land, 0.0);
+        // The weapon's dip: IW4L's quarter of the view's, along the level view's up (down).
+        let dip = -(k.land_view_dip as f32);
+        let w = k.frame(&ps, None, 1150, 0.016).weapon_land;
+        assert!(close(w[2], viewweapon_land_origin_z(150, dip)), "{w:?}");
+        assert!(close(w[2], dip * 0.25), "{w:?}");
+        assert!(close(w[0], 0.0) && close(w[1], 0.0), "{w:?}");
+        let w = k.frame(&ps, None, 1300, 0.016).weapon_land;
+        assert!(
+            w[2] < 0.0 && close(w[2], viewweapon_land_origin_z(300, dip)),
+            "{w:?}"
+        );
+        assert_eq!(k.frame(&ps, None, 1450, 0.016).weapon_land, [0.0; 3]);
         // A step down (12 units or less of fall) doesn't dip.
         let mut k = ViewKick::default();
         ps.ground_entity_num = ENTITYNUM_NONE;

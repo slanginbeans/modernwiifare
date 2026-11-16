@@ -41,6 +41,8 @@ struct Draw {
 pub struct View {
     /// The light colour this frame (`DrawState::tint`; 0: ×1).
     pub tint: u32,
+    /// The landing dip added to the placement this frame (`view_kick::ViewPose::weapon_land`).
+    pub weapon_land: [f32; 3],
     vm: ViewModel,
     /// Skinned positions (MEM2, written each frame), two sets: frames are pipelined, so the GPU may still be drawing
     /// last frame's while this one is written.
@@ -191,6 +193,7 @@ impl View {
             tint: 0,
             blend: BlendScratch::default(),
             placement: WeaponView::default(),
+            weapon_land: [0.0; 3],
             last_eye: None,
             sounds,
             bank,
@@ -304,7 +307,7 @@ impl View {
             ffi::mwf_view_arrays_indexed(positions.as_ptr().cast(), self.attributes);
         }
         // MW2's weapon placement (sway, bob, idle sway, movement offsets, recoil) about the eye.
-        let placed = self.placement.update(
+        let mut placed = self.placement.update(
             ps,
             gun.facts(),
             fpv,
@@ -313,6 +316,10 @@ impl View {
             dt,
             now_ms,
         );
+        // IW4L `apply_viewweapon_land_view`: the weapon's own landing dip.
+        for k in 0..3 {
+            placed.origin[k] += self.weapon_land[k];
+        }
         let eye = vmod::eye_from_model(&self.world[usize::from(self.vm.view_bone)]);
         let eye = vmod::mul(&eye_transform(&placed), &eye);
         self.last_eye = Some(eye);

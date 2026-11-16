@@ -64,6 +64,14 @@ it. Dolphin runs without audio, so the match log's `avfx_counts` lines say what 
 the Scout Sniper class's scoped rifle. The match log gets `warp`, `mantle_start` / `mantle_end`, `land_dip` and
 `breath_hold` / `breath_release` lines.
 
+`tools/autoplay/body_anims.txt` (mp_rust) checks the body and view animations: the mantle up the feel.txt crate (MW2's
+clip path; the log's `mantle_start` / `mantle_end` give the timer and the third-person movement type `mt`), a landing
+dip (view and weapon), a bot brought in front and flashed with First Recon's flashbang (`body_events shock_anims=`),
+KILL ALL BOTS (row 22) and the bodies left after the respawns (`corpse` lines, `body_events corpses=`), then the debug
+page's BOTS: RIOT SHIELDS (row 42; half the bots hold the shield, half carry it on the back, swapped on each press):
+the shield on a bot's left arm from its side, then on its back from behind. The load line `body_anims` says how many
+mantle clips the pack has and whether the bodies have the shield tags. Delete `debug.dat` first.
+
 `tools/autoplay/weapons_rpg.txt`, `weapons_javelin.txt`, `weapons_alt.txt` and `weapons_shield.txt` test the
 launchers (a rocket into a bot; the Javelin's lock and top attack), the underbarrel launcher (Grenadier class, Z +
 D-pad left), and the riot shield and akimbo (Riot Control class); their match logs record `launch`, `javelin`,
@@ -84,7 +92,7 @@ hit arrows and blood). The EMP static shows in `mwf-convert menu-preview` (`menu
 in Dolphin.
 
 Bots take a random default class each life, so scripts that need a steady opponent start with the in-game debug
-page's last line, BOTS: RIFLES ONLY (`last_stand.txt`, `hud_match.txt`, `hud_match_rifle.txt`): a launcher's blast
+page's BOTS: RIFLES ONLY (row 41; `last_stand.txt`, `hud_match.txt`, `hud_match_rifle.txt`): a launcher's blast
 never puts you in last stand, and a riot shield stops the shots meant to kill. For kills on a bot brought in front
 they also turn on BOTS DON'T ATTACK and BOTS FROZEN, so it stays where it was put, and off again afterwards.
 

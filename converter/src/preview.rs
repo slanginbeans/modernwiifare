@@ -838,7 +838,13 @@ pub fn render(bytes: &[u8], view: &View) -> Result<(Image, Stats), String> {
             .section(tag::PLAYER_ANIM_BONES)
             .and_then(|s| wpk::view::decode_names(s.data))
             .unwrap_or_default();
-        let anims = ch::PlayerAnims { clips, script };
+        let anims = ch::PlayerAnims {
+            clips,
+            script,
+            speeds: cp
+                .section(tag::PLAYER_ANIM_SPEEDS)
+                .map_or(&[][..], |s| s.data),
+        };
         let rig = ch::Rig::new(&names, &anim_names);
         let ps = playerstate_iw4::PlayerState::ZERO;
         let held = Some(ch::Held {
