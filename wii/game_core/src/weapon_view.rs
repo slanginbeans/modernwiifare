@@ -122,7 +122,9 @@ impl WeaponView {
             weapon_pos_frac: frac,
         });
         let idle = WeaponIdleInputs {
-            ads_idle_amount: fpv.idle[0],
+            // Holding breath steadies the aimed gun, running out of it shakes it (IW4L `fpv_present`:
+            // `ads_idle_amount *= hold_breath_scale`).
+            ads_idle_amount: fpv.idle[0] * ps.hold_breath_scale,
             hip_idle_amount: fpv.idle[1],
             ads_idle_speed: fpv.idle[2],
             hip_idle_speed: fpv.idle[3],

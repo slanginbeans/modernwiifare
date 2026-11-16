@@ -5,9 +5,9 @@
 //! first guess and must be tuned against the 360 reference (feel-parity skill) before anyone calls it right.
 
 use movement_iw4::{
-    AdsFracContext, AdsIntentContext, AirMoveContext, CmdScaleWalkContext, FlatMantleAnimLength,
-    JumpLaunchContext, MeleeChargeWeaponDelays, MoveBounds, PmoveSingleContext, SprintContext,
-    ViewAngleClamp, WalkMoveContext, ZeroMantleRootDelta, pmove,
+    AdsFracContext, AdsIntentContext, AirMoveContext, CmdScaleWalkContext,
+    CreateAnimsMantleRootDelta, FlatMantleAnimLength, JumpLaunchContext, MeleeChargeWeaponDelays,
+    MoveBounds, PmoveSingleContext, SprintContext, ViewAngleClamp, WalkMoveContext, pmove,
 };
 use playerstate_iw4::{ENTITYNUM_NONE, PlayerState, UserCmd, buttons};
 
@@ -30,6 +30,8 @@ pub struct Steer {
     /// Fire and reload held: pmove sees them (they end a sprint, IW4 `SPRINT_INTERFERING`).
     pub fire: bool,
     pub reload: bool,
+    /// Hold breath (IW4 `BUTTON_BREATH`): steadies a scope while fully aimed (`movement_iw4` breath).
+    pub breath: bool,
 }
 
 /// One step of the player's input, already shaped (`look`): IW4 move amounts and the view change.
@@ -47,6 +49,8 @@ pub struct MovePad {
     pub ads: bool,
     pub fire: bool,
     pub reload: bool,
+    /// Hold breath: MW2's console `+breath_sprint` puts it on the sprint button ([`crate::controls::act::BREATH`]).
+    pub breath: bool,
 }
 
 /// The console stance button (IW4L `input_iw4` `stance_button` / `stance_hold`): a tap toggles crouch; held
@@ -160,6 +164,13 @@ impl Default for WeaponMove {
         }
     }
 }
+
+/// The mantle's root motion: IW4L's `CreateAnimsMantleRootDelta`, a straight line from the start to each clip's end
+/// (forward 16 units and up by the transition height, then over the ledge), over `FlatMantleAnimLength`'s 400 / 200
+/// ms. MW2 moves along the mantle clips' own root tracks (IW4L `sim::mantle_xanim`); those curves are not converted
+/// yet, so the path is straight where MW2's bends. Before this the root delta was zero: `mantle::enter` put the
+/// player at the ledge's end at once and the mantle "played" standing still there.
+const MANTLE_ROOT: CreateAnimsMantleRootDelta = CreateAnimsMantleRootDelta;
 
 /// IW4 `player_sprintTime` (seconds).
 const PLAYER_SPRINT_TIME: f32 = 4.0;
@@ -297,6 +308,7 @@ impl Player {
                 ads: pad.ads,
                 fire: pad.fire,
                 reload: pad.reload,
+                breath: pad.breath,
             },
             w,
             msec,
@@ -328,6 +340,9 @@ impl Player {
         if st.reload {
             btn |= buttons::RELOAD;
         }
+        if st.breath {
+            btn |= buttons::BREATH;
+        }
         self.server_time += msec;
         let short = |deg: f32| (deg * ANGLE2SHORT) as i32 & 0xffff;
         let mut cmd = UserCmd {
@@ -351,7 +366,7 @@ impl Player {
             context(self.old_buttons, w),
             clip,
             &FlatMantleAnimLength::default(),
-            &ZeroMantleRootDelta,
+            &MANTLE_ROOT,
         );
         self.old_buttons = btn;
         result.pml.fall_damage
@@ -595,5 +610,173 @@ mod tests {
         }
         std::println!("{steps} steps in 1.9 s");
         assert!((2..=8).contains(&steps), "{steps}");
+    }
+
+    /// A box with a mantle face on +x: 40 units high, solid and `CONTENTS_MANTLE`, all sides `SURF_MANTLE_ON`.
+    fn ledge_clip(height: f32) -> Clip {
+        let mut c = floor_clip();
+        let (min, max) = ([64.0, -64.0, 0.0], [192.0, 64.0, height]);
+        let planes = [
+            [1.0, 0.0, 0.0, max[0]],
+            [-1.0, 0.0, 0.0, -min[0]],
+            [0.0, 1.0, 0.0, max[1]],
+            [0.0, -1.0, 0.0, -min[1]],
+            [0.0, 0.0, 1.0, max[2]],
+            [0.0, 0.0, -1.0, -min[2]],
+        ];
+        let on = 0x0200_0000;
+        c.push_brush(&planes, &[on; 6], 1 | movement_iw4::CONTENTS_MANTLE, 0);
+        c
+    }
+
+    /// Runs at a ledge holding jump; returns (mantle seen, frames in the mantle, final origin).
+    fn try_mantle(p: &mut Player, clip: &MapClip<'_>, frames: usize) -> (bool, usize, [f32; 3]) {
+        let mut seen = 0;
+        for _ in 0..frames {
+            p.update(
+                clip,
+                &MovePad {
+                    forward: 127,
+                    jump: true,
+                    ..MovePad::default()
+                },
+                &WeaponMove::default(),
+                16,
+            );
+            if p.ps.pm_flags & playerstate_iw4::pm_flags::MANTLE != 0 {
+                seen += 1;
+            }
+        }
+        (seen > 0, seen, p.ps.origin)
+    }
+
+    #[test]
+    fn a_mantle_climbs_the_ledge_over_time() {
+        let c = ledge_clip(40.0);
+        let clip = MapClip::new(&c);
+        let mut p = Player::spawn(&clip, [20.0, 0.0, 10.0], 0.0);
+        run(&mut p, &clip, MovePad::default(), 300);
+        let mut path = std::vec::Vec::new();
+        let mut entered = None;
+        for i in 0..90 {
+            p.update(
+                &clip,
+                &MovePad {
+                    forward: 127,
+                    jump: true,
+                    ..MovePad::default()
+                },
+                &WeaponMove::default(),
+                16,
+            );
+            if p.ps.pm_flags & playerstate_iw4::pm_flags::MANTLE != 0 {
+                entered.get_or_insert(i);
+                path.push(p.ps.origin);
+            }
+        }
+        let first = entered.expect("the ledge is mantled");
+        // 400 ms up (CreateAnims: straight to the ledge top), MW2's 25 frames at 16 ms.
+        assert!(
+            (20..=27).contains(&path.len()),
+            "{} mantle frames",
+            path.len()
+        );
+        // The climb is spread over the mantle: the first frame is well below the top, the heights rise.
+        assert!(
+            path[0][2] < 30.0,
+            "first mantle frame {:?} (entered at {first})",
+            path[0]
+        );
+        for w in path.windows(2) {
+            assert!(w[1][2] >= w[0][2] - 0.01, "{:?}", w);
+        }
+        let end = p.ps.origin;
+        assert!((end[2] - 40.0).abs() < 2.0, "on the ledge: {end:?}");
+        assert!(end[0] > 64.0, "over the edge: {end:?}");
+    }
+
+    /// Looks for mantle brushes in a locally converted `out/packs/mp_rust.wpk` and mantles one (skipped when absent).
+    /// Prints the spot for `tools/autoplay/mantle.txt`.
+    #[test]
+    fn mantles_on_the_real_map() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../out/packs/mp_rust.wpk");
+        let Ok(bytes) = std::fs::read(path) else {
+            std::println!("no local pack, skipped");
+            return;
+        };
+        let Ok(pack) = wpk::Pack::parse(&bytes, true) else {
+            std::println!("local pack is another version; skipped");
+            return;
+        };
+        let c = Clip::decode(pack.section(wpk::tag::CLIP).unwrap().data).unwrap();
+        let clip = MapClip::new(&c);
+        let mut brushes = 0;
+        let mut tried = 0;
+        let mut worked = std::vec::Vec::new();
+        for b in &c.brushes {
+            if b.contents & movement_iw4::CONTENTS_MANTLE == 0 {
+                continue;
+            }
+            brushes += 1;
+            let r = b.first_plane as usize..b.first_plane as usize + b.plane_count as usize;
+            let planes = &c.planes[r.clone()];
+            let flags = &c.plane_flags[r];
+            let mut lo = [f32::MIN; 3];
+            let mut hi = [f32::MAX; 3];
+            for pl in planes.iter().take(6) {
+                for k in 0..3 {
+                    if pl[k] == 1.0 {
+                        hi[k] = pl[3];
+                    } else if pl[k] == -1.0 {
+                        lo[k] = -pl[3];
+                    }
+                }
+            }
+            // Each vertical side of the box: stand 30 units out, facing in.
+            for (side, (axis, sign)) in [(0, 1.0f32), (0, -1.0), (1, 1.0), (1, -1.0)]
+                .iter()
+                .enumerate()
+            {
+                let fi = side; // planes 0..3 are +x, -x, +y, -y
+                if flags.get(fi).copied().unwrap_or(0) & movement_iw4::SURF_MANTLE_ON_OR_OVER == 0 {
+                    continue;
+                }
+                let mut o = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, hi[2]];
+                o[*axis] = if *sign > 0.0 {
+                    hi[*axis] + 30.0
+                } else {
+                    lo[*axis] - 30.0
+                };
+                let yaw = match (axis, *sign > 0.0) {
+                    (0, true) => 180.0,
+                    (0, false) => 0.0,
+                    (_, true) => 270.0,
+                    (_, false) => 90.0,
+                };
+                let mut p = Player::spawn(&clip, o, yaw);
+                run(&mut p, &clip, MovePad::default(), 300);
+                if !p.on_ground() {
+                    continue;
+                }
+                tried += 1;
+                let start = p.ps.origin;
+                let (seen, frames, end) = try_mantle(&mut p, &clip, 90);
+                if seen && end[2] > start[2] + 10.0 {
+                    worked.push((start, yaw, end, frames));
+                }
+            }
+        }
+        std::println!(
+            "{brushes} mantle brushes, {tried} sides tried, {} mantled",
+            worked.len()
+        );
+        for (s, y, e, f) in worked.iter().take(8) {
+            std::println!("  from {s:?} yaw {y} -> {e:?} ({f} frames)");
+        }
+        assert!(brushes > 0, "the converter keeps mantle brushes");
+        assert!(
+            !worked.is_empty(),
+            "at least one mantle works on our collision"
+        );
     }
 }

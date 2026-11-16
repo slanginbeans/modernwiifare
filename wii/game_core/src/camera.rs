@@ -35,6 +35,9 @@ pub struct Camera {
     pub fovy: f32,
     /// Width / height of the screen.
     pub aspect: f32,
+    /// Degrees about the view direction (IW4 `AngleVectors` roll: positive tips the right side down). The view bob
+    /// and hit kick roll the camera (`view_kick`); 0 everywhere else.
+    pub roll: f32,
 }
 
 /// MW2's default horizontal FOV, 65°, at 4:3 is 51.08° vertical (IW4L `horizontal_to_vertical_fov_deg`).
@@ -50,6 +53,7 @@ impl Camera {
             pitch,
             fovy: DEFAULT_FOVY,
             aspect: 4.0 / 3.0,
+            roll: 0.0,
         }
     }
 
@@ -59,7 +63,13 @@ impl Camera {
     }
     pub fn right(&self) -> Vec3 {
         let y = self.yaw.to_radians();
-        [sinf(y), -cosf(y), 0.0]
+        if self.roll == 0.0 {
+            return [sinf(y), -cosf(y), 0.0];
+        }
+        // IW4 `AngleVectors` (the negated left axis).
+        let (p, r) = (self.pitch.to_radians(), self.roll.to_radians());
+        let (sy, cy, sp, cp, sr, cr) = (sinf(y), cosf(y), sinf(p), cosf(p), sinf(r), cosf(r));
+        [-sr * sp * cy + cr * sy, -sr * sp * sy - cr * cy, -sr * cp]
     }
     pub fn up(&self) -> Vec3 {
         cross(self.right(), self.forward())

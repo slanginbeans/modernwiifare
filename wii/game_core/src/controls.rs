@@ -13,13 +13,13 @@
 //! | RB | lethal grenade | lethal grenade |
 //! | LT | aim down sights | aim down sights |
 //! | RT | fire | fire |
-//! | left stick click | sprint | sprint |
+//! | left stick click | sprint / hold breath | sprint / hold breath |
 //! | right stick click | melee | crouch, hold for prone |
 //! | D-pad right | killstreak reward (action slot 4) | the same |
 //! | START | pause | pause |
 //!
 //! The GameCube pad has fewer buttons, so it keeps this project's mapping: A jump, B stance, X reload / use, Y switch,
-//! Z sprint, L aim, R fire, D-pad up / down lethal / tactical, D-pad right melee, D-pad left killstreak; Tactical swaps
+//! Z sprint / hold breath, L aim, R fire, D-pad up / down lethal / tactical, D-pad right melee, D-pad left killstreak; Tactical swaps
 //! B and D-pad right. Developer combinations: Z (GameCube) or BACK (360) held with D-pad up toggles free fly, with
 //! D-pad down the performance overlay.
 
@@ -44,6 +44,9 @@ pub mod act {
     pub const OVERLAY: u32 = 1 << 13;
     /// Free fly: move faster (down / up are the analog triggers, [`super::Controls::triggers`]).
     pub const FLY_FAST: u32 = 1 << 14;
+    /// Hold breath (a scope steadied while fully aimed). MW2's console binds `+breath_sprint`: one button sprints
+    /// and holds breath (IW4L `input_iw4` command 9 / 10), so BREATH is held with SPRINT in every layout.
+    pub const BREATH: u32 = 1 << 15;
 }
 
 /// GameCube button bits (the shim's `MWF_BTN_*`).
@@ -147,7 +150,7 @@ pub fn gc_actions(p: &GcPad, tactical: bool) -> (u32, u32) {
     let on = |b: u16, a: u32| if p.held & b != 0 { a } else { 0 };
     let mut held = on(gc::A, act::JUMP)
         | on(stance, act::STANCE)
-        | on(gc::Z, act::SPRINT)
+        | on(gc::Z, act::SPRINT | act::BREATH)
         | on(gc::X, act::USE)
         | on(gc::Y, act::SWITCH)
         | on(melee, act::MELEE)
@@ -188,7 +191,7 @@ pub fn x360_actions(p: &X360Pad, prev: u16, tactical: bool) -> (u32, u32) {
         let on = |b: u16, a: u32| if bits & b != 0 { a } else { 0 };
         let mut a = on(A, act::JUMP)
             | on(stance, act::STANCE)
-            | on(LS, act::SPRINT)
+            | on(LS, act::SPRINT | act::BREATH)
             | on(X, act::USE)
             | on(Y, act::SWITCH)
             | on(melee, act::MELEE)
@@ -394,5 +397,32 @@ mod tests {
         assert!(!c.held(act::USE) && !c.from_x360);
         let c = m.map(&g, &x(x360::X), false);
         assert!(c.pressed(act::USE));
+    }
+
+    #[test]
+    fn the_sprint_button_holds_breath_in_every_layout() {
+        // MW2's console `+breath_sprint`: one button for both (GameCube Z, 360 left stick click).
+        for tactical in [false, true] {
+            let (held, _) = gc_actions(
+                &GcPad {
+                    held: gc::Z,
+                    connected: true,
+                    ..GcPad::default()
+                },
+                tactical,
+            );
+            assert_eq!(
+                held & (act::SPRINT | act::BREATH),
+                act::SPRINT | act::BREATH
+            );
+            let (held, _) = x360_actions(&x(x360::LS), 0, tactical);
+            assert_eq!(
+                held & (act::SPRINT | act::BREATH),
+                act::SPRINT | act::BREATH
+            );
+            // Nothing else holds breath.
+            let (held, _) = x360_actions(&x(!x360::LS), 0, tactical);
+            assert_eq!(held & act::BREATH, 0);
+        }
     }
 }

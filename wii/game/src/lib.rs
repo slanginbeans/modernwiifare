@@ -964,6 +964,11 @@ fn run_map(
     };
     let mut spawn = 0usize;
     let mut cam = spawn_camera(&world, spawn);
+    // The view's feel on the eye (bob, landing dip, hit kick, scope sway: `game_core::view_kick`).
+    let mut view_kick = game_core::view_kick::ViewKick::default();
+    let mut landings_logged = 0u32;
+    let mut was_mantling = false;
+    let mut was_holding_breath = false;
     cam.aspect = aspect;
     let mut player = clip.as_ref().map(|c| spawn_player(&world, c, spawn));
     // The class's weapons (when common.wpk is on the SD card), first-person files loaded above the map's data.
@@ -1593,6 +1598,22 @@ fn run_map(
             }
         }
         sections[section::INPUT] = lap(&mut mark);
+        // A test script's `warp`: the player to a spot (`game_core::autoplay`).
+        if let (Some(w), Some(c)) = (autoplay::take_warp(), clip.as_ref()) {
+            let o = [w[0] as f32, w[1] as f32, w[2] as f32];
+            player = Some(Player::spawn(c, o, w[3] as f32));
+            view_kick.reset();
+            if let Some(p) = player.as_ref() {
+                devlog::event(
+                    now,
+                    "warp",
+                    format_args!(
+                        "to={:.1},{:.1},{:.1}",
+                        p.ps.origin[0], p.ps.origin[1], p.ps.origin[2]
+                    ),
+                );
+            }
+        }
         match (&mut player, &clip) {
             (Some(p), Some(c)) if !flying && life.alive() => {
                 // Fixed 60 Hz for the player, like IW4 at 60 fps (usercmds of 16 / 17 ms): the fire rate and
@@ -1682,6 +1703,8 @@ fn run_map(
                             ads: ads_held,
                             fire: ctl.held(act::FIRE),
                             reload: reload_held,
+                            // Z / left stick click (MW2's `+breath_sprint`): steadies a scope while aimed.
+                            breath: ctl.held(act::BREATH),
                         },
                         &weapon_move,
                         tick_ms,
@@ -1722,6 +1745,82 @@ fn run_map(
                     }
                     if fall > 0 && !debug.god_mode {
                         life.damage(fall, now);
+                        // A fall kicks the view as damage from nowhere (IW4 `P_DamageFeedback`, the world).
+                        view_kick.hit(&p.ps, None, fall, now);
+                    }
+                    // The view's feel (IW4L `weapon_iw4::view_bob`): its angles go on the view shots follow too (the
+                    // scope's sway and the hit kick move your aim); the eye's bob and landing dip only move the
+                    // drawn camera, after the gun has fired from the eye.
+                    let view_weapon = arsenal.gun().map(|g| {
+                        let fpv = wpk::records::get::<wpk::weapon::FpvRecord>(
+                            fpvs,
+                            g.weapon_index() as usize,
+                        )
+                        .unwrap_or_default();
+                        game_core::view_kick::ViewWeapon {
+                            overlay_reticle: g.facts().overlay_reticle,
+                            aim_down_sight: g.facts().aim_down_sight,
+                            ads_bob_factor: fpv.ads_bob_factor,
+                            ads_view_bob_mult: fpv.ads_view_bob_mult,
+                            idle: weapon_iw4::WeaponIdleInputs {
+                                ads_idle_amount: fpv.idle[0],
+                                hip_idle_amount: fpv.idle[1],
+                                ads_idle_speed: fpv.idle[2],
+                                hip_idle_speed: fpv.idle[3],
+                                idle_crouch_factor: fpv.idle[4],
+                                idle_prone_factor: fpv.idle[5],
+                            },
+                        }
+                    });
+                    let view_pose =
+                        view_kick.frame(&p.ps, view_weapon.as_ref(), now, tick_ms as f32 / 1000.0);
+                    cam.pitch += view_pose.angles[0];
+                    cam.yaw += view_pose.angles[1];
+                    cam.roll = view_pose.angles[2];
+                    if view_kick.landings != landings_logged {
+                        landings_logged = view_kick.landings;
+                        devlog::event(
+                            now,
+                            "land_dip",
+                            format_args!("dip={} z={:.1}", view_kick.land_view_dip, p.ps.origin[2]),
+                        );
+                    }
+                    // Holding breath, for the log (IW4 `WEAPON_FLAG_HOLD_BREATH`).
+                    let holding = p.ps.weap_flags & playerstate_iw4::weap_flags::HOLD_BREATH != 0;
+                    if holding != was_holding_breath {
+                        was_holding_breath = holding;
+                        devlog::event(
+                            now,
+                            if holding {
+                                "breath_hold"
+                            } else {
+                                "breath_release"
+                            },
+                            format_args!(
+                                "scale={:.2} timer={}",
+                                p.ps.hold_breath_scale, p.ps.hold_breath_timer
+                            ),
+                        );
+                    }
+                    // Mantles, for the log (IW4 `PMF_MANTLE`).
+                    let mantling = p.ps.pm_flags & playerstate_iw4::pm_flags::MANTLE != 0;
+                    if mantling != was_mantling {
+                        was_mantling = mantling;
+                        devlog::event(
+                            now,
+                            if mantling {
+                                "mantle_start"
+                            } else {
+                                "mantle_end"
+                            },
+                            format_args!(
+                                "at={:.1},{:.1},{:.1} anim={}",
+                                p.ps.origin[0],
+                                p.ps.origin[1],
+                                p.ps.origin[2],
+                                p.ps.mantle_trans_index
+                            ),
+                        );
                     }
                     if p.ps.origin[2] < floor_z && !debug.god_mode {
                         life.damage(life.max_health, now);
@@ -1882,6 +1981,9 @@ fn run_map(
                         devlog::event(now, "switch", format_args!("to={}", arsenal.active));
                     }
                     sections[section::GUN] += lap(&mut mark);
+                    for k in 0..3 {
+                        cam.eye[k] += view_pose.origin[k];
+                    }
                 }
             }
             (Some(_), Some(c)) if !flying => {
@@ -1911,6 +2013,7 @@ fn run_map(
                     }
                     life.respawn();
                     stance_button.reset();
+                    view_kick.reset();
                 }
             }
             _ => fly::update(
@@ -1984,6 +2087,17 @@ fn run_map(
                 } => {
                     if attacker == 0 {
                         hitmarker_ms = Some(now);
+                    }
+                    // Your view kicks away from the hit (IW4 `P_DamageFeedback`: towards the attacker; your own
+                    // grenade has no direction).
+                    if victim == 0
+                        && let Some(p) = player.as_ref()
+                    {
+                        let from = arena
+                            .as_ref()
+                            .filter(|_| attacker != 0)
+                            .map(|a| a.fighters[attacker].player.ps.origin);
+                        view_kick.hit(&p.ps, from, damage, now);
                     }
                     if attacker == 0 || victim == 0 {
                         devlog::event(
