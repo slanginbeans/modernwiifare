@@ -6,7 +6,8 @@
 //! with their bone's matrix (a matrix index per vertex, at most ten matrices per draw); only the blended ones (arms,
 //! hands) are skinned on the CPU each frame.
 //!
-//! Lighting is a flat ×1 for now (MW2 lights the viewmodel from the light grid at the player).
+//! Lit by the map's light lattice at IW4's viewmodel lighting origin (`game_core::light`, [`View::tint`], set by
+//! the caller each frame; 0 is ×1).
 
 use alloc::vec::Vec;
 
@@ -38,6 +39,8 @@ struct Draw {
 }
 
 pub struct View {
+    /// The light colour this frame (`DrawState::tint`; 0: ×1).
+    pub tint: u32,
     vm: ViewModel,
     /// Skinned positions (MEM2, written each frame), two sets: frames are pipelined, so the GPU may still be drawing
     /// last frame's while this one is written.
@@ -185,6 +188,7 @@ impl View {
             blended,
             anim: None,
             playing: Vec::with_capacity(8),
+            tint: 0,
             blend: BlendScratch::default(),
             placement: WeaponView::default(),
             last_eye: None,
@@ -327,9 +331,13 @@ impl View {
                 };
                 unsafe { ffi::mwf_pos_matrix_slot(&m, slot as u32) };
             }
-            if last != Some(d.state) {
-                gfx.world_state(&d.state);
-                last = Some(d.state);
+            let state = DrawState {
+                tint: self.tint,
+                ..d.state
+            };
+            if last != Some(state) {
+                gfx.world_state(&state);
+                last = Some(state);
             }
             gfx.call_dl(d.dl);
         }

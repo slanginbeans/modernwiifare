@@ -455,6 +455,7 @@ dependencies = [
  "gamemode_iw4",
  "hud_iw4",
  "libm",
+ "marks_iw4",
  "math_iw4",
  "movement_iw4",
  "playerstate_iw4",
@@ -677,6 +678,15 @@ checksum = "96ab312376eec4f900987620048ff27d8bdc7a8095b717963cafb80ffc873905"
 dependencies = [
  "byteorder",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "marks_iw4"
+version = "0.1.0"
+source = "git+https://github.com/vladtrc/iw4L?rev=acc57a5c9dd027db8eb5ef17c792fa69f059daa1#acc57a5c9dd027db8eb5ef17c792fa69f059daa1"
+dependencies = [
+ "asset_iw4",
+ "dpvs_iw4",
 ]
 
 [[package]]

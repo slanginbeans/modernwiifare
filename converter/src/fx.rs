@@ -16,6 +16,8 @@ use crate::zone_textures::IndexEntry;
 
 /// Effect textures are at most this many texels across.
 const TEXTURE_MAX: u32 = 64;
+/// Impact marks' textures are at most this many texels across (small on screen; MEM2 is short).
+const MARK_TEXTURE_MAX: u32 = 32;
 /// Runner children followed this many levels down.
 const DEPTH: u32 = 4;
 /// IW4 velocity-sample size and where its world graph starts.
@@ -32,9 +34,16 @@ struct OwnedElem {
 #[derive(Default)]
 pub struct Baked {
     effects: Vec<Vec<OwnedElem>>,
+    /// Each effect's sound, looping life and mark (`wpk::fx::Effect`'s header).
+    heads: Vec<(u16, i32, wpk::fx::Mark)>,
     by_name: HashMap<String, u16>,
     pub missing: usize,
     pub elems: usize,
+    /// Effects with a sound / an impact mark.
+    pub sounds: usize,
+    pub marks: usize,
+    /// Effects that name a sound (found in the bank or not).
+    pub sounds_named: usize,
     pub dropped_elems: usize,
 }
 
@@ -55,14 +64,25 @@ impl Baked {
         let effects: Vec<Effect> = self
             .effects
             .iter()
-            .map(|e| Effect {
-                elems: e
-                    .iter()
-                    .map(|o| Elem {
-                        vis: &o.vis,
-                        ..o.elem.clone()
-                    })
-                    .collect(),
+            .enumerate()
+            .map(|(i, e)| {
+                let (sound, looping_life_ms, mark) =
+                    self.heads
+                        .get(i)
+                        .copied()
+                        .unwrap_or((NONE, 0, wpk::fx::Mark::default()));
+                Effect {
+                    elems: e
+                        .iter()
+                        .map(|o| Elem {
+                            vis: &o.vis,
+                            ..o.elem.clone()
+                        })
+                        .collect(),
+                    sound,
+                    looping_life_ms,
+                    mark,
+                }
             })
             .collect();
         wpk::fx::encode(&effects)
@@ -83,13 +103,15 @@ fn graph(raw: &[u8], count: usize, world: bool) -> Vec<Vec3Range> {
         .collect()
 }
 
-/// Bake `roots` and the effects their runners start. `index` / `tex_dir`: the zone's converted textures.
+/// Bake `roots` and the effects their runners start. `index` / `tex_dir`: the zone's converted textures. `sound`
+/// adds an effect's sound alias to the pack's world bank (its index, or NONE).
 pub fn bake(
     links: &Links,
     roots: &[String],
     index: &[IndexEntry],
     tex_dir: &Path,
     tex: &mut Textures,
+    sound: &mut dyn FnMut(&str) -> u16,
 ) -> Baked {
     let mut files_by_image: HashMap<usize, &IndexEntry> = HashMap::new();
     for e in index {
@@ -118,6 +140,7 @@ pub fn bake(
     }
     while let Some((name, depth)) = queue.pop_front() {
         let mut elems = Vec::new();
+        let mut mark = wpk::fx::Mark::default();
         for c in links.fx_elems(&name).unwrap_or(&[]) {
             let FxElemCapture {
                 view: v,
@@ -128,6 +151,35 @@ pub fn bake(
                 materials,
                 runners,
             } = c;
+            // The first decal element is the effect's impact mark (its colour material, radius from its size).
+            if v.elem_type == asset_iw4::size::fx_elem::DECAL {
+                if mark.texture == NONE
+                    && let Some(&m) = materials.first()
+                {
+                    let size = |at: usize| {
+                        vis.get(at + 0x0c..at + 0x10)
+                            .map_or(0.0, |b| f32::from_le_bytes(b.try_into().unwrap_or([0; 4])))
+                    };
+                    let texture = links
+                        .colour_image(m)
+                        .and_then(|img| files_by_image.get(&img))
+                        .and_then(|e| {
+                            tex.add_file_capped(tex_dir, &e.file, Wrap::Clamp, MARK_TEXTURE_MAX)
+                                .ok()
+                        })
+                        .unwrap_or(NONE);
+                    if texture != NONE {
+                        mark = wpk::fx::Mark {
+                            texture,
+                            blend: effect_blend(&links.material_info[m]) as u8,
+                            radius: [size(0), size(0x18)],
+                        };
+                        out.marks += 1;
+                    }
+                }
+                out.dropped_elems += 1;
+                continue;
+            }
             let (texture, blend) = match v.elem_type {
                 kind::BILLBOARD | kind::ORIENTED | kind::TAIL | kind::CLOUD => {
                     // Screen distortion (heat haze) needs the frame behind it: left out.
@@ -224,6 +276,18 @@ pub fn bake(
             out.effects.resize_with(i + 1, Vec::new);
         }
         out.effects[i] = elems;
+        if out.heads.len() <= i {
+            out.heads.resize(i + 1, (NONE, 0, wpk::fx::Mark::default()));
+        }
+        let named = links.fx_own_sound(&name);
+        if named.is_some() {
+            out.sounds_named += 1;
+        }
+        let snd = named.map_or(NONE, |n| sound(&n));
+        if snd != NONE {
+            out.sounds += 1;
+        }
+        out.heads[i] = (snd, links.fx_looping_life(&name), mark);
     }
     out
 }

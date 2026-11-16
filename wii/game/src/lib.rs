@@ -941,10 +941,21 @@ fn run_map(
     if let Some(fx) = effects.as_mut() {
         fx.load_map(bytes, gfx);
     }
-    let (props, map_objects) = match objects::Props::load(bytes, gfx) {
+    let (mut props, map_objects) = match objects::Props::load(bytes, gfx) {
         Some((p, o)) => (Some(p), Some(o)),
         None => (None, None),
     };
+    // The light lattice for the models that move (none with an older pack: they stay at ×1).
+    let lattice = wpk::Pack::parse_prefix(bytes)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::LIGHT_LATTICE))
+        .and_then(|s| wpk::light::LightLattice::decode(s.data));
+    if let Some(c) = characters.as_mut() {
+        c.lattice = lattice.clone();
+    }
+    if let Some(p) = props.as_mut() {
+        p.lattice = lattice.clone();
+    }
     let mut poses: Vec<character::Pose> = Vec::with_capacity(bots);
     devlog::event(
         ffi::ms(),
@@ -959,7 +970,7 @@ fn run_map(
         ffi::ms(),
         "loaded",
         format_args!(
-            "ms={} mem1_free={}k mem2_free={}k collision={} nav_points={} characters={} objects={} objectives={}",
+            "ms={} mem1_free={}k mem2_free={}k collision={} nav_points={} characters={} objects={} objectives={} light_lattice={}",
             ffi::ms().wrapping_sub(load_start),
             unsafe { ffi::mwf_mem1_free_bytes() } / 1024,
             unsafe { ffi::mwf_mem2_free_bytes() } / 1024,
@@ -968,6 +979,29 @@ fn run_map(
             characters.is_some(),
             map_objects.as_ref().map_or(0, |o| o.len()),
             objectives.len(),
+            lattice.as_ref().map_or(0, |l| l.points.len() / 4),
+        ),
+    );
+    // Audio / effects memory of this round's additions (MEM2): the light lattice, the tracer definitions and the
+    // mark pool (the weapon world sounds are counted in common.wpk's size).
+    devlog::event(
+        ffi::ms(),
+        "avfx",
+        format_args!(
+            "lattice_bytes={} tracer_defs={} mark_pool_bytes={} weapon_world_sounds={}",
+            lattice
+                .as_ref()
+                .map_or(0, |l| l.points.len() + wpk::light::HEADER),
+            effects.as_ref().map_or(0, |e| e.tracer_defs()),
+            game_core::marks::MAX_MARKS * core::mem::size_of::<game_core::marks::Mark>(),
+            wpk::Pack::parse(common, false)
+                .ok()
+                .and_then(|p| p.section(wpk::tag::WEAPON_WORLD_SOUNDS))
+                .map_or(0, |s| s
+                    .data
+                    .chunks_exact(2)
+                    .filter(|c| c != &[0xff, 0xff])
+                    .count()),
         ),
     );
     let aspect = if unsafe { ffi::mwf_widescreen() } != 0 {
@@ -1166,6 +1200,27 @@ fn run_map(
                 .map(|b| u16::from_be_bytes([b[0], b[1]]))
                 .collect()
         });
+    // Other players' weapon sounds (`WSNW`) and the match sounds (`SNDM`: hit alert, knife); empty with an older pack.
+    let section = |t: wpk::Tag| {
+        wpk::Pack::parse(common, false)
+            .ok()
+            .and_then(|p| p.section(t))
+            .map_or(&[][..], |s| s.data)
+    };
+    let weapon_world_sounds = section(wpk::tag::WEAPON_WORLD_SOUNDS);
+    let misc_sounds = section(wpk::tag::MISC_SOUNDS);
+    let world_weapon_sound = |weapon: u32, k: usize| {
+        wpk::sound::table_alias(
+            weapon_world_sounds,
+            weapon as usize * wpk::sound::world::COUNT + k,
+        )
+    };
+    let misc_sound = |k: usize| wpk::sound::table_alias(misc_sounds, k);
+    // One voice per shooter for gunfire (`sound::Voice`).
+    let mut gun_voices = [sound::Voice::default(); 18];
+    // What this round's audio and effects did (logged every 5 s as `avfx_counts`): others' gunfire sounds, hit
+    // alerts, knife cues, impact sounds, tracers, marks.
+    let mut avfx = [0u32; 6];
     let equip_sound = |weapon: u32, k: usize| {
         wpk::records::get::<wpk::weapon::EquipRecord>(equips, weapon as usize)
             .map_or(wpk::sound::NONE, |e| e.sounds[k])
@@ -2121,7 +2176,37 @@ fn run_map(
                                 now,
                                 &mut events,
                             );
-                            devlog::event(now, "melee", format_args!("hit={}", u8::from(hit)));
+                            // IW4's melee cue: the knife on a player, else on whatever is within reach (nothing
+                            // when the swing hits nothing; the swipe sound plays from the animation).
+                            let reach = weapon_iw4::PLAYER_MELEE_RANGE_DEFAULT;
+                            let end: [f32; 3] =
+                                core::array::from_fn(|k| cam.eye[k] + cam.forward()[k] * reach);
+                            let wall = !hit
+                                && c.trace(
+                                    cam.eye,
+                                    end,
+                                    [0.0; 3],
+                                    [0.0; 3],
+                                    game_core::gun::MASK_SHOT,
+                                )
+                                .fraction
+                                    < 1.0;
+                            let cue = if hit {
+                                Some(wpk::sound::misc::KNIFE_HIT)
+                            } else if wall {
+                                Some(wpk::sound::misc::KNIFE_MISS)
+                            } else {
+                                None
+                            };
+                            if let (Some(k), Some(w)) = (cue, world_sounds.as_mut()) {
+                                w.play(misc_sound(k));
+                                avfx[2] += 1;
+                            }
+                            devlog::event(
+                                now,
+                                "melee",
+                                format_args!("hit={} wall={}", u8::from(hit), u8::from(wall)),
+                            );
                         }
                         if let Some(s) = shot.as_ref() {
                             last_shot_ms = Some(now);
@@ -2132,6 +2217,21 @@ fn run_map(
                             {
                                 let e = fx.weapon(g.weapon_index(), effects::VIEW_FLASH);
                                 fx.play_view(e, o, f, now);
+                            }
+                            // Your tracer, from the gun's muzzle in the world (the eye without a viewmodel).
+                            if let Some(fx) = effects.as_mut() {
+                                let start = arsenal.views[arsenal.active]
+                                    .as_ref()
+                                    .and_then(|v| v.muzzle_eye())
+                                    .map_or(s.start, |(o, _)| {
+                                        let (r, u, f) = (cam.right(), cam.up(), cam.forward());
+                                        core::array::from_fn(|k| {
+                                            cam.eye[k] + r[k] * o[0] + u[k] * o[1] - f[k] * o[2]
+                                        })
+                                    });
+                                if fx.tracer(g.weapon_index(), 0, start, s.pen_end, now) {
+                                    avfx[4] += 1;
+                                }
                             }
                             shot_trails[next_trail] = (Some((s.start, s.pen_end)), now);
                             next_trail = (next_trail + 1) % shot_trails.len();
@@ -2286,6 +2386,13 @@ fn run_map(
                     location,
                 } => {
                     if attacker == 0 {
+                        // MW2's hitmarker sound once a frame at most (a shotgun's pellets hit together).
+                        if hitmarker_ms != Some(now)
+                            && let Some(w) = world_sounds.as_mut()
+                        {
+                            w.play(misc_sound(wpk::sound::misc::HIT_ALERT));
+                            avfx[1] += 1;
+                        }
                         hitmarker_ms = Some(now);
                     }
                     // Your view kicks away from the hit (IW4 `P_DamageFeedback`: towards the attacker; your own
@@ -2319,7 +2426,20 @@ fn run_map(
                     }
                     if let Some(fx) = effects.as_mut() {
                         let e = fx.impact(impact_type, surface, flesh);
-                        fx.play(e, origin, normal, now);
+                        let probe = clip.as_ref().map(|c| {
+                            move |a: [f32; 3], b: [f32; 3]| {
+                                let t =
+                                    c.trace(a, b, [0.0; 3], [0.0; 3], game_core::gun::MASK_SHOT);
+                                (t.fraction < 1.0 && t.startsolid == 0).then(|| {
+                                    let p: [f32; 3] =
+                                        core::array::from_fn(|k| a[k] + (b[k] - a[k]) * t.fraction);
+                                    (p, t.normal)
+                                })
+                            }
+                        });
+                        if fx.impact_at(e, origin, normal, flesh, probe.as_ref(), now) {
+                            avfx[5] += 1;
+                        }
                     }
                 }
                 Event::ObjectFx {
@@ -2403,14 +2523,39 @@ fn run_map(
                         format_args!("at={:.0},{:.0},{:.0}", origin[0], origin[1], origin[2]),
                     );
                 }
-                Event::BotFired { bot } => {
-                    if let (Some(fx), Some(ch), Some(a)) =
-                        (effects.as_mut(), characters.as_ref(), arena.as_ref())
-                        && let Some((o, f)) = ch.muzzle(bot)
-                        && let Some(g) = a.fighters.get(bot).and_then(|b| b.gun.as_ref())
+                Event::BotFired { bot, path } => {
+                    let weapon = arena
+                        .as_ref()
+                        .and_then(|a| a.fighters.get(bot))
+                        .and_then(|b| {
+                            b.gun
+                                .as_ref()
+                                .map(|g| (g.weapon_index(), b.player.ps.origin))
+                        });
+                    let muzzle = characters.as_ref().and_then(|ch| ch.muzzle(bot));
+                    if let (Some(fx), Some((w, _))) = (effects.as_mut(), weapon) {
+                        if let Some((o, f)) = muzzle {
+                            let e = fx.weapon(w, effects::WORLD_FLASH);
+                            fx.play(e, o, f, now);
+                        }
+                        // The tracer from the muzzle (or the eye without a body) to where the bullet stopped.
+                        if let Some((start, end)) = path
+                            && fx.tracer(w, bot, muzzle.map_or(start, |m| m.0), end, now)
+                        {
+                            avfx[4] += 1;
+                        }
+                    }
+                    // Their gunfire where they are (the world variant of the weapon's fire sound, IW4L
+                    // `select_fire_alias` for another player), one voice per shooter.
+                    if let (Some(s), Some((w, origin))) = (world_sounds.as_mut(), weapon)
+                        && let Some(slot) = gun_voices.get_mut(bot)
                     {
-                        let e = fx.weapon(g.weapon_index(), effects::WORLD_FLASH);
-                        fx.play(e, o, f, now);
+                        let at = muzzle.map_or([origin[0], origin[1], origin[2] + 60.0], |m| m.0);
+                        let alias = world_weapon_sound(w, wpk::sound::world::FIRE);
+                        s.play_at_in(slot, alias, at, cam.eye, cam.right());
+                        if alias != wpk::sound::NONE {
+                            avfx[0] += 1;
+                        }
                     }
                 }
                 Event::GrenadeBounce { origin, weapon } => {
@@ -2460,7 +2605,15 @@ fn run_map(
                             next_blast = (next_blast + 1) % blasts.len();
                         }
                     }
-                    devlog::event(now, "explosion", format_args!(""));
+                    devlog::event(
+                        now,
+                        "explosion",
+                        format_args!(
+                            "weapon={weapon} particles={} loops={}",
+                            effects.as_ref().map_or(0, |f| f.world.particles()),
+                            effects.as_ref().map_or(0, |f| f.world.loops()),
+                        ),
+                    );
                 }
                 Event::Kill { attacker, victim } => {
                     feed.rotate_right(1);
@@ -2510,6 +2663,10 @@ fn run_map(
         // Destructible objects, as part of the world.
         if let (Some(p), Some(a)) = (props.as_ref(), arena.as_ref()) {
             p.draw(gfx, &cam.view(), cam.eye, cam.forward(), &a.objects);
+        }
+        // Bullet marks on the world.
+        if let Some(fx) = effects.as_mut() {
+            fx.draw_marks(&cam, now);
         }
         sections[section::WORLD] = lap(&mut mark);
         // The other players' bodies (timed with the placeholder boxes as `bod`).
@@ -2633,9 +2790,10 @@ fn run_map(
                     });
                 }
             }
-            // Smoke: each particle a see-through grey box of its size and alpha (placeholder for MW2's smoke
-            // sprites; a third of the particle's alpha, as the boxes overlap heavily).
-            for p in &a.smoke.particles {
+            // Smoke without MW2's effects: each particle a see-through grey box of its size and alpha (a third of
+            // the particle's alpha, as the boxes overlap heavily). With them, the smoke effect's own looping
+            // elements draw the cloud (`game_core::fx`).
+            for p in a.smoke.particles.iter().filter(|_| effects.is_none()) {
                 if let Some((r, alpha)) = p.state(now) {
                     let o = p.origin;
                     let h = r * 0.8;
@@ -2746,9 +2904,17 @@ fn run_map(
                 )
             };
         }
-        // MW2's effects in the world (impacts, explosions, the others' muzzle flashes).
+        // MW2's effects in the world (impacts, explosions, the others' muzzle flashes, tracers), and the sounds the
+        // impacts started (two a frame at most: a shotgun blast's pellets land together).
         if let Some(fx) = effects.as_mut() {
             fx.draw_world(gfx, &cam, now);
+            for (alias, at) in fx.take_sounds().take(2) {
+                if let Some(w) = world_sounds.as_mut() {
+                    w.play_at(alias, at, cam.eye, cam.right());
+                    avfx[3] += 1;
+                }
+            }
+            for _ in fx.take_sounds() {}
         }
         sections[section::BODIES] = lap(&mut mark);
         if !flying
@@ -2761,6 +2927,16 @@ fn run_map(
         {
             let fpv = wpk::records::get::<wpk::weapon::FpvRecord>(fpvs, g.weapon_index() as usize)
                 .unwrap_or_default();
+            // Lit from the light lattice at IW4's viewmodel lighting origin.
+            v.tint = game_core::light::tint_at(
+                lattice.as_ref(),
+                game_core::light::viewmodel_origin(
+                    p.ps.origin,
+                    p.ps.view_height_current,
+                    p.ps.viewangles[1],
+                    p.ps.leanf,
+                ),
+            );
             v.draw(gfx, g, &p.ps, &fpv, dt, now);
             v.play_notes();
             // The first-person muzzle flash: MW2's view flash effect; without effects, a placeholder glow for
@@ -3044,6 +3220,24 @@ fn run_map(
             sections[section::WORLD],
         );
         // Memory every 5 s is enough (mallinfo walks the heap).
+        if now / 5000 != last_mem_s {
+            devlog::event(
+                now,
+                "avfx_counts",
+                format_args!(
+                    "remote_fire={} hit_alert={} knife={} impact_snd={} tracers={} marks={} live_marks={} particles={} loops={}",
+                    avfx[0],
+                    avfx[1],
+                    avfx[2],
+                    avfx[3],
+                    avfx[4],
+                    avfx[5],
+                    effects.as_ref().map_or(0, |f| f.marks.list.len()),
+                    effects.as_ref().map_or(0, |f| f.world.particles()),
+                    effects.as_ref().map_or(0, |f| f.world.loops()),
+                ),
+            );
+        }
         let (mem1_free, mem2_free) = if now / 5000 != last_mem_s {
             last_mem_s = now / 5000;
             // What the hit volume tests cost over those 5 s (bodies past the broad test, of them on drawn bones,

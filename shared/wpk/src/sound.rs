@@ -19,6 +19,39 @@ pub const NONE: u16 = 0xFFFF;
 /// prone), listener (another player, you) and IW4 surface type (31).
 pub const STEP_COUNT: usize = 4 * 2 * 31;
 
+/// A weapon's world sounds (`WSNW`: [`world::COUNT`] u16 aliases per `WEAP` record, the common pack's world bank):
+/// what other players hear (IW4 `fireSound`, `meleeHitSound`, `meleeMissSound`).
+pub mod world {
+    pub const FIRE: usize = 0;
+    pub const FIRE_LAST: usize = 1;
+    pub const MELEE_HIT: usize = 2;
+    pub const MELEE_MISS: usize = 3;
+    pub const COUNT: usize = 4;
+}
+
+/// Match sounds (`SNDM`, u16 aliases in the common pack's world bank, by slot).
+pub mod misc {
+    /// MW2's hitmarker sound (IW4L `gamemode_iw4::HIT_ALERT_ALIAS`).
+    pub const HIT_ALERT: usize = 0;
+    /// The knife's melee hit on a player / on anything else (IW4L's IW4 melee cue policy, knife first).
+    pub const KNIFE_HIT: usize = 1;
+    pub const KNIFE_MISS: usize = 2;
+    pub const COUNT: usize = 3;
+    /// Alias names by slot, each with its fallback (IW4L `MeleeCuePolicy`'s generic sounds).
+    pub const ALIASES: [(&str, &str); COUNT] = [
+        ("mp_hit_alert", ""),
+        ("melee_knife_hit_body", "melee_hit"),
+        ("melee_knife_hit_other", "melee_hit_other"),
+    ];
+}
+
+/// Alias `slot` of a u16 table (`WSNW` row, `SNDM`), NONE when out of range.
+pub fn table_alias(table: &[u8], index: usize) -> u16 {
+    table
+        .get(index * 2..index * 2 + 2)
+        .map_or(NONE, |b| u16::from_be_bytes([b[0], b[1]]))
+}
+
 /// Gaits of the footstep table.
 pub mod gait {
     pub const SPRINT: usize = 0;

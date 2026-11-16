@@ -49,6 +49,9 @@ Create-a-Class (the class page, the weapon type, weapon, attachment and perk pop
 Playercard popup and the Killstreak Rewards page, a Team Deathmatch (the class menu as it starts), the START menu
 over the game, Choose Class, Options (the safe area at 80% and back), End Game and
 its question, back to the lobby and the main menu.
+`tools/autoplay/av_fx.txt` checks audio and effects in a Team Deathmatch (fire at the floor and ahead, knife, the
+class's tactical, then the bots' fight); `av_fx_wall.txt` fires into the nearest wall up close (bullet marks) and knifes
+it. Dolphin runs without audio, so the match log's `avfx_counts` lines say what played.
 
 `tools/autoplay/feel.txt` (mp_rust) checks the movement and camera feel: a mantle up a crate (the spot from
 `player::tests::mantles_on_the_real_map`), a jump's landing dip, the view bob while running, and holding breath on

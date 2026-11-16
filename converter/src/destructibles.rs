@@ -791,7 +791,14 @@ pub fn build(
         });
     }
     // The effects, then each spot's name index turned into the baked effect.
-    out.fx = crate::fx::bake(links, &fx_names, index, tex_dir, &mut out.fx_tex);
+    out.fx = crate::fx::bake(
+        links,
+        &fx_names,
+        index,
+        tex_dir,
+        &mut out.fx_tex,
+        &mut |_| wpk::records::NONE,
+    );
     let resolve = |i: u16, fx: &crate::fx::Baked| {
         if i == NONE {
             NONE

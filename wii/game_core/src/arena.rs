@@ -160,9 +160,11 @@ pub enum Event {
     GlassShattered {
         origin: [f32; 3],
     },
-    /// A fighter (not the human) fired.
+    /// A fighter (not the human) fired; `path`: its bullet's start and where it stopped (none for a melee or
+    /// offhand use).
     BotFired {
         bot: usize,
+        path: Option<([f32; 3], [f32; 3])>,
     },
     /// A grenade went off at `origin`, over IW4 surface type `surface`.
     Explosion {
@@ -2451,7 +2453,10 @@ impl Arena {
             };
             if matches!(ev, Some(WeaponTickEvent::ShotAccepted { .. })) {
                 f.last_fire_ms = Some(now);
-                out.push(Event::BotFired { bot: i });
+                out.push(Event::BotFired {
+                    bot: i,
+                    path: shot.as_ref().map(|s| (s.start, s.pen_end)),
+                });
             }
             let launched = g
                 .take_launch()

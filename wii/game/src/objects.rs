@@ -14,6 +14,8 @@ use crate::ffi;
 const DRAW_DISTANCE: f32 = 3000.0;
 
 pub struct Props {
+    /// The map's light lattice (none: unlit, ×1).
+    pub lattice: Option<wpk::light::LightLattice<'static>>,
     models: Guns<'static>,
     /// Each model's reach from its origin (for culling).
     radius: Vec<f32>,
@@ -54,6 +56,7 @@ impl Props {
         );
         Some((
             Props {
+                lattice: None,
                 models,
                 radius,
                 textures,
@@ -97,6 +100,8 @@ impl Props {
                 ffi::mwf_view_arrays(m.positions.as_ptr(), m.attributes.as_ptr());
             }
             gfx.pos_matrix(&vmod::mul(view, &world));
+            // Lit by the light lattice at its origin (as static models are by the light grid).
+            let tint = game_core::light::tint_at(self.lattice.as_ref(), o);
             let mut last: Option<DrawState> = None;
             for k in 0..m.draws() {
                 let Some(dr) = m.draw(k) else { continue };
@@ -110,7 +115,7 @@ impl Props {
                     blend: dr.blend,
                     alpha_ref: dr.alpha_ref,
                     cull: 0,
-                    tint: 0,
+                    tint,
                 };
                 if last != Some(state) {
                     gfx.world_state(&state);

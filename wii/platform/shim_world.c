@@ -671,6 +671,19 @@ static s32 claim_voice(void) {
     return v;
 }
 
+uint32_t mwf_snd_voice_clock(int32_t voice) {
+    return (voice >= 0 && voice < MAX_SND_VOICES) ? voice_started[voice] : 0;
+}
+
+void mwf_snd_stop_if(int32_t voice, uint32_t clock) {
+    if (voice < 0 || voice >= MAX_SND_VOICES || clock == 0 || voice_started[voice] != clock)
+        return;
+    u32 level = IRQ_Disable();
+    adpcm_voices[voice].clip = NULL;
+    IRQ_Restore(level);
+    ASND_StopVoice(voice);
+}
+
 int32_t mwf_snd_play_adpcm(const void *clip, uint32_t bytes, uint32_t rate, uint8_t vol_l, uint8_t vol_r) {
     s32 voice = claim_voice();
     if (voice < 0 || voice >= MAX_SND_VOICES)
@@ -962,8 +975,24 @@ void mwf_hud_rects(const int16_t (*r)[4], uint32_t count, uint32_t rgba) {
 
 /* ---- effect sprites ---------------------------------------------------------------------------------------- */
 
+/* How far decals are pulled towards the eye in window depth (a polygon offset through the viewport's depth range).
+   With the marks' own 0.25-unit lift off their surface this keeps them from depth fighting the world. */
+#define DECAL_DEPTH_BIAS 4e-6f
+
+static void sprite_quads(const float view[3][4], int32_t tex, uint32_t blend, const mwf_sprite_vert *v,
+                         uint32_t quads, int32_t world, int decal);
+
 void mwf_sprites(const float view[3][4], int32_t tex, uint32_t blend, const mwf_sprite_vert *v, uint32_t quads,
                  int32_t world) {
+    sprite_quads(view, tex, blend, v, quads, world, 0);
+}
+
+void mwf_decals(const float view[3][4], int32_t tex, uint32_t blend, const mwf_sprite_vert *v, uint32_t quads) {
+    sprite_quads(view, tex, blend, v, quads, 1, 1);
+}
+
+static void sprite_quads(const float view[3][4], int32_t tex, uint32_t blend, const mwf_sprite_vert *v,
+                         uint32_t quads, int32_t world, int decal) {
     if (quads == 0) return;
     int has_tex = tex >= 0 && tex < tex_count;
     int has_plane = has_tex && tex_has_alpha[tex];
@@ -973,7 +1002,8 @@ void mwf_sprites(const float view[3][4], int32_t tex, uint32_t blend, const mwf_
         /* Additive sprites aren't fogged: fog would add its colour. */
         fog_world(blend != MWF_BLEND_ADD);
         GX_LoadProjectionMtx(world_proj, GX_PERSPECTIVE);
-        GX_SetViewport(0, 0, mwf_rmode->fbWidth, mwf_rmode->efbHeight, VIEW_DEPTH, 1.0f);
+        f32 bias = decal ? DECAL_DEPTH_BIAS : 0.0f;
+        GX_SetViewport(0, 0, mwf_rmode->fbWidth, mwf_rmode->efbHeight, VIEW_DEPTH - bias, 1.0f - bias);
     } else {
         fog_world(0);
     }

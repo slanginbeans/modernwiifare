@@ -5,7 +5,17 @@
 //! velocity graphs (local ones turned with the effect's axes, world ones as they are; IW4L
 //! `fx_iw4::integrate_velocity_graph_sampled`) and gravity, and its size, colour and alpha follow the visual-state
 //! samples through IW4L's `fx_iw4::evaluate_*`. Random numbers are drawn once per particle (IW4L hashes per sample,
-//! too dear on the Wii). Looping elements (lingering smoke, fire) aren't played yet.
+//! too dear on the Wii).
+//!
+//! Looping elements (lingering smoke, fire) spawn one particle every `spawn[0]` ms up to `spawn[1]` times while their
+//! effect's looping life lasts (IW4L `fx::spawn_looping_partial`: `fx_iw4::looping_spawn_schedule` over each update's
+//! window, `fx_iw4::looping_catchup_begin` skipping spawns that would already be dead after a long frame). A loop
+//! meant to run until stopped ([`wpk::fx::LOOP_FOREVER`]) stops after [`MAX_LOOP_LIFE_MS`] here (nothing stops
+//! effects by handle yet), and looping spawns wait while the particle pool is more than [`LOOP_POOL_SHARE`] quarters
+//! full, so one-shot impacts and flashes keep their room.
+//!
+//! An effect played with its sound ([`Fx::play_with_sound`]) queues its sound alias (`Effect::sound`) for the caller
+//! ([`Fx::take_sounds`]), its runner children's too.
 
 use alloc::vec::Vec;
 
@@ -21,6 +31,14 @@ pub const MAX_PARTICLES: usize = 384;
 const MAX_PER_ELEM: i32 = 32;
 /// Runner effects nest at most this deep.
 const MAX_DEPTH: u8 = 4;
+/// Looping effects at once (the oldest stops).
+pub const MAX_LOOPS: usize = 24;
+/// The longest a loop runs (IW4's "until stopped" loops included).
+pub const MAX_LOOP_LIFE_MS: u32 = 30_000;
+/// Looping elements spawn only while the pool is at most this many quarters full (of [`MAX_PARTICLES`]).
+pub const LOOP_POOL_SHARE: usize = 3;
+/// Sounds queued at most between two [`Fx::take_sounds`].
+const MAX_SOUNDS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Particle {
@@ -44,6 +62,19 @@ struct Pending {
     origin: [f32; 3],
     axis: [[f32; 3]; 3],
     depth: u8,
+    sound: bool,
+}
+
+/// An effect whose looping elements are spawning.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Looping {
+    effect: u16,
+    origin: [f32; 3],
+    axis: [[f32; 3]; 3],
+    /// When it was played, how far its spawns have run (ms after `played_ms`), and how long it loops.
+    played_ms: u32,
+    done: i32,
+    life: i32,
 }
 
 /// The effects playing.
@@ -51,6 +82,9 @@ struct Pending {
 pub struct Fx {
     particles: Vec<Particle>,
     pending: Vec<Pending>,
+    loops: Vec<Looping>,
+    /// Sounds the effects started (alias, where), for the caller.
+    sounds: Vec<(u16, [f32; 3])>,
     rng: u32,
 }
 
@@ -106,10 +140,17 @@ impl Fx {
         self.particles.len()
     }
 
+    /// Looping effects still spawning.
+    pub fn loops(&self) -> usize {
+        self.loops.len()
+    }
+
     /// Clear everything (a new map, a respawn of the view).
     pub fn clear(&mut self) {
         self.particles.clear();
         self.pending.clear();
+        self.loops.clear();
+        self.sounds.clear();
     }
 
     /// Play `effect` at `origin` pointing along `forward` from `now`.
@@ -121,9 +162,27 @@ impl Fx {
         forward: [f32; 3],
         now: u32,
     ) {
-        self.spawn(defs, effect, origin, axes(forward), now, 0);
+        self.spawn(defs, effect, origin, axes(forward), now, 0, false);
     }
 
+    /// [`Fx::play`], queueing the effect's sound (and its children's) for [`Fx::take_sounds`].
+    pub fn play_with_sound(
+        &mut self,
+        defs: &[Effect],
+        effect: u16,
+        origin: [f32; 3],
+        forward: [f32; 3],
+        now: u32,
+    ) {
+        self.spawn(defs, effect, origin, axes(forward), now, 0, true);
+    }
+
+    /// The sounds effects started since the last call: (alias, where).
+    pub fn take_sounds(&mut self) -> impl Iterator<Item = (u16, [f32; 3])> + '_ {
+        self.sounds.drain(..)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn spawn(
         &mut self,
         defs: &[Effect],
@@ -132,10 +191,34 @@ impl Fx {
         axis: [[f32; 3]; 3],
         now: u32,
         depth: u8,
+        sound: bool,
     ) {
         let Some(e) = defs.get(usize::from(effect)) else {
             return;
         };
+        if sound && e.sound != NONE && self.sounds.len() < MAX_SOUNDS {
+            self.sounds.push((e.sound, origin));
+        }
+        let loops = |el: &Elem| el.looping && el.kind != kind::RUNNER;
+        if e.looping_life_ms != 0 && e.elems.iter().any(loops) {
+            if self.loops.len() >= MAX_LOOPS {
+                self.loops.remove(0);
+            }
+            self.loops.push(Looping {
+                effect,
+                origin,
+                axis,
+                played_ms: now,
+                done: 0,
+                life: e.looping_life_ms.clamp(0, MAX_LOOP_LIFE_MS as i32),
+            });
+            // Each looping element's first spawn comes with the effect (sequence 0).
+            for (k, el) in e.elems.iter().enumerate() {
+                if loops(el) && el.spawn[1] > 0 {
+                    self.spawn_one(el, effect, k, origin, &axis, now);
+                }
+            }
+        }
         for (k, el) in e.elems.iter().enumerate() {
             if el.looping {
                 continue;
@@ -156,6 +239,7 @@ impl Fx {
                             origin: o,
                             axis,
                             depth: depth + 1,
+                            sound,
                         });
                     }
                     continue;
@@ -176,6 +260,74 @@ impl Fx {
                     axis,
                     r: rs,
                 });
+            }
+        }
+    }
+
+    /// One particle of looping element `k` of `effect`, spawned at `at` (its delay and life drawn as one-shots').
+    fn spawn_one(
+        &mut self,
+        el: &Elem,
+        effect: u16,
+        k: usize,
+        origin: [f32; 3],
+        axis: &[[f32; 3]; 3],
+        at: u32,
+    ) {
+        let r = self.rand16();
+        let delay = fx_iw4::sample_life_span_msec(el.delay_ms[0], el.delay_ms[1], r).max(0) as u32;
+        let o = self.spawn_point(el, origin, axis);
+        let r = self.rand16();
+        let life = fx_iw4::sample_life_span_msec(el.life_ms[0], el.life_ms[1], r).max(1) as u32;
+        let rs: [f32; 8] = core::array::from_fn(|_| self.rand());
+        if self.particles.len() >= MAX_PARTICLES {
+            self.particles.remove(0);
+        }
+        self.particles.push(Particle {
+            effect,
+            elem: k as u8,
+            born_ms: at.wrapping_add(delay),
+            life_ms: life,
+            origin: o,
+            axis: *axis,
+            r: rs,
+        });
+    }
+
+    /// Spawn the looping elements due in each loop's window since the last update (IW4L `spawn_looping_partial`),
+    /// and stop the loops whose life is over.
+    fn run_loops(&mut self, defs: &[Effect], now: u32) {
+        let mut i = 0;
+        while i < self.loops.len() {
+            let l = self.loops[i];
+            let Some(e) = defs.get(usize::from(l.effect)) else {
+                self.loops.swap_remove(i);
+                continue;
+            };
+            // Times in ms after the effect was played.
+            let end = (now.wrapping_sub(l.played_ms) as i32).min(l.life);
+            if end > l.done && self.particles.len() * 4 <= MAX_PARTICLES * LOOP_POOL_SHARE {
+                for (k, el) in e.elems.iter().enumerate() {
+                    if !el.looping || el.kind == kind::RUNNER {
+                        continue;
+                    }
+                    let duration = el.delay_ms[0]
+                        .wrapping_add(el.delay_ms[1])
+                        .wrapping_add(el.life_ms[0])
+                        .wrapping_add(el.life_ms[1]);
+                    let from = fx_iw4::looping_catchup_begin(l.done, end, duration);
+                    for s in fx_iw4::looping_spawn_schedule(0, from, end, el.spawn[0], el.spawn[1])
+                    {
+                        let at = l.played_ms.wrapping_add(s.msec as u32);
+                        self.spawn_one(el, l.effect, k, l.origin, &l.axis, at);
+                    }
+                }
+            }
+            self.loops[i].done = end.max(l.done);
+            if end >= l.life {
+                self.loops.swap_remove(i);
+            } else {
+                i += 1;
             }
         }
     }
@@ -217,11 +369,12 @@ impl Fx {
             let p = self.pending[i];
             if (now.wrapping_sub(p.at_ms) as i32) >= 0 {
                 self.pending.swap_remove(i);
-                self.spawn(defs, p.effect, p.origin, p.axis, p.at_ms, p.depth);
+                self.spawn(defs, p.effect, p.origin, p.axis, p.at_ms, p.depth, p.sound);
             } else {
                 i += 1;
             }
         }
+        self.run_loops(defs, now);
         self.particles
             .retain(|p| (now.wrapping_sub(p.born_ms) as i32) < p.life_ms as i32);
     }
@@ -471,6 +624,7 @@ mod tests {
                         ..Elem::default()
                     },
                 ],
+                ..Effect::default()
             },
             // 1: one sprite.
             Effect {
@@ -484,6 +638,23 @@ mod tests {
                     vis,
                     ..Elem::default()
                 }],
+                ..Effect::default()
+            },
+            // 2: a loop of 1.0 s: one sprite every 100 ms (at most 50), each living 250 ms, and a sound.
+            Effect {
+                elems: vec![Elem {
+                    kind: kind::BILLBOARD,
+                    looping: true,
+                    texture: 3,
+                    spawn: [100, 50],
+                    life_ms: [250, 0],
+                    vis_intervals: 1,
+                    vis,
+                    ..Elem::default()
+                }],
+                sound: 9,
+                looping_life_ms: 1000,
+                ..Effect::default()
             },
         ]
     }
@@ -534,6 +705,49 @@ mod tests {
         assert_eq!(fx.particles(), 1);
         fx.update(&d, 1300);
         assert_eq!(fx.particles(), 0);
+    }
+
+    #[test]
+    fn loops_spawn_on_schedule_catch_up_and_stop() {
+        let v = vis();
+        let d = defs(&v);
+        let mut fx = Fx::new(3);
+        fx.play_with_sound(&d, 2, [0.0; 3], [0.0, 0.0, 1.0], 1000);
+        // Sequence 0 with the effect, and its sound queued.
+        assert_eq!((fx.particles(), fx.loops()), (1, 1));
+        assert_eq!(fx.take_sounds().collect::<Vec<_>>(), [(9, [0.0; 3])]);
+        // 1000..1200: spawns at 1100 and 1200 (IW4's schedule includes the window's end).
+        fx.update(&d, 1200);
+        assert_eq!(fx.particles(), 3);
+        // Nothing new within the same 100 ms.
+        fx.update(&d, 1250);
+        assert_eq!(fx.particles(), 2, "the first (250 ms) is gone, none new");
+        // A long frame: only the spawns that can still be alive (life 250 + 1) come back.
+        fx.update(&d, 1900);
+        assert_eq!(
+            fx.particles(),
+            3,
+            "1700, 1800, 1900 spawned; older skipped or dead"
+        );
+        // The loop's life (1 s) ends: no more spawns, the loop is gone.
+        fx.update(&d, 2100);
+        assert_eq!(fx.loops(), 0);
+        fx.update(&d, 2400);
+        assert_eq!(fx.particles(), 0);
+        // Played without its sound: nothing queued.
+        fx.play(&d, 2, [0.0; 3], [0.0, 0.0, 1.0], 3000);
+        assert_eq!(fx.take_sounds().count(), 0);
+    }
+
+    #[test]
+    fn loops_are_capped() {
+        let v = vis();
+        let d = defs(&v);
+        let mut fx = Fx::new(5);
+        for i in 0..(MAX_LOOPS as u32 + 5) {
+            fx.play(&d, 2, [0.0; 3], [0.0, 0.0, 1.0], i);
+        }
+        assert_eq!(fx.loops(), MAX_LOOPS);
     }
 
     #[test]

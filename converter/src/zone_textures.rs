@@ -311,6 +311,15 @@ impl AssetLinkSink for Collector {
         Ok(())
     }
 
+    fn capture_tracer(
+        &mut self,
+        _s: &ZoneStream<'_>,
+        geometry: fastfile_iw4::TracerDefGeometry,
+    ) -> fastfile_iw4::Result<()> {
+        self.links.tracer_captured(&geometry);
+        Ok(())
+    }
+
     fn capture_fx(
         &mut self,
         s: &ZoneStream<'_>,
