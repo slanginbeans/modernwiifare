@@ -1,0 +1,80 @@
+# The match HUD with the default class's M4 (game_core::autoplay syntax; see docs/testing.md): MW2's hip crosshair
+# at rest and opened by firing, a bot brought in front and left to shoot you (hit arrows, blood), killing it
+# (kill feed icon), and your EMP's flash. Team Deathmatch. Needs common.wpk and mp_rust.
+wait 90
+# DEBUG: RESET TO DEFAULTS (the primary back to the class's).
+times 3 press DOWN
+press A
+wait 10
+times 18 press DOWN
+press A
+wait 5
+shot r00_debug
+press B
+wait 10
+# Private match, Team Deathmatch.
+times 3 press UP
+press A
+wait 10
+press DOWN
+press A
+wait 10
+press DOWN
+press A
+wait 10
+press DOWN
+press A
+wait 10
+press B
+wait 10
+press UP
+press A
+wait 700
+press A
+wait 90
+shot r01_hip
+hold R
+wait 12
+shot r02_firing
+release R
+wait 60
+shot r03_settled
+hold L
+wait 40
+shot r04_ads
+release L
+wait 20
+# A bot in front, left to shoot you.
+press START
+wait 10
+times 3 press DOWN
+press A
+wait 10
+times 21 press DOWN
+press A
+wait 60
+shot r05_hit
+wait 30
+shot r06_hit
+wait 30
+shot r07_hit
+# Kill it.
+hold R
+wait 60
+release R
+wait 10
+shot r08_feed
+# Your EMP: everyone's screen flashes.
+press START
+wait 10
+times 3 press DOWN
+press A
+wait 10
+times 25 press DOWN
+press A
+wait 4
+shot r09_emp_flash
+wait 60
+shot r10_emp_flash_fading
+log hud_match_rifle done
+quit

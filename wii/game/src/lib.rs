@@ -317,6 +317,7 @@ fn draw_life_hud(
 }
 
 /// Crosshair, ammo, weapon name and bullet impacts (markers that fade over 400 ms).
+#[allow(clippy::too_many_arguments)]
 fn draw_gun_hud(
     gfx: &mut Shim,
     rects: &mut Vec<Rect>,
@@ -1205,7 +1206,7 @@ fn run_map(
     let mut blood = game_core::hud_fx::Blood::default();
     let mut ads_latch = game_core::hud_fx::AdsLatch::default();
     let mut overhead = game_core::hud_fx::Overhead::default();
-    let mut splash: Option<(alloc::string::String, u32)> = None;
+    let mut splash: Option<(alloc::string::String, i32, u32)> = None;
     let mut emp_flash_at: Option<u32> = None;
     let mut emp_seen: Vec<Option<u32>> = Vec::new();
     let mut feed_icon: [(Option<u32>, bool); 4] = [(None, false); 4];
@@ -2188,7 +2189,7 @@ fn run_map(
                                 {
                                     rewards.push(item.name.clone());
                                     reward_note = Some(("KILLSTREAK READY: D-PAD LEFT", now));
-                                    splash = Some((item.name.clone(), now));
+                                    splash = Some((item.name.clone(), streak as i32, now));
                                     devlog::event(
                                         now,
                                         "killstreak",
@@ -2395,7 +2396,10 @@ fn run_map(
         sections[section::BODIES] = lap(&mut mark);
         // The weapon's HUD facts (crosshair, scope) and which way the gun last moved.
         if let Some(g) = arsenal.gun() {
-            if hud_weapon.as_ref().is_none_or(|(i, _)| *i != g.weapon_index()) {
+            if hud_weapon
+                .as_ref()
+                .is_none_or(|(i, _)| *i != g.weapon_index())
+            {
                 hud_weapon = ui::get()
                     .and_then(|u| u.pack.weapon(g.name()).cloned())
                     .map(|w| (g.weapon_index(), w));
@@ -2406,9 +2410,12 @@ fn run_map(
         if let Some(p) = player.as_ref() {
             ads_latch.update(p.ps.f_weapon_pos_frac);
         }
-        let scoped = hud_weapon.as_ref().zip(player.as_ref()).is_some_and(|((_, w), p)| {
-            !game_core::hud_fx::draws_gun(w, p.ps.f_weapon_pos_frac, ads_latch.to_ads)
-        });
+        let scoped = hud_weapon
+            .as_ref()
+            .zip(player.as_ref())
+            .is_some_and(|((_, w), p)| {
+                !game_core::hud_fx::draws_gun(w, p.ps.f_weapon_pos_frac, ads_latch.to_ads)
+            });
         if !flying
             && life.alive()
             && !scoped
@@ -2454,7 +2461,9 @@ fn run_map(
                 emp_seen.resize(a.fighters.len(), None);
                 for (seen, f) in emp_seen.iter_mut().zip(&a.fighters) {
                     if f.emp_until != *seen {
-                        if f.emp_until.is_some_and(|u| (u.wrapping_sub(now) as i32) > 0) {
+                        if f.emp_until
+                            .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
+                        {
                             emp_flash_at = Some(now);
                         }
                         *seen = f.emp_until;
@@ -2515,8 +2524,14 @@ fn run_map(
                 }
                 let mode_name = front::mode_name(a.mode).to_ascii_uppercase();
                 let names: [Str; 4] = core::array::from_fn(fighter_name);
-                let headshot = u.pack.icon(hud_iw4::KILLICON_HEADSHOT).unwrap_or(wpk::ui::NONE);
-                let suicide = u.pack.icon(hud_iw4::KILLICON_SUICIDE).unwrap_or(wpk::ui::NONE);
+                let headshot = u
+                    .pack
+                    .icon(hud_iw4::KILLICON_HEADSHOT)
+                    .unwrap_or(wpk::ui::NONE);
+                let suicide = u
+                    .pack
+                    .icon(hud_iw4::KILLICON_SUICIDE)
+                    .unwrap_or(wpk::ui::NONE);
                 // The lines' weapons (copied: the pack is drawn from below).
                 let feed_weapons: [Option<wpk::ui::HudWeapon>; 4] = core::array::from_fn(|k| {
                     feed_icon[k]
@@ -2551,14 +2566,21 @@ fn run_map(
                     .collect();
                 // Under an enemy EMP: no crosshair (IW4 `OTHER_FLAGS` 0x400), static over the screen.
                 let jammed = a.fighters.iter().enumerate().any(|(i, f)| {
-                    a.enemies(0, i) && f.emp_until.is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
+                    a.enemies(0, i)
+                        && f.emp_until
+                            .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
                 });
                 let flashed = a.fighters[0].shock.is_some_and(|s| {
-                    s.fx(&a.rules).screen_type == hud_iw4::SCREEN_BLEND_FLASHED && s.remaining(now) > 0
+                    s.fx(&a.rules).screen_type == hud_iw4::SCREEN_BLEND_FLASHED
+                        && s.remaining(now) > 0
                 });
                 let tan_half = libm::tanf(cam.fovy.to_radians() * 0.5);
-                let crosshair = gun.zip(hud_weapon.as_ref()).zip(player.as_ref()).map(
-                    |((g, (_, w)), p)| {
+                let crosshair = arsenal
+                    .gun()
+                    .filter(|_| life.alive())
+                    .zip(hud_weapon.as_ref())
+                    .zip(player.as_ref())
+                    .map(|((g, (_, w)), p)| {
                         let (cone, scale) = g.hud_spread();
                         game_core::hud_fx::Crosshair {
                             weapon: w,
@@ -2580,8 +2602,7 @@ fn run_map(
                                 ..hud_iw4::HipCrosshairGate::default()
                             },
                         }
-                    },
-                );
+                    });
                 let scope = hud_weapon
                     .as_ref()
                     .zip(player.as_ref())
@@ -2598,8 +2619,14 @@ fn run_map(
                         let in_sight = place.is_some_and(|_| {
                             clip.as_ref().is_none_or(|c| {
                                 let head = [o[0], o[1], o[2] + 60.0];
-                                c.trace(cam.eye, head, [0.0; 3], [0.0; 3], game_core::gun::MASK_SHOT)
-                                    .fraction
+                                c.trace(
+                                    cam.eye,
+                                    head,
+                                    [0.0; 3],
+                                    [0.0; 3],
+                                    game_core::gun::MASK_SHOT,
+                                )
+                                .fraction
                                     >= 1.0
                             })
                         });
@@ -2676,7 +2703,7 @@ fn run_map(
                     damage: (life.alive() && !scoped).then_some((&damage_dirs, cam.yaw)),
                     blood,
                     names: &overhead_names,
-                    splash: splash.as_ref().map(|(n, t)| (n.as_str(), *t)),
+                    splash: splash.as_ref().map(|(n, k, t)| (n.as_str(), *k, *t)),
                     emp: jammed.then_some(hud_frame),
                 };
                 free_quads.clear();
@@ -2684,7 +2711,7 @@ fn run_map(
                 u.draw_free(&free_quads);
                 if splash
                     .as_ref()
-                    .is_some_and(|(_, t)| now.wrapping_sub(*t) > 10_000)
+                    .is_some_and(|(_, _, t)| now.wrapping_sub(*t) > 10_000)
                 {
                     splash = None;
                 }
@@ -2703,25 +2730,28 @@ fn run_map(
             radar_at = now;
             let emp_jammed = arena.as_ref().is_some_and(|a| {
                 a.fighters.iter().enumerate().any(|(i, f)| {
-                    a.enemies(0, i) && f.emp_until.is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
+                    a.enemies(0, i)
+                        && f.emp_until
+                            .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
                 })
             });
             if !emp_jammed {
                 draw_minimap(
-                &world,
-                arena.as_ref(),
-                &radar,
-                &cam,
-                &blasts,
-                now,
-                options.safe_area(),
-            );
+                    &world,
+                    arena.as_ref(),
+                    &radar,
+                    &cam,
+                    &blasts,
+                    now,
+                    options.safe_area(),
+                );
             }
             if let Some(at) = emp_flash_at {
-                let a = game_core::hud_fx::emp_flash(now.wrapping_sub(at));
+                let age = now.wrapping_sub(at);
+                let a = game_core::hud_fx::emp_flash(age);
                 if a > 0.0 {
                     gfx.hud_rects(&[[0, 0, 640, 480]], 0xffff_ff00 | (a * 255.0) as u32);
-                } else {
+                } else if age > game_core::hud_fx::EMP_FLASH_MS {
                     emp_flash_at = None;
                 }
             }

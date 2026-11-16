@@ -359,7 +359,10 @@ pub fn emp_static(texture: u16, frame: u32, q: &mut Vec<Quad>) {
         return;
     }
     let h = frame.wrapping_mul(2_654_435_761);
-    let (s, t) = ((h >> 8 & 0xff) as f32 / 256.0, (h >> 16 & 0xff) as f32 / 256.0);
+    let (s, t) = (
+        (h >> 8 & 0xff) as f32 / 256.0,
+        (h >> 16 & 0xff) as f32 / 256.0,
+    );
     q.push(Quad {
         x: 0.0,
         y: 0.0,
@@ -370,6 +373,9 @@ pub fn emp_static(texture: u16, frame: u32, q: &mut Vec<Quad>) {
         texture,
     });
 }
+
+/// How long the EMP's flash lasts, ms.
+pub const EMP_FLASH_MS: u32 = 3100;
 
 /// The EMP's flash, when one goes off (`_emp.gsc`: `coup_sunblind` in over 0.1 s, back to the map's over 3 s); a
 /// white fade in its place until vision sets are ported. 0 when over.
@@ -450,7 +456,9 @@ impl Default for Overhead {
 impl Overhead {
     /// Fighter `i` is `visible` at `now`: its name's alpha.
     pub fn alpha(&mut self, i: usize, now: i32, visible: bool) -> f32 {
-        use hud_iw4::{FRIENDLY_NAME_FADE_IN_DEFAULT_MS as IN, FRIENDLY_NAME_FADE_OUT_DEFAULT_MS as OUT};
+        use hud_iw4::{
+            FRIENDLY_NAME_FADE_IN_DEFAULT_MS as IN, FRIENDLY_NAME_FADE_OUT_DEFAULT_MS as OUT,
+        };
         let Some(s) = self.seen.get_mut(i) else {
             return 0.0;
         };
@@ -482,11 +490,16 @@ pub fn overhead_place(cam: &crate::camera::Camera, origin: [f32; 3]) -> Option<(
     };
     let anchor = hud_iw4::overhead_anchor(hud_iw4::OverheadHeadResult::NoDObjOrHead, origin);
     let d = crate::camera::sub(anchor, cam.eye);
-    if crate::camera::dot(d, d) > hud_iw4::OVERHEAD_MAX_DISTANCE_DEFAULT * hud_iw4::OVERHEAD_MAX_DISTANCE_DEFAULT {
+    if crate::camera::dot(d, d)
+        > hud_iw4::OVERHEAD_MAX_DISTANCE_DEFAULT * hud_iw4::OVERHEAD_MAX_DISTANCE_DEFAULT
+    {
         return None;
     }
     let p = cam.project(anchor)?;
-    Some((p, hud_iw4::overhead_distance_scale(cam.eye, anchor, NEAR, FAR, FS)))
+    Some((
+        p,
+        hud_iw4::overhead_distance_scale(cam.eye, anchor, NEAR, FAR, FS),
+    ))
 }
 
 /// Playing rumbles (IW4L `audio::rumble`): each one's strength over its life, the strongest wins, both motors.
@@ -756,7 +769,13 @@ mod tests {
         };
         let ((iw, ih), (s0, s1)) = kill_icon(&w);
         // A wide icon (ratio 1) is 2.8 em by 1.4 em at the window's 0.375 scale.
-        assert_eq!((iw, ih), (hud_iw4::killicon_virtual_size(1).0, hud_iw4::killicon_virtual_size(1).1));
+        assert_eq!(
+            (iw, ih),
+            (
+                hud_iw4::killicon_virtual_size(1).0,
+                hud_iw4::killicon_virtual_size(1).1
+            )
+        );
         assert!(iw > ih);
         assert_eq!((s0, s1), (1.0, 0.0));
     }

@@ -49,6 +49,12 @@ Playercard popup and the Killstreak Rewards page, a Team Deathmatch (the class m
 over the game, Choose Class, Options (the safe area at 80% and back), End Game and
 its question, back to the lobby and the main menu.
 
+The match HUD over the play view (`hud_fx`): `tools/autoplay/hud_match.txt` (Team Deathmatch with the Barrett from the
+debug menu: the scope overlay, teammates' names, the kill feed's icons, the EMP's flash), `hud_match_rifle.txt` (the
+default M4: MW2's crosshair at rest and firing, the EMP's flash) and `hud_hits.txt` (free-for-all, standing still until
+the bots hit you: the hit arrows and blood). The killstreak splash and the EMP static show in `mwf-convert menu-preview`
+(`menu_hud.png`, `menu_hud_scope.png`). Rumble can't be seen in Dolphin.
+
 On the PC, `tools/dolphin-test.ps1 -Dolphin <Dolphin.exe>` (or `MWF_DOLPHIN`) runs a script in Dolphin on the
 built game (`dist\apps\mwf_game`, `out\packs`): it sets up its own Dolphin profile and an SD card folder under
 `out\dolphin` (your Dolphin settings are untouched), boots the game, waits for `quit` and converts the screenshots

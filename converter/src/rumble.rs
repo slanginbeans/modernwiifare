@@ -6,7 +6,10 @@ use std::collections::HashMap;
 
 /// Rumble `name` from the raw files (by raw file name). None when it or a graph is missing or malformed.
 pub fn read(raw: &HashMap<String, String>, name: &str) -> Option<wpk::ui::Rumble> {
-    let text = |n: &str| raw.get(&format!("rumble/{n}")).map(|t| t.trim_end_matches('\0'));
+    let text = |n: &str| {
+        raw.get(&format!("rumble/{n}"))
+            .map(|t| t.trim_end_matches('\0'))
+    };
     let mut fields = text(name)?.split('\\');
     if fields.next()? != "RUMBLE" {
         return None;
@@ -34,7 +37,11 @@ pub fn read(raw: &HashMap<String, String>, name: &str) -> Option<wpk::ui::Rumble
         if t.next()? != "RUMBLEGRAPHFILE" {
             return None;
         }
-        let count = t.next()?.parse::<usize>().ok().filter(|&c| c > 0 && c <= 16)?;
+        let count = t
+            .next()?
+            .parse::<usize>()
+            .ok()
+            .filter(|&c| c > 0 && c <= 16)?;
         let mut points: Vec<(f32, f32)> = Vec::with_capacity(count);
         for _ in 0..count {
             let mut num = || t.next()?.parse::<f32>().ok().filter(|v| v.is_finite());
@@ -75,7 +82,10 @@ mod tests {
                 "rumble/test_fire",
                 "RUMBLE\\duration\\0.25\\range\\0\\fadeWithDistance\\0\\broadcast\\0\\lowRumbleFile\\t_l.rmb\\highRumbleFile\\t_h.rmb\0",
             ),
-            ("rumble/t_l.rmb", "RUMBLEGRAPHFILE\n\n2\n0.0000 1.0000\n1.0000 0.0000\n"),
+            (
+                "rumble/t_l.rmb",
+                "RUMBLEGRAPHFILE\n\n2\n0.0000 1.0000\n1.0000 0.0000\n",
+            ),
             ("rumble/t_h.rmb", "RUMBLEGRAPHFILE\n\n1\n0 0.5\n"),
         ]);
         let got = read(&r, "test_fire").expect("reads");
@@ -93,7 +103,16 @@ mod tests {
         assert!(read(&raw(&[("rumble/x", base), g]), "x").is_none());
         // No duration.
         let ok_g = ("rumble/a", "RUMBLEGRAPHFILE 1 0 1");
-        assert!(read(&raw(&[("rumble/x", "RUMBLE\\lowRumbleFile\\a\\highRumbleFile\\a"), ok_g]), "x").is_none());
+        assert!(
+            read(
+                &raw(&[
+                    ("rumble/x", "RUMBLE\\lowRumbleFile\\a\\highRumbleFile\\a"),
+                    ok_g
+                ]),
+                "x"
+            )
+            .is_none()
+        );
         // Broadcast faded with distance needs a range.
         let b = "RUMBLE\\duration\\1\\broadcast\\1\\fadeWithDistance\\1\\lowRumbleFile\\a\\highRumbleFile\\a";
         assert!(read(&raw(&[("rumble/x", b), ok_g]), "x").is_none());

@@ -1,0 +1,130 @@
+# The match HUD over the play view (game_core::autoplay syntax; see docs/testing.md): MW2's crosshair hip and
+# firing, the sniper scope (Barrett from the debug menu), kills with kill-feed icons and the killstreak splash
+# (a bot brought in front three times), the EMP's flash, then waiting for the bots to hit you (hit arrows, blood).
+# Team Deathmatch, so teammates' names show. Needs common.wpk and mp_rust.
+wait 90
+# DEBUG: PRIMARY WEAPON to the Barrett (the 31st weapon in the list).
+times 3 press DOWN
+press A
+wait 10
+times 5 press DOWN
+times 31 press A
+wait 5
+shot m00_debug
+press B
+wait 10
+# Private match, Team Deathmatch.
+times 3 press UP
+press A
+wait 10
+press DOWN
+press A
+wait 10
+press DOWN
+press A
+wait 10
+press DOWN
+press A
+wait 10
+press B
+wait 10
+shot m01_lobby
+press UP
+press A
+wait 700
+shot c00_class
+press A
+wait 90
+shot h01_hip
+# Firing opens the crosshair.
+hold R
+wait 3
+release R
+wait 2
+shot h02_fired
+wait 60
+# Aim down the scope.
+hold L
+wait 20
+shot h03_scope_in
+wait 40
+shot h04_scope
+release L
+wait 40
+# Three kills: a bot in front (START > DEBUG > BRING A BOT IN FRONT), scoped, fire.
+press START
+wait 10
+times 3 press DOWN
+press A
+wait 10
+times 21 press DOWN
+press A
+wait 20
+hold L
+wait 50
+press R
+wait 10
+release L
+wait 20
+shot k01_feed
+wait 60
+press START
+wait 10
+times 3 press DOWN
+press A
+wait 10
+times 21 press DOWN
+press A
+wait 20
+hold L
+wait 50
+press R
+wait 10
+release L
+wait 20
+shot k02_feed
+wait 60
+press START
+wait 10
+times 3 press DOWN
+press A
+wait 10
+times 21 press DOWN
+press A
+wait 20
+hold L
+wait 50
+press R
+wait 10
+release L
+wait 10
+shot k03_splash
+wait 40
+shot k04_splash
+# Your EMP: everyone's screen flashes.
+press START
+wait 10
+times 3 press DOWN
+press A
+wait 10
+times 25 press DOWN
+press A
+wait 4
+shot e01_emp_flash
+wait 60
+shot e02_emp_after
+# Wait for the bots to find you: hit arrows and blood.
+wait 240
+shot w01
+wait 120
+shot w02
+wait 120
+shot w03
+wait 120
+shot w04
+wait 120
+shot w05
+wait 120
+shot w06
+log hud_match done
+quit

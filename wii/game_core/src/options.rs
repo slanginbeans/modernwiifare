@@ -258,8 +258,14 @@ mod tests {
         // Vibration toggles and is kept.
         o.cycle(Item::Vibration);
         assert_eq!(o.value(Item::Vibration).as_deref(), Some("DISABLED"));
-        assert_eq!(Options::decode(&o.encode()).map(|d| d.vibration), Some(false));
-        assert_eq!(Options::decode(&o.encode()[..8]).map(|d| d.vibration), Some(true));
+        assert_eq!(
+            Options::decode(&o.encode()).map(|d| d.vibration),
+            Some(false)
+        );
+        assert_eq!(
+            Options::decode(&o.encode()[..8]).map(|d| d.vibration),
+            Some(true)
+        );
         // Old files (no safe area byte) still read.
         assert_eq!(
             Options::decode(&o.encode()[..7]).map(|d| d.safe_area),

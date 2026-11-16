@@ -847,7 +847,10 @@ fn build_ui(
     // The match HUD's own images (`hud_mw2`), capped small to keep `common.wpk` under the pack limit: MW2's damage
     // direction arrow, blood splatter and EMP static (`hud_fullscreen`), each weapon's crosshair, scope overlay and
     // kill icon, and the killstreak splashes' icons.
-    let hud = hud_facts(&zones.iter().map(|z| &z.links).collect::<Vec<_>>(), &localize);
+    let hud = hud_facts(
+        &zones.iter().map(|z| &z.links).collect::<Vec<_>>(),
+        &localize,
+    );
     let mut capped: HashMap<String, u32> = class_images
         .iter()
         .map(|(k, m)| {
@@ -933,25 +936,56 @@ fn build_ui(
         .iter()
         .filter_map(|n| rumble::read(scripts, n))
         .collect();
+    let mut missing: Vec<String> = Vec::new();
     for (mut w, mats) in hud.weapons {
         let t = |m: &Option<String>, tex: &mut pack::Textures| {
-            m.as_deref().and_then(|m| lookup(m, tex)).unwrap_or(wpk::ui::NONE)
+            m.as_deref()
+                .and_then(|m| lookup(m, tex))
+                .unwrap_or(wpk::ui::NONE)
         };
         w.reticle_center = t(&mats[0], tex);
         w.reticle_side = t(&mats[1], tex);
         w.overlay = t(&mats[2], tex);
         w.kill_icon = t(&mats[3], tex);
+        for (m, got) in
+            mats[..4]
+                .iter()
+                .zip([w.reticle_center, w.reticle_side, w.overlay, w.kill_icon])
+        {
+            if let Some(m) = m
+                && got == wpk::ui::NONE
+                && !missing.contains(m)
+            {
+                missing.push(m.clone());
+            }
+        }
         w.fire_rumble = mats[4]
             .as_deref()
             .and_then(|r| pack.rumbles.iter().position(|x| x.name == r))
             .map_or(wpk::ui::NONE, |i| i as u16);
         pack.weapons.push(w);
     }
+    let has = |f: fn(&wpk::ui::HudWeapon) -> u16| {
+        pack.weapons
+            .iter()
+            .filter(|w| f(w) != wpk::ui::NONE)
+            .count()
+    };
     println!(
-        "HUD: {} weapons' crosshairs / overlays / kill icons, {} rumbles",
+        "HUD: {} weapons (crosshair {}, scope overlay {}, kill icon {}), {} rumbles, {} splashes",
         pack.weapons.len(),
-        pack.rumbles.len()
+        has(|w| w.reticle_side),
+        has(|w| w.overlay),
+        has(|w| w.kill_icon),
+        pack.rumbles.len(),
+        pack.strings
+            .iter()
+            .filter(|(k, _)| k.starts_with("splash:text:"))
+            .count()
     );
+    if std::env::var_os("MWF_MENU_DUMP").is_some() {
+        println!("HUD materials without a texture: {missing:?}");
+    }
     // Dev aid (`MWF_MENU_DUMP=1`): the baked screens' buttons, labels, images and owner draws.
     if std::env::var_os("MWF_MENU_DUMP").is_some() {
         use std::fmt::Write as _;
@@ -1035,6 +1069,22 @@ const HUD_KILL_ICON_MAX: u32 = 64;
 const HUD_OVERLAY_MAX: u32 = 256;
 const HUD_FULLSCREEN_MAX: u32 = 128;
 
+/// A weapon's shot rumble by IW4 weapon class (MW2's `rumble/*_fire` files; silenced weapons `silencer_fire`).
+fn fire_rumble(name: &str, weap_class: i32) -> Option<&'static str> {
+    if name.contains("silencer") {
+        return Some("silencer_fire");
+    }
+    Some(match weap_class {
+        0 => "assault_fire",
+        1 => "sniper_fire",
+        2 => "heavygun_fire",
+        3 => "smg_fire",
+        4 => "shotgun_fire",
+        5 => "pistol_fire",
+        _ => return None,
+    })
+}
+
 /// The HUD's images and numbers from the UI zones: MW2's `hud_fullscreen` images (`hit_direction` arrow,
 /// `splatter_alt` blood, `ac130_overlay_grain` EMP static), each weapon's def (reticle, overlay, kill icon, the ADS
 /// fractions IW4L's `hud_iw4::crosshair` / `iris` read, and the fire rumble from its notetrack rumble map), and the
@@ -1044,11 +1094,12 @@ fn hud_facts(zones: &[&material_links::Links], localize: &HashMap<String, String
         ("hit_direction".into(), HUD_KILL_ICON_MAX),
         ("splatter_alt".into(), HUD_FULLSCREEN_MAX),
         ("ac130_overlay_grain".into(), HUD_FULLSCREEN_MAX),
+        // The kill feed's means-of-death icons (`hud_iw4::gamemsg`).
+        (hud_iw4::KILLICON_HEADSHOT.into(), HUD_KILL_ICON_MAX),
+        (hud_iw4::KILLICON_SUICIDE.into(), HUD_KILL_ICON_MAX),
     ];
-    let mut icons: Vec<(String, String)> = caps
-        .iter()
-        .map(|(m, _)| (m.clone(), m.clone()))
-        .collect();
+    let mut icons: Vec<(String, String)> =
+        caps.iter().map(|(m, _)| (m.clone(), m.clone())).collect();
     let mut weapons: Vec<(wpk::ui::HudWeapon, [Option<String>; 5])> = Vec::new();
     let mut rumble_names: Vec<String> = Vec::new();
     for z in zones {
@@ -1064,17 +1115,16 @@ fn hud_facts(zones: &[&material_links::Links], localize: &HashMap<String, String
                     .filter(|m| !m.is_empty())
                     .map(str::to_owned)
             };
-            // The shot's rumble: the rumble map's `*_fire` entry (MW2 names every fire rumble so).
-            let fire = z
-                .weapon_rumble_notes
-                .get(i)
-                .and_then(|n| n.iter().find(|(_, r)| r.ends_with("_fire")))
-                .map(|(_, r)| r.clone());
+            // The shot's rumble. IW4's `fireRumble` isn't captured (the notetrack rumble map only has the
+            // viewmodel's `viewmodel_*` notes), so it is chosen by weapon class among MW2's `*_fire` rumbles.
+            let fire = fire_rumble(name, g.weap_class).map(str::to_owned);
             let mats = [
                 mat(g.reticle_center_material_slot),
                 mat(g.reticle_side_material_slot),
                 mat(g.overlay_material_slot),
-                mat(g.kill_icon_slot),
+                // The kill icon: IW4L's `killIcon` slot / name don't read back on the x86 zones, so the weapon's
+                // `hudIcon` (MW2 draws the same silhouette) stands in.
+                z.weapon_hud_icons.get(i).cloned().flatten(),
                 fire,
             ];
             for (m, max) in mats[..4].iter().zip([
@@ -1150,22 +1200,30 @@ fn hud_facts(zones: &[&material_links::Links], localize: &HashMap<String, String
         localize.get(k).cloned().unwrap_or_else(|| k.to_owned())
     };
     let mut strings = Vec::new();
+    let streaks: Vec<String> = zones
+        .iter()
+        .filter_map(|z| z.tables.get("mp/killstreaktable.csv"))
+        .flat_map(|t| (1..t.rows()).map(|k| t.cell(k, 1).to_owned()))
+        .collect();
     for z in zones {
-        let (Some(splash), Some(streaks)) = (
-            z.tables.get("mp/splashtable.csv"),
-            z.tables.get("mp/killstreaktable.csv"),
-        ) else {
+        let Some(splash) = z.tables.get("mp/splashtable.csv") else {
             continue;
         };
-        for r in 1..splash.rows() {
+        for r in 0..splash.rows() {
             let name = splash.cell(r, 0);
-            if name.is_empty() || !(1..streaks.rows()).any(|k| streaks.cell(k, 1) == name) {
+            if name.is_empty()
+                || !streaks.iter().any(|k| k == name)
+                || strings
+                    .iter()
+                    .any(|(k, _): &(String, String)| *k == format!("splash:ms:{name}"))
+            {
                 continue;
             }
             strings.push((format!("splash:text:{name}"), loc(splash.cell(r, 1))));
             strings.push((format!("splash:desc:{name}"), loc(splash.cell(r, 2))));
             let ms = splash.cell(r, 4).parse::<f32>().unwrap_or(0.0) * 1000.0;
             strings.push((format!("splash:ms:{name}"), format!("{}", ms as i32)));
+            // Killstreak rows have no material: the killstreak table's icon (`streak:<name>`) is drawn.
             let m = splash.cell(r, 3);
             if !m.is_empty() {
                 icons.push((format!("splash:{name}"), m.to_owned()));

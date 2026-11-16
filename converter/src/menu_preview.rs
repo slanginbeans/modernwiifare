@@ -107,11 +107,17 @@ fn draw_free(img: &mut Image, textures: &[Option<Image>], f: &game_core::hud_fx:
         let ys = [a.y, b.y, d.y];
         let (x0, x1) = (
             xs.iter().copied().fold(f32::MAX, f32::min).max(0.0) as u32,
-            xs.iter().copied().fold(f32::MIN, f32::max).clamp(0.0, 640.0) as u32,
+            xs.iter()
+                .copied()
+                .fold(f32::MIN, f32::max)
+                .clamp(0.0, 640.0) as u32,
         );
         let (y0, y1) = (
             ys.iter().copied().fold(f32::MAX, f32::min).max(0.0) as u32,
-            ys.iter().copied().fold(f32::MIN, f32::max).clamp(0.0, 480.0) as u32,
+            ys.iter()
+                .copied()
+                .fold(f32::MIN, f32::max)
+                .clamp(0.0, 480.0) as u32,
         );
         for y in y0..y1 {
             for x in x0..x1 {
@@ -553,7 +559,7 @@ pub fn render_hud(common: &[u8], scoped: bool) -> Result<Image, String> {
         damage: Some((&damage, 0.0)),
         blood: hud_fx::Blood { intensity: 0.4 },
         names: &names,
-        splash: Some(("uav", 0)),
+        splash: Some(("uav", 3, 0)),
         emp: scoped.then_some(3),
     };
     let mut quads = Vec::new();
