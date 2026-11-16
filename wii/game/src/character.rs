@@ -358,6 +358,60 @@ impl Characters {
         }
     }
 
+    /// Weapons lying on the ground: each weapon's third-person model (`GUNM`) at the item, turned to its yaw and
+    /// laid on its side (MW2 draws its item model; ours lies flat so its grip doesn't sink into the floor).
+    /// Scavenger bags aren't drawn here (no bag model is packed: the caller draws a stand-in).
+    pub fn draw_items(&self, gfx: &mut impl Gfx, view: &Mtx34, items: &[game_core::item::Dropped]) {
+        let Some(held) = &self.held else {
+            return;
+        };
+        for d in items.iter().filter(|d| !d.scavenger) {
+            let Some(gun) = held.model(d.weapon) else {
+                continue;
+            };
+            let o = d.origin;
+            if vmod::apply(view, o)[2] > 32.0 {
+                continue;
+            }
+            let (s, c) = (
+                libm::sinf(d.yaw.to_radians()),
+                libm::cosf(d.yaw.to_radians()),
+            );
+            // Yaw about z, then a quarter roll about the barrel (x): the model's up (z) lies along -y.
+            let model: Mtx34 = [
+                [c, 0.0, s, o[0]],
+                [s, 0.0, -c, o[1]],
+                [0.0, 1.0, 0.0, o[2] + 2.0],
+            ];
+            unsafe {
+                ffi::mwf_world_view();
+                ffi::mwf_view_arrays(gun.positions.as_ptr(), gun.attributes.as_ptr());
+            }
+            gfx.pos_matrix(&vmod::mul(view, &model));
+            let mut last: Option<DrawState> = None;
+            for i in 0..gun.draws() {
+                let Some(dr) = gun.draw(i) else { continue };
+                let state = DrawState {
+                    tex: held
+                        .textures
+                        .get(usize::from(dr.texture))
+                        .copied()
+                        .unwrap_or(-1),
+                    lightmap: -1,
+                    blend: dr.blend,
+                    alpha_ref: dr.alpha_ref,
+                    cull: 0,
+                    tint: 0,
+                };
+                if last != Some(state) {
+                    gfx.world_state(&state);
+                    last = Some(state);
+                }
+                gfx.call_dl(dr.dl);
+            }
+        }
+    }
+
     /// Player `slot`'s bone hit boxes, when its body was posed at `now` (drawn this frame).
     pub fn hit_boxes(&self, slot: usize, now: u32) -> Option<&[HitBox]> {
         self.hits

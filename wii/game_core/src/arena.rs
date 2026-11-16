@@ -135,6 +135,28 @@ pub enum Event {
         attacker: usize,
         victim: usize,
     },
+    /// `fighter` walked over a weapon it carries and took `rounds` into its reserve (the game adds them to the
+    /// human's gun; a bot's gun has them already).
+    AmmoPickup {
+        fighter: usize,
+        weapon: u32,
+        rounds: i32,
+    },
+    /// `fighter` (with Scavenger) took a Scavenger bag: a clip's worth into each weapon's reserve and a grenade of
+    /// each kind (done already for a bot's gun; the game does the human's).
+    Scavenged {
+        fighter: usize,
+    },
+    /// Fighter `owner` dropped `weapon` (a Scavenger bag when `scavenger`).
+    Dropped {
+        owner: usize,
+        weapon: u32,
+        scavenger: bool,
+    },
+    /// A glass pane at `origin` shattered (its glass impacts are their own events).
+    GlassShattered {
+        origin: [f32; 3],
+    },
     /// A fighter (not the human) fired.
     BotFired {
         bot: usize,
@@ -333,7 +355,17 @@ pub struct Arena {
     object_out: Vec<crate::destructible::Out>,
     /// What bullets need beyond the shot: penetration through players, the human's weapon, the cost.
     pub shots: Shots,
+    /// The map's breakable glass ([`Arena::update_glass`]).
+    pub glass: crate::glass::Glass,
+    /// Weapons and Scavenger bags on the ground ([`Arena::update_items`]).
+    pub items: crate::item::Items,
+    /// The weapon on the ground the human would take (IW4L `selected_item`), as an index into `items.list`.
+    pub item_hint: Option<usize>,
 }
+
+/// IW4 surface type glass (`SURF_TYPE_GLASS`) and impact type small bullet, for the break effect's impacts.
+const SURF_TYPE_GLASS: u8 = 9;
+const IMPACT_TYPE_BULLET_SMALL: i32 = 1;
 
 /// How long a drawn character's bone boxes stand for it in the human's hit tests (a few frames).
 pub const POSE_HIT_FRESH_MS: u32 = 50;
@@ -356,8 +388,11 @@ pub struct Shots {
     pub weapon_pens: &'static [u8],
     /// `PENT`: the penetration depth table (None: bullets don't go through players).
     pub pen_table: Option<weapon_iw4::PenetrationDepthTable>,
-    /// The human's weapon now.
+    /// The human's weapon now, and both weapons it carries (primary, secondary).
     pub human_weapon: Option<HeldWeapon>,
+    pub human_carried: [Option<HeldWeapon>; 2],
+    /// `WEAP`: the weapon records (their clip sizes and maximum ammunition, for drops and pickups).
+    pub weapons: &'static [u8],
     /// Hit volume tests since [`Shots::take_cost`].
     pub cost: core::cell::Cell<damage::HitCost>,
 }
@@ -366,6 +401,12 @@ impl Shots {
     /// Weapon `w`'s penetration record.
     pub fn pen_of(&self, w: Option<u32>) -> Option<wpk::weapon::PenRecord> {
         wpk::records::get(self.weapon_pens, w? as usize)
+    }
+
+    /// Weapon `w`'s combat facts (clip size, maximum ammunition, inventory type).
+    pub fn facts_of(&self, w: u32) -> Option<weapon_iw4::WeaponCombatFacts> {
+        let rec = wpk::records::get::<wpk::weapon::WeaponRecord>(self.weapons, w as usize)?;
+        weapon_iw4::WeaponCombatFacts::try_from_captured(rec.combat).ok()
     }
 
     /// The hit volume cost so far, reset.
@@ -538,6 +579,9 @@ impl Arena {
             objects: crate::destructible::Objects::default(),
             object_out: Vec::new(),
             shots: Shots::default(),
+            glass: crate::glass::Glass::default(),
+            items: crate::item::Items::new(),
+            item_hint: None,
         };
         a.fighters.push(Fighter::new(human, gun(0), None, &rules));
         for i in 1..=bots {
@@ -902,6 +946,237 @@ impl Arena {
         }
     }
 
+    /// The panes fighter `from`'s bullets went through (since the last call) take the bullet's damage at that
+    /// distance (IW4L `combat.rs`: the segment's damage, applied with `apply_glass_hit`).
+    pub fn shoot_glass(
+        &mut self,
+        clip: &MapClip<'_>,
+        from: usize,
+        facts: &weapon_iw4::WeaponCombatFacts,
+        now: u32,
+    ) {
+        let scale = self.fighters.get(from).map_or(1.0, |f| f.bullet_scale);
+        for h in clip.take_glass_hits() {
+            let d = (damage::at_distance(facts, h.dist) as f32 * scale) as u32;
+            self.glass.hit(h.piece, d, now);
+        }
+    }
+
+    /// Weakened panes that fall apart, the break effect of every pane that shattered (a spray of glass impacts
+    /// over it), and the traces told which panes are gone.
+    pub fn update_glass(&mut self, clip: &MapClip<'_>, now: u32, out: &mut Vec<Event>) {
+        if self.glass.is_empty() {
+            return;
+        }
+        self.glass.update(now);
+        let broke = self.glass.take_shattered();
+        if broke.is_empty() {
+            return;
+        }
+        for piece in broke {
+            let Some(p) = self.glass.panes.get(piece).copied().flatten() else {
+                continue;
+            };
+            // The pane's thin axis is its normal; a 3 × 3 grid of impacts across the other two.
+            let size: [f32; 3] = core::array::from_fn(|k| p.maxs[k] - p.mins[k]);
+            let thin = (0..3)
+                .min_by(|&a, &b| size[a].total_cmp(&size[b]))
+                .unwrap_or(0);
+            let (u, v) = ((thin + 1) % 3, (thin + 2) % 3);
+            let mut normal = [0.0; 3];
+            normal[thin] = 1.0;
+            for (a, b) in [0.2f32, 0.5, 0.8]
+                .iter()
+                .flat_map(|a| [(*a, 0.2), (*a, 0.5), (*a, 0.8)])
+            {
+                let mut origin = p.center();
+                origin[u] = p.mins[u] + size[u] * a;
+                origin[v] = p.mins[v] + size[v] * b;
+                out.push(Event::Impact {
+                    origin,
+                    normal,
+                    surface: SURF_TYPE_GLASS,
+                    flesh: false,
+                    impact_type: IMPACT_TYPE_BULLET_SMALL,
+                });
+            }
+            out.push(Event::GlassShattered { origin: p.center() });
+        }
+        clip.set_glass(self.glass.open_bits());
+    }
+
+    /// Items for this frame: everyone killed (the `Kill` events in `out` so far) drops the weapon in hand when it
+    /// has rounds in the clip, and a Scavenger bag when someone else killed them (MW2's `dropWeaponForDeath` /
+    /// `dropScavengerForDeath`); items fall; the living pick up ammunition for weapons they carry and Scavenger
+    /// bags (with the perk) by walking over them (IW4L `phase_touch_items`); and the weapon the human could take
+    /// with the use hold ([`Arena::item_hint`]).
+    pub fn update_items(&mut self, clip: &MapClip<'_>, now: u32, out: &mut Vec<Event>) {
+        let kills: Vec<(usize, usize)> = out
+            .iter()
+            .filter_map(|e| match *e {
+                Event::Kill { attacker, victim } => Some((attacker, victim)),
+                _ => None,
+            })
+            .collect();
+        for (k, &(attacker, victim)) in kills.iter().enumerate() {
+            if kills[..k].iter().any(|&(_, v)| v == victim) {
+                continue;
+            }
+            let f = &self.fighters[victim];
+            let (feet, yaw) = (f.player.ps.origin, f.player.ps.viewangles[1]);
+            let held = match f.gun.as_ref() {
+                Some(g) => {
+                    let (clip, stock) = g.ammo();
+                    Some(HeldWeapon {
+                        weapon: g.weapon_index(),
+                        clip,
+                        stock,
+                    })
+                }
+                None if victim == 0 => self.shots.human_weapon,
+                None => None,
+            };
+            if attacker != victim {
+                let w = held.map_or(0, |h| h.weapon);
+                self.items.launch(feet, yaw, w, 0, 0, true, victim, now);
+                out.push(Event::Dropped {
+                    owner: victim,
+                    weapon: w,
+                    scavenger: true,
+                });
+            }
+            let Some(h) = held else { continue };
+            let Some(facts) = self.shots.facts_of(h.weapon) else {
+                continue;
+            };
+            if facts.inventory_type != 0 || h.clip <= 0 {
+                continue;
+            }
+            let stock = h.stock.min(facts.max_ammo);
+            self.items
+                .launch(feet, yaw, h.weapon, h.clip, stock, false, victim, now);
+            out.push(Event::Dropped {
+                owner: victim,
+                weapon: h.weapon,
+                scavenger: false,
+            });
+        }
+        if self.items.list.is_empty() {
+            self.item_hint = None;
+            return;
+        }
+        self.items.think(clip, now);
+        // Touch: the first item each living fighter overlaps that it can use.
+        for i in 0..self.fighters.len() {
+            let f = &self.fighters[i];
+            if !f.life.alive() || (i == 0 && !self.human_present) {
+                continue;
+            }
+            let origin = f.player.ps.origin;
+            let scavenger = f.player.ps.perks[0] & playerstate_iw4::PERK_SCAVENGER != 0;
+            let carried: [Option<HeldWeapon>; 2] = match f.gun.as_ref() {
+                Some(g) => {
+                    let (clip, stock) = g.ammo();
+                    [
+                        Some(HeldWeapon {
+                            weapon: g.weapon_index(),
+                            clip,
+                            stock,
+                        }),
+                        None,
+                    ]
+                }
+                None if i == 0 => self.shots.human_carried,
+                None => [None, None],
+            };
+            let usable = |d: &crate::item::Dropped| {
+                if d.scavenger {
+                    return scavenger;
+                }
+                carried.iter().flatten().any(|h| {
+                    h.weapon == d.weapon
+                        && d.rounds() > 0
+                        && self
+                            .shots
+                            .facts_of(h.weapon)
+                            .is_some_and(|fa| h.stock < fa.max_ammo)
+                })
+            };
+            let Some(k) = self
+                .items
+                .list
+                .iter()
+                .position(|d| d.touches(origin) && usable(d))
+            else {
+                continue;
+            };
+            let d = self.items.list[k];
+            if d.scavenger {
+                self.items.take(k);
+                if let Some(g) = self.fighters[i].gun.as_mut() {
+                    let n = g.facts().clip_size;
+                    g.add_stock(n);
+                }
+                out.push(Event::Scavenged { fighter: i });
+                continue;
+            }
+            let Some(h) = carried
+                .iter()
+                .flatten()
+                .find(|h| h.weapon == d.weapon)
+                .copied()
+            else {
+                continue;
+            };
+            let room = self
+                .shots
+                .facts_of(h.weapon)
+                .map_or(0, |fa| fa.max_ammo - h.stock);
+            let (taken, left) = crate::item::split_item_ammo(room, d.clip, 0, d.stock);
+            if left[0] + left[2] > 0 {
+                let e = &mut self.items.list[k];
+                e.clip = left[0];
+                e.stock = left[2];
+            } else {
+                self.items.take(k);
+            }
+            if let Some(g) = self.fighters[i].gun.as_mut() {
+                g.add_stock(taken);
+            }
+            out.push(Event::AmmoPickup {
+                fighter: i,
+                weapon: h.weapon,
+                rounds: taken,
+            });
+        }
+        // The human's swap: what it looks at (IW4L skips players with both weapons out of the primary slots).
+        let f = &self.fighters[0];
+        self.item_hint = if f.life.alive() && self.human_present {
+            let ps = &f.player.ps;
+            let eye = [
+                ps.origin[0],
+                ps.origin[1],
+                ps.origin[2] + ps.view_height_current,
+            ];
+            let (p, y) = (ps.viewangles[0].to_radians(), ps.viewangles[1].to_radians());
+            let forward = [
+                libm::cosf(p) * libm::cosf(y),
+                libm::cosf(p) * libm::sinf(y),
+                -libm::sinf(p),
+            ];
+            let held: Vec<u32> = self
+                .shots
+                .human_carried
+                .iter()
+                .flatten()
+                .map(|h| h.weapon)
+                .collect();
+            self.items.selected(clip, eye, forward, &held)
+        } else {
+            None
+        };
+    }
+
     /// The weapon fighter `i` holds (a bot's gun; the human's from [`Shots::human_weapon`]).
     pub fn weapon_of(&self, i: usize) -> Option<u32> {
         match self.fighters.get(i).and_then(|f| f.gun.as_ref()) {
@@ -949,11 +1224,18 @@ impl Arena {
             weapon_iw4::PLAYER_MELEE_HEIGHT_DEFAULT,
         );
         let mut best: Option<(f32, usize)> = None;
+        let mut glass_swung: Option<usize> = None;
         let n = weapon_iw4::melee_trace_count(width, height);
         for offset in weapon_iw4::MELEE_TRACE_OFFSETS.iter().take(n) {
             let end =
                 weapon_iw4::melee_trace_end(eye, forward, right, up, range, width, height, *offset);
-            let wall = clip.trace(eye, end, [0.0; 3], [0.0; 3], MASK_SHOT).fraction;
+            let wt = clip.trace(eye, end, [0.0; 3], [0.0; 3], MASK_SHOT);
+            let wall = wt.fraction;
+            // A pane in reach takes the swing (IW4L: `GLASS_MELEE_DAMAGE`, once a swing).
+            let pane = trace_iw4::trace_get_glass_hit_id(wt.hit_type, wt.hit_id);
+            if wall < 1.0 && pane != 0 && glass_swung.is_none() {
+                glass_swung = Some(usize::from(pane - 1));
+            }
             for (i, f) in self.fighters.iter().enumerate() {
                 if i == from || !f.life.alive() || (i == 0 && !self.human_present) {
                     continue;
@@ -970,6 +1252,10 @@ impl Arena {
                     best = Some((t, i));
                 }
             }
+        }
+        if let Some(pane) = glass_swung {
+            self.glass
+                .hit(pane, u32::from(crate::glass::GLASS_MELEE_DAMAGE), now);
         }
         let Some((_, victim)) = best else {
             return false;
@@ -1229,6 +1515,8 @@ impl Arena {
         attacker: crate::destructible::Attacker,
         now: u32,
     ) {
+        // Glass nearby takes the blast too (IW4L `apply_glass_blast`).
+        self.glass.blast(origin, range, max as i32, min as i32, now);
         if range <= 0.0 {
             return;
         }
@@ -1992,6 +2280,7 @@ impl Arena {
                 for p in &extra {
                     self.bullet(i, p, &facts, now, out);
                 }
+                self.shoot_glass(clip, i, &facts, now);
             }
             if let Some((eye, axes, melee_damage)) = swing {
                 self.melee(clip, i, eye, axes, melee_damage, now, out);
@@ -2012,7 +2301,11 @@ mod tests {
     use wpk::weapon::WeaponRecord;
 
     fn rifle() -> Gun {
-        let c = CapturedCombatInput {
+        Gun::new(&WeaponRecord::new("rifle_mp", rifle_combat())).expect("usable")
+    }
+
+    fn rifle_combat() -> CapturedCombatInput {
+        CapturedCombatInput {
             fire_time_ms: 100,
             clip_size: 30,
             start_ammo: 300,
@@ -2031,8 +2324,7 @@ mod tests {
             ads_spread: 0.5,
             location_damage: weapon_iw4::LOCATION_DAMAGE_IDENTITY,
             ..CapturedCombatInput::default()
-        };
-        Gun::new(&WeaponRecord::new("rifle_mp", c)).expect("usable")
+        }
     }
 
     #[test]
@@ -2474,6 +2766,71 @@ mod tests {
         let mut ev = Vec::new();
         a.bullet(0, &shot, &facts, 1000, &mut ev);
         assert_eq!(hits_of(&ev), [(1, 40)]);
+    }
+
+    #[test]
+    fn the_dead_drop_their_weapon_and_a_bag() {
+        let clip = boxes(&[([-2000.0, -2000.0, -64.0], [2000.0, 2000.0, 0.0])]);
+        let mc = MapClip::new(&clip);
+        let (mut a, _) = lined_up(None);
+        let rec = WeaponRecord::new("rifle_mp", rifle_combat());
+        a.shots.weapons =
+            alloc::boxed::Box::leak(wpk::records::encode(&[rec.clone(), rec]).into_boxed_slice());
+        assert!(a.shots.facts_of(1).is_some());
+        // The human kills bot 1, which held 20 in the clip and 300 in reserve.
+        a.fighters[1].gun.as_mut().unwrap().set_ammo(20, 300);
+        let mut out = alloc::vec![Event::Kill {
+            attacker: 0,
+            victim: 1
+        }];
+        a.fighters[1].life.damage(1000, 1000);
+        a.update_items(&mc, 1000, &mut out);
+        assert_eq!(a.items.list.len(), 2);
+        let gun = a.items.list.iter().find(|d| !d.scavenger).copied().unwrap();
+        assert_eq!((gun.weapon, gun.clip, gun.stock), (1, 20, 300));
+        assert!(a.items.list.iter().any(|d| d.scavenger));
+        // They land; bot 2, short of its maximum, walks over them and takes ammunition (the bag isn't for it).
+        for t in (1050..3000).step_by(50) {
+            out.clear();
+            a.update_items(&mc, t, &mut out);
+        }
+        let landed = a.items.list.iter().find(|d| !d.scavenger).copied().unwrap();
+        assert!(!landed.falling);
+        a.fighters[2].gun.as_mut().unwrap().set_ammo(30, 100);
+        a.fighters[2].player.ps.origin = landed.origin;
+        out.clear();
+        a.update_items(&mc, 3000, &mut out);
+        assert!(out.contains(&Event::AmmoPickup {
+            fighter: 2,
+            weapon: 1,
+            rounds: 200
+        }));
+        assert_eq!(a.fighters[2].gun.as_ref().unwrap().ammo(), (30, 300));
+        // 120 left on the ground (200 of 320 taken, reserve first).
+        let rest = a.items.list.iter().find(|d| !d.scavenger).copied().unwrap();
+        assert_eq!(rest.rounds(), 120);
+        // The human with Scavenger takes the bag.
+        let bag = a.items.list.iter().find(|d| d.scavenger).copied().unwrap();
+        a.fighters[2].player.ps.origin = [1500.0, 1500.0, 0.0];
+        a.fighters[0].player.ps.origin = bag.origin;
+        a.fighters[0].player.ps.perks[0] |= playerstate_iw4::PERK_SCAVENGER;
+        out.clear();
+        a.update_items(&mc, 3050, &mut out);
+        assert!(out.contains(&Event::Scavenged { fighter: 0 }));
+        assert!(a.items.list.iter().all(|d| !d.scavenger));
+        // Killing yourself drops no bag.
+        let mut out = alloc::vec![Event::Kill {
+            attacker: 2,
+            victim: 2
+        }];
+        a.update_items(&mc, 3100, &mut out);
+        assert!(!out.iter().any(|e| matches!(
+            e,
+            Event::Dropped {
+                scavenger: true,
+                ..
+            }
+        )));
     }
 
     #[test]

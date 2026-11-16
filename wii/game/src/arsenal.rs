@@ -354,6 +354,61 @@ impl Arsenal {
     pub fn gun(&self) -> Option<&Gun> {
         self.guns[self.active].as_ref()
     }
+
+    /// The gun carrying weapon `index`, if one does.
+    pub fn gun_with(&mut self, index: u32) -> Option<&mut Gun> {
+        self.guns
+            .iter_mut()
+            .flatten()
+            .find(|g| g.weapon_index() == index)
+    }
+
+    /// Take weapon `index` off the ground with `clip` / `stock` rounds in place of the weapon in hand (IW4L
+    /// `grab_number` for a weapon not carried: the new one is given and raised; MW2 drops the old one where the
+    /// new one lay). Its first-person file loads now (a short hitch: the slot's file comes off the SD card).
+    /// Returns the weapon given up and its rounds.
+    pub fn swap(
+        &mut self,
+        gfx: &mut impl game_core::gfx::Gfx,
+        t: &WeaponTables<'_>,
+        index: u32,
+        clip: i32,
+        stock: i32,
+    ) -> Option<(u32, i32, i32)> {
+        let rec = wpk::records::get::<wpk::weapon::WeaponRecord>(t.weapons, index as usize)?;
+        let mut g = Gun::with_index(&rec, index)?;
+        g.set_kick(wpk::records::get::<wpk::weapon::KickRecord>(
+            t.kicks,
+            index as usize,
+        ));
+        g.set_moves(wpk::records::get(t.moves, index as usize));
+        g.set_aim(wpk::records::get(t.aims, index as usize));
+        g.set_penetration(penetration(t, index));
+        g.set_ammo(clip, stock);
+        let a = self.active;
+        let old = self.guns[a].as_ref().map(|o| {
+            let (c, s) = o.ammo();
+            (o.weapon_index(), c, s)
+        });
+        if let Some(o) = self.guns[a].as_ref() {
+            g.take_offhands(o);
+        }
+        self.guns[a] = Some(g);
+        self.used[a] = true;
+        self.pending = None;
+        // The slot's first-person file: the base weapon's (`m4_reflex_mp` → `m4`).
+        let base = rec.name().split('_').next().unwrap_or("");
+        let mut wanted = self.loaded;
+        wanted[a] = Name::new(base);
+        if wanted != self.loaded {
+            self.begin(wanted);
+            self.step(gfx, usize::MAX);
+        }
+        if let Some(v) = self.views[a].as_mut() {
+            v.play_event_alias(wpk::sound::event::RAISE);
+        }
+        old
+    }
 }
 
 /// Per slot (primary, secondary): the base weapon name (its first-person file) and the weapon names to try for its

@@ -1106,6 +1106,18 @@ fn run_map(
         // Bullets through players: each weapon's penetration and the flesh depths.
         a.shots.weapon_pens = pens;
         a.shots.pen_table = pen_table;
+        // Drops and pickups read the weapons' clip sizes and maximum ammunition.
+        a.shots.weapons = weapons;
+        // The map's glass panes (the clip brushes carrying a glass piece).
+        if let Some(c) = clip_data.as_ref() {
+            a.glass = game_core::glass::Glass::from_clip(c);
+            let panes = a.glass.panes.iter().flatten().count();
+            devlog::event(
+                0,
+                "glass",
+                format_args!("pieces={} panes={panes}", a.glass.len()),
+            );
+        }
         // Time the bots (telemetry `bai` / `bmv` / `bgun`) and the hit volume tests (`hitvol`).
         a.clock = Some(clock_us);
     }
@@ -1143,6 +1155,8 @@ fn run_map(
     let mut blasts: [(Option<[f32; 3]>, u32); 4] = [(None, 0); 4];
     let mut next_blast = 0usize;
     let mut last_shot_ms: Option<u32> = None;
+    // When Y went down over a weapon on the ground (held long enough, it takes the weapon).
+    let mut y_hold: Option<u32> = None;
     let mut next_impact = 0usize;
     let mut hud_rects: Vec<Rect> = Vec::with_capacity(512);
     let mut life = Life::with_rules(&rules);
@@ -1433,17 +1447,71 @@ fn run_map(
         }
         // The arena keeps no gun for you: your weapon and ammunition, for bullets and drops.
         if let Some(a) = arena.as_mut() {
-            a.shots.human_weapon = arsenal.gun().map(|g| {
+            let held = |g: &Gun| {
                 let (clip, stock) = g.ammo();
                 arena::HeldWeapon {
                     weapon: g.weapon_index(),
                     clip,
                     stock,
                 }
-            });
+            };
+            a.shots.human_weapon = arsenal.gun().map(held);
+            a.shots.human_carried = [
+                arsenal.guns[0].as_ref().map(held),
+                arsenal.guns[1].as_ref().map(held),
+            ];
         }
-        // Y: the other weapon (MW2's console layout).
-        if ctl.pressed(act::SWITCH) && !flying && life.alive() && arsenal.switch() {
+        // Y: the other weapon (MW2's console layout). Over a weapon on the ground, Y held for IW4L's
+        // `ITEM_USE_HOLD_MS` takes it in place of the one in hand; let go sooner, it switches as usual.
+        let over = arena.as_ref().and_then(|a| a.item_hint);
+        let mut switch_now = false;
+        if ctl.pressed(act::SWITCH) && !flying && life.alive() {
+            if over.is_some() {
+                y_hold = Some(now);
+            } else {
+                switch_now = true;
+            }
+        }
+        if let Some(t) = y_hold {
+            if !ctl.held(act::SWITCH) || flying || !life.alive() {
+                y_hold = None;
+                switch_now = life.alive() && !flying;
+            } else if now.wrapping_sub(t) >= game_core::item::ITEM_USE_HOLD_MS {
+                y_hold = None;
+                if let (Some(a), Some(i)) = (arena.as_mut(), over)
+                    && let Some(d) = a.items.take(i)
+                {
+                    let tables = arsenal::WeaponTables {
+                        weapons,
+                        kicks,
+                        moves,
+                        aims,
+                        equips,
+                        pens,
+                        pen_table,
+                    };
+                    match arsenal.swap(gfx, &tables, d.weapon, d.clip, d.stock) {
+                        Some((old, clip, stock)) => {
+                            a.items.place(d.origin, d.yaw, old, clip, stock, 0, now);
+                            devlog::event(
+                                now,
+                                "weapon_swap",
+                                format_args!(
+                                    "took={} rounds={} gave={old} rounds={}",
+                                    d.weapon,
+                                    d.clip + d.stock,
+                                    clip + stock
+                                ),
+                            );
+                        }
+                        None => a
+                            .items
+                            .place(d.origin, d.yaw, d.weapon, d.clip, d.stock, d.owner, now),
+                    }
+                }
+            }
+        }
+        if switch_now && arsenal.switch() {
             devlog::event(
                 now,
                 "switch_request",
@@ -1862,6 +1930,7 @@ fn run_map(
                                 for pellet in g.extra_pellets() {
                                     a.bullet(0, pellet, &facts, now, &mut events);
                                 }
+                                a.shoot_glass(c, 0, &facts, now);
                             }
                         }
                         // A raise that ends a switch is the incoming weapon's (`finish_switch` plays it).
@@ -1957,6 +2026,8 @@ fn run_map(
             a.regen(now);
             a.update_grenades(c, dt, now, &mut events);
             a.update_objects(c, now, &mut events);
+            a.update_glass(c, now, &mut events);
+            a.update_items(c, now, &mut events);
             a.update_objectives(dt * 1000.0, now, &mut events);
             a.footsteps(c, &mut events);
             life = a.fighters[0].life;
@@ -2046,6 +2117,59 @@ fn run_map(
                         next_blast = (next_blast + 1) % blasts.len();
                     }
                     devlog::event(now, "object exploded", format_args!(""));
+                }
+                Event::AmmoPickup {
+                    fighter,
+                    weapon,
+                    rounds,
+                } => {
+                    if fighter == 0
+                        && let Some(g) = arsenal.gun_with(weapon)
+                    {
+                        g.add_stock(rounds);
+                    }
+                    devlog::event(
+                        now,
+                        "ammo_pickup",
+                        format_args!("who={fighter} weapon={weapon} rounds={rounds}"),
+                    );
+                }
+                Event::Scavenged { fighter } => {
+                    // MW2's `handleScavengerBagPickup`: a clip's worth into each weapon's reserve, a grenade of
+                    // each kind (at most the grenade's clip).
+                    if fighter == 0 {
+                        let clip_of = |w: u32| {
+                            wpk::records::get::<wpk::weapon::WeaponRecord>(weapons, w as usize)
+                                .and_then(|r| {
+                                    weapon_iw4::WeaponCombatFacts::try_from_captured(r.combat).ok()
+                                })
+                                .map_or(1, |f| f.clip_size.max(1))
+                        };
+                        for g in arsenal.guns.iter_mut().flatten() {
+                            let n = g.facts().clip_size;
+                            g.add_stock(n);
+                            g.add_offhand_ammo(clip_of);
+                        }
+                    }
+                    devlog::event(now, "scavenged", format_args!("who={fighter}"));
+                }
+                Event::Dropped {
+                    owner,
+                    weapon,
+                    scavenger,
+                } => {
+                    devlog::event(
+                        now,
+                        "item_drop",
+                        format_args!("by={owner} weapon={weapon} bag={}", u8::from(scavenger)),
+                    );
+                }
+                Event::GlassShattered { origin } => {
+                    devlog::event(
+                        now,
+                        "glass_shattered",
+                        format_args!("at={:.0},{:.0},{:.0}", origin[0], origin[1], origin[2]),
+                    );
                 }
                 Event::BotFired { bot } => {
                     if let (Some(fx), Some(ch), Some(a)) =
@@ -2166,6 +2290,12 @@ fn run_map(
             }
             ch.draw(gfx, &cam.view(), &poses, now);
         }
+        // Weapons on the ground.
+        if let (Some(ch), Some(a)) = (characters.as_ref(), arena.as_ref())
+            && !a.items.list.is_empty()
+        {
+            ch.draw_items(gfx, &cam.view(), &a.items.list);
+        }
         // The drawn bodies' bone hit boxes, for your shots.
         if let (Some(ch), Some(a), true) = (characters.as_ref(), arena.as_mut(), debug.characters) {
             for p in &poses {
@@ -2180,6 +2310,43 @@ fn run_map(
             box_colours.clear();
             // Grenades: small dark boxes until the projectile models are converted; explosions: a short bright
             // flash growing from the blast point (placeholder for MW2's explosion effect).
+            // Scavenger bags: a small olive box (no bag model is packed); intact glass panes: a faint see-through
+            // box over the pane (MW2's glass pieces aren't converted), gone once it shatters.
+            for d in a.items.list.iter().filter(|d| d.scavenger) {
+                let o = d.origin;
+                boxes.push([
+                    o[0] - 5.0,
+                    o[1] - 4.0,
+                    o[2],
+                    o[0] + 5.0,
+                    o[1] + 4.0,
+                    o[2] + 6.0,
+                ]);
+                box_colours.push(0x4a5230ff);
+            }
+            for (i, p) in a.glass.panes.iter().enumerate() {
+                if let Some(p) = p
+                    && a.glass.is_solid(i)
+                    && {
+                        let c = p.center();
+                        (0..3)
+                            .map(|k| (c[k] - cam.eye[k]) * (c[k] - cam.eye[k]))
+                            .sum::<f32>()
+                            < 1500.0 * 1500.0
+                    }
+                {
+                    boxes.push([
+                        p.mins[0], p.mins[1], p.mins[2], p.maxs[0], p.maxs[1], p.maxs[2],
+                    ]);
+                    box_colours.push(
+                        if a.glass.state(i) == game_core::glass::GlassPieceState::Weakened {
+                            0xe0e8f060
+                        } else {
+                            0xb8d0e038
+                        },
+                    );
+                }
+            }
             for g in &a.grenades {
                 let o = g.origin;
                 boxes.push([
@@ -2568,6 +2735,19 @@ fn run_map(
                 hud_rects.clear();
                 hud::text(&mut hud_rects, 430, 430, 2, line.as_str());
                 gfx.hud_rects(&hud_rects, 0xf0e8d0e0);
+            }
+            // A weapon on the ground you could take (MW2's "hold to swap" hint).
+            if let Some(a) = arena.as_ref()
+                && let Some(d) = a.item_hint.and_then(|i| a.items.list.get(i))
+                && let Some(rec) =
+                    wpk::records::get::<wpk::weapon::WeaponRecord>(weapons, d.weapon as usize)
+            {
+                let mut line = Str::default();
+                line.push_str("HOLD Y TO SWAP FOR ");
+                line.push_str(&rec.name().trim_end_matches("_mp").to_ascii_uppercase());
+                hud_rects.clear();
+                hud::text(&mut hud_rects, 190, 300, 2, line.as_str());
+                gfx.hud_rects(&hud_rects, 0xf0f0f0e0);
             }
         }
         if let Some(a) = arena.as_ref()
