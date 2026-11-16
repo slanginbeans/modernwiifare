@@ -127,6 +127,10 @@ pub mod tag {
     /// First-person model and animations of a weapon (`view::ViewModel`, in `common.wpk`); `count` = weapon index
     /// in `WEAP` it belongs to.
     pub const VIEWMODEL: Tag = *b"VIEW";
+    /// In a weapon file: the weapons whose clips are sets of its `VIEW` ([`crate::view::SetRecord`]).
+    pub const VIEW_SETS: Tag = *b"VSET";
+    /// In a weapon's companion file: the clips of its sets ([`crate::view::encode_clip_set`]).
+    pub const VIEW_CLIPS: Tag = *b"VCLP";
     /// Recoil of every weapon (`weapon::KickRecord`, parallel to `WEAP`).
     pub const KICK: Tag = *b"KICK";
     /// Each weapon's effect on movement (`weapon::MoveRecord`, parallel to `WEAP`).

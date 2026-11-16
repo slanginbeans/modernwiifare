@@ -484,9 +484,18 @@ pub fn view_notes(
     links: &crate::material_links::Links,
     view: &crate::material_links::WeaponView,
 ) -> Vec<(u8, String, f32)> {
+    anim_notes(s, links, &view.anims)
+}
+
+/// The notetracks of the animations `anims` names per slot: (slot, notetrack name, time fraction).
+pub fn anim_notes(
+    s: &ZoneStream<'_>,
+    links: &crate::material_links::Links,
+    anims: &[Option<String>],
+) -> Vec<(u8, String, f32)> {
     let mut out = Vec::new();
     for slot in wpk::view::slot::ALL {
-        let Some(Some(name)) = view.anims.get(usize::from(slot)) else {
+        let Some(Some(name)) = anims.get(usize::from(slot)) else {
             continue;
         };
         let Some((_, g)) = links
@@ -511,12 +520,13 @@ pub fn view_notes(
     out
 }
 
-/// The weapon's sounds in `bank`; `notes` are (anim slot, notetrack name, time fraction) of its first-person clips.
+/// The weapon's sounds in `bank`; `notes` are (anim slot, clip set, notetrack name, time fraction) of its
+/// first-person clips.
 pub fn weapon_sounds(
     capture: &Capture,
     bank: &mut Bank,
     names: &WeaponSoundNames,
-    notes: &[(u8, String, f32)],
+    notes: &[(u8, u8, String, f32)],
 ) -> WeaponSounds {
     let mut events = [NONE; wpk::sound::event::COUNT];
     for (e, n) in events.iter_mut().zip(&names.events) {
@@ -525,7 +535,7 @@ pub fn weapon_sounds(
         }
     }
     let mut out = Vec::new();
-    for (slot, note, time) in notes {
+    for (slot, set, note, time) in notes {
         if note.eq_ignore_ascii_case("end") {
             continue;
         }
@@ -540,14 +550,15 @@ pub fn weapon_sounds(
         if a != NONE {
             out.push(Note {
                 slot: *slot,
+                set: *set,
                 time: *time,
                 alias: a,
             });
         }
     }
     out.sort_by(|a, b| {
-        (a.slot, a.time)
-            .partial_cmp(&(b.slot, b.time))
+        (a.set, a.slot, a.time)
+            .partial_cmp(&(b.set, b.slot, b.time))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     WeaponSounds { events, notes: out }
@@ -672,7 +683,7 @@ mod tests {
             &c,
             &mut bank,
             &names,
-            &[(9, "MAG_OUT".into(), 0.4), (9, "end".into(), 1.0)],
+            &[(9, 2, "MAG_OUT".into(), 0.4), (9, 0, "end".into(), 1.0)],
         );
         assert_eq!(w.events[wpk::sound::event::FIRE], 0);
         assert_eq!(w.events[wpk::sound::event::RELOAD], NONE);
@@ -680,6 +691,7 @@ mod tests {
             w.notes,
             vec![Note {
                 slot: 9,
+                set: 2,
                 time: 0.4,
                 alias: 1
             }]

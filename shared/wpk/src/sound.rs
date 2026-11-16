@@ -159,6 +159,8 @@ pub mod event {
 pub struct Note {
     /// Animation slot (`view::slot`).
     pub slot: u8,
+    /// The clip set (`view::Clip::set`; the byte after the slot, 0 in older files).
+    pub set: u8,
     /// Where in the clip, as a fraction of its length (IW4 notify time).
     pub time: f32,
     pub alias: u16,
@@ -181,7 +183,7 @@ impl WeaponSounds {
         o.u16(self.notes.len() as u16);
         for n in &self.notes {
             o.push(n.slot);
-            o.push(0);
+            o.push(n.set);
             o.u16(n.alias);
             o.f32(n.time);
         }
@@ -200,6 +202,7 @@ impl WeaponSounds {
                 let r = b.get(at + 2 + i * 8..at + 2 + (i + 1) * 8)?;
                 Some(Note {
                     slot: r[0],
+                    set: r[1],
                     alias: be::u16(r, 2),
                     time: be::f32(r, 4),
                 })
@@ -248,11 +251,13 @@ mod tests {
             notes: alloc::vec![
                 Note {
                     slot: 5,
+                    set: 2,
                     time: 0.25,
                     alias: 9
                 },
                 Note {
                     slot: 5,
+                    set: 0,
                     time: 0.6,
                     alias: 10
                 }

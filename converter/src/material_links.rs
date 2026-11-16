@@ -119,6 +119,9 @@ pub struct ModelInfo {
     pub materials: Vec<usize>,
 }
 
+/// The right and left hands' animation names per slot.
+type HandAnims = (Vec<Option<String>>, Vec<Option<String>>);
+
 /// A weapon's first-person models (names) and its animation per IW4 slot (`weapAnimFiles`).
 #[derive(Clone, Debug, Default)]
 pub struct WeaponView {
@@ -127,6 +130,11 @@ pub struct WeaponView {
     /// The third-person (world) model: the first of `worldModel`.
     pub world: Option<String>,
     pub anims: Vec<Option<String>>,
+    /// The akimbo right and left hands' animations per slot (empty when the weapon names none).
+    pub right: Vec<Option<String>>,
+    pub left: Vec<Option<String>>,
+    /// An akimbo pair (IW4 `noDualWield` clear, both hands animated).
+    pub dual: bool,
     /// Bone names whose surfaces are hidden (attachment parts the base weapon doesn't show).
     pub hide: Vec<String>,
     /// Player-view sound aliases and the notetrack sound map.
@@ -391,6 +399,8 @@ pub struct Links {
     pub weapon_blockers: Vec<Vec<FxBlocker>>,
     /// First-person models and animations of each weapon (parallel to `weapons`).
     pub weapon_views: Vec<WeaponView>,
+    /// Hand animations by WeaponDef, for the weapon files that share one (`WeaponView::right` / `left`).
+    def_hands: HashMap<Ptr, HandAnims>,
     /// Every string table of the zone, by name (lower case).
     pub tables: HashMap<String, crate::ui_tables::Table>,
     /// Localized strings (`LocalizeEntry`) by reference name.
@@ -599,18 +609,40 @@ impl Links {
                 .and_then(text)
                 .filter(|n| !n.is_empty()),
         );
-        let anims = w.sz_xanims.map_or_else(Vec::new, |arr| {
-            (0..asset_iw4::size::WEAPON_ANIM_COUNT)
-                .map(|i| match s.ptr_at(arr, i * s.pointer_bytes()) {
-                    Ok(fastfile_iw4::ZonePtr::Offset(q)) => s
-                        .cstr(s.resolve_alias(q))
-                        .ok()
-                        .filter(|n| !n.is_empty())
-                        .map(str::to_owned),
-                    _ => None,
-                })
-                .collect()
-        });
+        let anim_list = |p: Option<Ptr>| -> Vec<Option<String>> {
+            p.map_or_else(Vec::new, |arr| {
+                (0..asset_iw4::size::WEAPON_ANIM_COUNT)
+                    .map(|i| match s.ptr_at(arr, i * s.pointer_bytes()) {
+                        Ok(fastfile_iw4::ZonePtr::Offset(q)) => s
+                            .cstr(s.resolve_alias(q))
+                            .ok()
+                            .filter(|n| !n.is_empty())
+                            .map(str::to_owned),
+                        _ => None,
+                    })
+                    .collect()
+            })
+        };
+        let anims = anim_list(w.sz_xanims);
+        // The akimbo hands' animations (IW4 `szXAnimsRightHanded` / `LeftHanded`, on the WeaponDef). A WeaponDef
+        // several weapon files share is read with the first; the others point back at it.
+        let (right, left) = (anim_list(w.sz_xanims_right), anim_list(w.sz_xanims_left));
+        let (right, left) = match w.weap_def {
+            Some(d) if right.is_empty() && left.is_empty() => {
+                self.def_hands.get(&d).cloned().unwrap_or_default()
+            }
+            Some(d) => {
+                self.def_hands.insert(d, (right.clone(), left.clone()));
+                (right, left)
+            }
+            None => (right, left),
+        };
+        // Dual wield: IW4's `noDualWield` clear and a right hand to animate (IW4L `fpv` `dual_animation`). In MW2
+        // only the akimbo files have it clear among the weapons that name hand animations.
+        let idle = usize::from(wpk::view::slot::IDLE);
+        let dual = !w.no_dual_wield
+            && right.get(idle).is_some_and(Option::is_some)
+            && left.get(idle).is_some_and(Option::is_some);
         // Bones whose surfaces this weapon hides (IW4 hideTags: 32 script strings).
         let hide = w.hide_tags.map_or_else(Vec::new, |arr| {
             (0..32)
@@ -708,6 +740,9 @@ impl Links {
             hands: w.hand_xmodel_name.and_then(text),
             world: w.world_model_names.into_iter().flatten().find_map(text),
             anims,
+            right,
+            left,
+            dual,
             hide,
             sounds: crate::sounds::WeaponSoundNames { events, note_map },
         });

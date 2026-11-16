@@ -197,13 +197,24 @@ shotgun `<weapon>_shotgun_attach_mp`) is carried as its own gun with its own amm
 secondary and each one's alternate). D-pad left on the 360 pad (MW2's `+actionslot 3`; Z + D-pad left on the GameCube
 pad, whose D-pad left calls killstreaks) switches to it and back through IW4L's alternate switch (`alternate_switch`:
 the weapon's `altDropTime`, then the alternate's `altRaiseTime`); Y from either goes to the other weapon. The alternate
-shows its weapon's first-person model and animations (the underbarrel's own fire / reload animations aren't played).
+shows its weapon's first-person model with its own animations (`gl_<weapon>_mp` and `<weapon>_shotgun_attach_mp` name
+their own clips on the weapon's model): its idle, fire, reload (the shotgun's segmented one too), raise and drop, from
+the weapon file's companion (`views/<base>@<set>.wpk`, `docs/pack.md`), fitted to the alternate's own timers; slots it
+shares with its weapon play the weapon's clips. It plays its own sounds (fire, reload, notetracks) from the companion.
+A weapon picked up off the ground brings its own alternate.
 
 Akimbo (`<weapon>_akimbo_mp`): both guns step through IW4L's `weapon_hands` (`last_weapon_hand` 1), each with its own
 magazine and the reserve shared (IW4L `spawn_clip_stock`); as MW2 binds a pad for akimbo, the fire trigger fires the
-right gun and the aim trigger the left. The first-person model shows the right gun only (the left hand's model and
-`szXAnimsLeftHanded` aren't converted), and the HUD counts the right magazine. The converter marks akimbo files by
-name: IW4L's IW4 capture reads no dual-wield flag (`dual_wield: false`).
+right gun and the aim trigger the left (it never aims down the sights: the player gets no ADS with a pair). In first
+person each gun is the weapon's model posed by its own hand's clips: IW4's `szXAnimsRightHanded` and
+`szXAnimsLeftHanded` each animate the whole hands-and-gun rig with one arm holding the gun on `tag_weapon` (the other
+arm out of view), so the left gun is the model drawn a second time with its own anim tree, driven by the left hand's
+`weap_anim` (it fires, reloads and raises apart from the right), its own muzzle flash and the same placement. The HUD
+shows both magazines (MW2's weapon bar item `AMMO_CLIP_GRAPHIC_LEFT`), and the low-ammo warning looks at both (IW4L
+`draw_player_weapon_low_ammo_warning`). The dual-wield flag comes from the weapon data: IW4's `noDualWield` (WeaponDef
+byte 0x66b, IW4L's `no_dual_wield`) is clear on every akimbo file and set on its base; IW4L's IW4 capture still says
+`dual_wield: false`, so the converter reads it as IW4L's `fpv` reads `dual_animation`: `noDualWield` clear and both
+hands' idle animations named (the killstreak and vehicle weapons that also have it clear name none).
 
 Riot shield (`game_core::shield`): carried in the hands it covers the front, as the other weapon the back (MW2's
 `trackRiotShield`: `tag_weapon_left` / `tag_shield_back`), for you and for bots (a bot holding one). A bullet that meets
@@ -219,7 +230,9 @@ draws on `tag_weapon_right`; only bots are drawn and they carry one weapon).
 These follow IW4L's code (ported: `sim/src/missile.rs` `fire_missile`, `sim/src/equipment.rs` `think_projectile`,
 `grenade_deadlines`, `bounce_missile`, `sim/src/missile_guidance.rs` `steer` / `turn_toward`, `sim/src/shield.rs`,
 `sim/src/combat.rs` `segment_is_shield`, `weapon_iw4` `weapon_hands` / `weapon_change`; `console/src/binds.rs`
-`gameplay_binding` for the akimbo triggers) with host tests against its values; a trace against MW2 is still to do.
+`gameplay_binding` for the akimbo triggers) with host tests against its values (the alternates' and akimbo hands'
+clips are fitted to their weapon's IW4L timers: `weapon_anim` `real_companion_sets_play_in_their_weapons_times`); a
+trace against MW2 is still to do.
 
 Solid colour screens (START goes back to the menu): red = no SD card or no such pack, magenta = the pack failed its
 checks (or is from an older converter: convert again), orange = out of memory or texture slots.
@@ -227,9 +240,15 @@ checks (or is from an older converter: convert again), orange = out of memory or
 ## Memory
 The two weapon files of the spawned class load into MEM2 above the map (about 2 × 1.8 MiB) and are swapped when a
 spawn brings other weapons (MEM2 and texture handles released back to a mark taken after the map).
-Launchers, alternates, akimbo and the shield add 14 KiB of MEM2 (`common.wpk`'s `WMSL`, 12 bytes a weapon); an
-alternate shows its weapon's file (no third weapon file), and the projectiles, the second hand and the Javelin's lock
-are a few hundred bytes of MEM1.
+Launchers, alternates, akimbo and the shield add 14 KiB of MEM2 (`common.wpk`'s `WMSL`, 12 bytes a weapon), and the
+projectiles, the second hand and the Javelin's lock a few hundred bytes of MEM1. The akimbo hands' and alternates'
+clips (and an alternate's sounds) are in companion files loaded only for a class that carries them (MW2 data, default
+converter flags, MEM2): an underbarrel grenade launcher 0.28-0.33 MiB (60-115 KiB of clips, the rest its sounds at
+32 kHz), an underbarrel shotgun 0.39-0.50 MiB (80-90 KiB of clips), an akimbo pair 0.08-0.19 MiB (clips only) plus the
+left gun's skinned positions (2 × 12 bytes a vertex, 0.13-0.16 MiB). So a class costs at most about 0.83 MiB more MEM2
+(a rifle with the underbarrel shotgun and an akimbo secondary), a class without them nothing. The clips also decode
+into the MEM1 heap at about the size of their `VCLP` section (key-framed tracks stay keyed): at most about 0.27 MiB
+for such a class. The weapon files themselves grow by their `VSET` (under 1 KiB).
 The pack's GPU data (textures, vertices, display lists) is read into MEM2 and used in place; the sections decoded at
 load (visibility, cell tables, collision, walk graph) are written last by the converter, read into a temporary MEM1
 buffer, decoded into MEM1 and the buffer freed. Only the part before them stays in memory, so everything read in place

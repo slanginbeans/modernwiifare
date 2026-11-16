@@ -187,6 +187,8 @@ pub struct Gun {
     launch: Option<Launch>,
     /// The left hand of an akimbo pair (IW4 hand 1; `hand` is the right, hand 0).
     left: Option<WeaponHandState>,
+    /// The hands the last step fired (right, left).
+    fired: [bool; 2],
 }
 
 impl Gun {
@@ -245,6 +247,7 @@ impl Gun {
             gun_recoil: GunRecoilPlacementState::default(),
             kick_scale: 1.0,
             launch: None,
+            fired: [false; 2],
         })
     }
 
@@ -562,6 +565,17 @@ impl Gun {
         self.hand.weap_anim
     }
 
+    /// The left gun's `weap_anim` word (an akimbo pair's hand 1, stepped by IW4L's `weapon_hands` on its own:
+    /// it fires, reloads and raises apart from the right).
+    pub fn left_weap_anim_raw(&self) -> Option<i32> {
+        self.left.map(|h| h.weap_anim)
+    }
+
+    /// Which guns the last step fired: the right (hand 0, every gun) and the left (an akimbo pair's hand 1).
+    pub fn fired_hands(&self) -> [bool; 2] {
+        self.fired
+    }
+
     /// A shot's recoil impulse (IW4L `ViewKickState::seed_fire_scaled`).
     fn seed_recoil(&mut self) {
         let Some(k) = self.kick else {
@@ -804,6 +818,9 @@ impl Gun {
         self.charge_out = Some(cmd.melee_charge);
         self.extra_pellets.clear();
         let [right_event, left_event] = events.map(|e| e.map(|(_, e)| e));
+        let shot_of =
+            |e: Option<WeaponTickEvent>| matches!(e, Some(WeaponTickEvent::ShotAccepted { .. }));
+        self.fired = [shot_of(right_event), shot_of(left_event)];
         // The left gun's shot: its bullets join this frame's extra pellets.
         if let Some(WeaponTickEvent::ShotAccepted { ammo_used }) = left_event
             && let Some(s) = self.fire(clip, ammo_used, eye, dir, right, up)
@@ -1259,9 +1276,15 @@ mod tests {
             ads: true,
             ..GunInput::default()
         };
+        let event = |raw: i32| raw as u32 & weapon_iw4::WEAP_ANIM_EVENT_MASK;
+        let right_anim = g.weap_anim_raw();
         let (_, s) = g.update(&mc, 16, &left, eye, x, Y, Z);
         assert!(s.is_some());
         assert_eq!((g.ammo().0, g.left_clip()), (14, Some(14)), "the left gun");
+        // The left hand's anim word plays its fire (IW4 event 2); the right hand's doesn't change.
+        assert_eq!(g.fired_hands(), [false, true]);
+        assert_eq!(g.left_weap_anim_raw().map(event), Some(2));
+        assert_eq!(g.weap_anim_raw(), right_anim);
         for _ in 0..10 {
             g.update(&mc, 16, &GunInput::default(), eye, x, Y, Z);
         }

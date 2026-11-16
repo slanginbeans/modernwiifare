@@ -13,7 +13,7 @@ use std::path::Path;
 use asset_iw4::size as sz;
 use fastfile_iw4::{Ptr, XAnimPartsGeometry, ZonePtr, ZoneStream};
 use wpk::records::{NONE, Wrap};
-use wpk::view::{Bone, Clip, SkinVertex, Surface, Track, ViewModel, quat_to_i16, slot};
+use wpk::view::{Bone, Clip, SkinVertex, Surface, Tolerance, Track, ViewModel, quat_to_i16, slot};
 use xmodel_runtime::{AnimClip, ClipNotify, RawXAnimParts};
 
 use crate::material_links::{BlendMode, Links};
@@ -432,6 +432,7 @@ fn bake(clip: &AnimClip, slot_id: u8, bone_of: &HashMap<&str, usize>, bind_rot: 
     }
     Clip {
         slot: slot_id,
+        set: 0,
         looping: clip.looping,
         framerate: rate,
         frames: frames as u16,
@@ -612,6 +613,119 @@ pub fn build(
         hidden_surfaces,
     };
     Ok((vm, report))
+}
+
+/// How a clip set fills a slot: its own clip (the animation's name), or the clip of an earlier slot of the set that
+/// names the same animation. A slot not listed plays set 0's clip (the same animation as the weapon's own, or a slot
+/// the set leaves out).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SetSlot {
+    Bake(String),
+    Alias(u8),
+}
+
+/// The slots of a clip set naming `anims` per slot, on a weapon whose own clips are `own`; `no_ads`: the ADS slots
+/// left out (an akimbo pair never aims in).
+pub fn set_slots(
+    own: &[Option<String>],
+    anims: &[Option<String>],
+    no_ads: bool,
+) -> Vec<(u8, SetSlot)> {
+    let named = |list: &[Option<String>], s: u8| list.get(usize::from(s)).cloned().flatten();
+    let mut out: Vec<(u8, SetSlot)> = Vec::new();
+    for s in slot::ALL {
+        if no_ads && s >= slot::ADS_FIRE {
+            continue;
+        }
+        let Some(name) = named(anims, s) else {
+            continue;
+        };
+        if named(own, s).is_some_and(|o| o.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        let earlier = out.iter().find_map(|(k, p)| match p {
+            SetSlot::Bake(n) if n.eq_ignore_ascii_case(&name) => Some(*k),
+            _ => None,
+        });
+        out.push((s, earlier.map_or(SetSlot::Bake(name), SetSlot::Alias)));
+    }
+    out
+}
+
+/// The first-person animations of other weapons on weapon `w`'s model (`vm`, built by [`build`]) as clip sets: each
+/// `(set, anims, no_ads)` names a clip per IW4 slot (an akimbo hand's, an alternate's), placed by [`set_slots`].
+/// Their tracks are key-framed within [`Tolerance::SLIM`] (the Wii samples keyed tracks as they are, so this saves
+/// memory there too). Returns the clips (checked against `vm`) and how many named animations weren't in the zone.
+pub fn clip_sets(
+    s: &ZoneStream<'_>,
+    links: &Links,
+    w: usize,
+    vm: &ViewModel,
+    sets: &[(u8, &[Option<String>], bool)],
+) -> Result<(Vec<Clip>, usize), String> {
+    let view = links.weapon_views.get(w).ok_or("no such weapon")?;
+    let model_named = |n: &Option<String>| {
+        let n = n.as_deref()?;
+        links.models.iter().position(|m| m.name == n)
+    };
+    // The bone names in `build`'s order: the hands', then the gun's.
+    let hands = model_named(&view.hands).ok_or("view hands model not in the zone")?;
+    let gun = model_named(&view.gun).ok_or("gun model not in the zone")?;
+    let mut names = read_bones(s, links, hands)?.names;
+    names.extend(read_bones(s, links, gun)?.names);
+    if names.len() != vm.bones.len() {
+        return Err("clip sets: bones differ from the model's".into());
+    }
+    let mut bone_of: HashMap<&str, usize> = HashMap::new();
+    for (i, n) in names.iter().enumerate() {
+        if !n.is_empty() {
+            bone_of.entry(n.as_str()).or_insert(i);
+        }
+    }
+    let bind_rot: Vec<Quat> = vm.bones.iter().map(|b| b.local_rot).collect();
+    let xanim: HashMap<String, &XAnimPartsGeometry> = links
+        .xanims
+        .iter()
+        .map(|(n, g)| (n.to_ascii_lowercase(), g))
+        .collect();
+    let mut missing = 0;
+    let mut out = Vec::new();
+    for &(set, anims, no_ads) in sets {
+        for (slot_id, plan) in set_slots(&view.anims, anims, no_ads) {
+            let name = match plan {
+                SetSlot::Alias(target) => {
+                    out.push(Clip::alias(slot_id, set, target));
+                    continue;
+                }
+                SetSlot::Bake(name) => name,
+            };
+            let Some(g) = xanim.get(&name.to_ascii_lowercase()) else {
+                missing += 1;
+                continue;
+            };
+            match AnimClip::from_parts(&raw_parts(s, links, &name, g)) {
+                Ok(clip) => {
+                    let mut c = bake(&clip, slot_id, &bone_of, &bind_rot);
+                    c.set = set;
+                    let frames = usize::from(c.frames);
+                    for t in &mut c.tracks {
+                        *t = t.keyed(frames, Tolerance::SLIM);
+                    }
+                    out.push(c);
+                }
+                Err(_) => missing += 1,
+            }
+        }
+    }
+    let mut check = ViewModel {
+        bones: vm.bones.clone(),
+        view_bone: vm.view_bone,
+        ..ViewModel::default()
+    };
+    if !check.add_clips(out.clone()) {
+        return Err("clip sets don't fit the model".into());
+    }
+    Ok((out, missing))
 }
 
 /// A player character for the map pack: body model `body` with head model `head` attached as IW4 attaches a head
@@ -921,6 +1035,7 @@ pub fn bake_player_anims(
     let mut missing = 0;
     let empty = Clip {
         slot: 0,
+        set: 0,
         looping: false,
         framerate: 30.0,
         frames: 1,
@@ -1002,6 +1117,7 @@ pub fn bake_player_anims(
         }
         vm.clips.push(Clip {
             slot: 0,
+            set: 0,
             looping: clip.looping,
             framerate: rate,
             frames: frames as u16,

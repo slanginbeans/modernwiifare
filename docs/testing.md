@@ -67,7 +67,13 @@ the Scout Sniper class's scoped rifle. The match log gets `warp`, `mantle_start`
 `tools/autoplay/weapons_rpg.txt`, `weapons_javelin.txt`, `weapons_alt.txt` and `weapons_shield.txt` test the
 launchers (a rocket into a bot; the Javelin's lock and top attack), the underbarrel launcher (Grenadier class, Z +
 D-pad left), and the riot shield and akimbo (Riot Control class); their match logs record `launch`, `javelin`,
-`alt_request`, `shield_block` and `akimbo_fire` events.
+`alt_request`, `shield_block` and `akimbo_fire` events. `weapons_akimbo_alt.txt` and `weapons_gl_reload.txt` check the
+first-person animations of the underbarrel shotgun (switch, fire, reload), akimbo (each gun firing, the pair's reload,
+both magazines on the HUD) and the underbarrel launcher (raise, fire, reload, drop); they need custom classes the
+defaults don't have: a `classes.dat` beside `boot.dol` whose first custom class is an M4 with the underbarrel shotgun
+and akimbo USPs, the second an M4 with the grenade launcher (make them in Create-a-Class and copy the card's
+`classes.dat` to `out\dolphin\sd\apps\mwf_game\`). Their logs show `view_companion <file> ok=1` for each companion
+file loaded.
 
 `tools/autoplay/hits_world.txt` plays a free-for-all on the first map (`-Maps mp_terminal` has glass): turns, walks,
 fires in bursts and holds Y now and then. Check the match log for `hit`, `hitvol` (hit volume cost every 5 s),
