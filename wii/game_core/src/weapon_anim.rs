@@ -129,6 +129,14 @@ fn clip_duration(c: &Clip) -> f32 {
 
 impl Animator {
     pub fn new(vm: &ViewModel, timers: Timers) -> Animator {
+        Animator::for_set(vm, timers, 0, true)
+    }
+
+    /// The anim tree for clip set `set` of the model (`wpk::view::Clip::set`: an alternate's or an akimbo hand's
+    /// clips): its clips, aliases played as their target slot's clip; with `fallback`, a slot the set has no clip
+    /// for plays set 0's (the converter leaves out what an alternate shares with its weapon). An akimbo hand's set
+    /// has no fallback: set 0 poses the gun in the right hand.
+    pub fn for_set(vm: &ViewModel, timers: Timers, set: u8, fallback: bool) -> Animator {
         let mut a = Animator {
             nodes: [Node {
                 rate: 1.0,
@@ -144,10 +152,32 @@ impl Animator {
             last_weap_anim: None,
             perks: [0; 2],
         };
+        let mut alias: [Option<u8>; SLOTS] = [None; SLOTS];
         for (i, c) in vm.clips.iter().enumerate() {
             let s = usize::from(c.slot);
-            if s < SLOTS && a.clip_of[s].is_none() {
-                a.clip_of[s] = Some(i);
+            if s >= SLOTS || c.set != set || a.clip_of[s].is_some() || alias[s].is_some() {
+                continue;
+            }
+            match c.alias_of() {
+                Some(t) => alias[s] = Some(t),
+                None => a.clip_of[s] = Some(i),
+            }
+        }
+        for (s, t) in alias.iter().enumerate() {
+            if let Some(t) = t.map(usize::from).filter(|&t| t < SLOTS) {
+                a.clip_of[s] = a.clip_of[t];
+            }
+        }
+        if fallback && set != 0 {
+            for (i, c) in vm.clips.iter().enumerate() {
+                let s = usize::from(c.slot);
+                if s < SLOTS && c.set == 0 && a.clip_of[s].is_none() && alias[s].is_none() {
+                    a.clip_of[s] = Some(i);
+                }
+            }
+        }
+        for s in 0..SLOTS {
+            if let Some(c) = a.clip_of[s].and_then(|i| vm.clips.get(i)) {
                 a.duration[s] = clip_duration(c);
                 a.looping[s] = c.looping;
             }
@@ -437,20 +467,20 @@ fn sample(c: &Clip, time: f32, bone: &mut dyn FnMut(usize, Quat, Option<[f32; 3]
         let a = libm::floorf(f) as usize;
         (a, (a + 1).min(n - 1), f - a as f32)
     };
+    // Fractional frame; keyed tracks (`Track::keys`) find their keys around it.
+    let f = a as f32 + if b > a { w } else { 0.0 };
     for tr in &c.tracks {
-        let at = |i: usize, len: usize| if len == 1 { 0 } else { i.min(len - 1) };
-        let qa = quat_from_i16(tr.rot[at(a, tr.rot.len())]);
-        let mut qb = quat_from_i16(tr.rot[at(b, tr.rot.len())]);
+        let (ra, rb, rw) = tr.at(f, tr.rot.len());
+        let qa = quat_from_i16(tr.rot[ra]);
+        let mut qb = quat_from_i16(tr.rot[rb]);
         if qa.iter().zip(&qb).map(|(x, y)| x * y).sum::<f32>() < 0.0 {
             qb = qb.map(|v| -v);
         }
-        let q: Quat = core::array::from_fn(|k| qa[k] + (qb[k] - qa[k]) * w);
+        let q: Quat = core::array::from_fn(|k| qa[k] + (qb[k] - qa[k]) * rw);
         let t = (!tr.trans.is_empty()).then(|| {
-            let (ta, tb) = (
-                tr.trans[at(a, tr.trans.len())],
-                tr.trans[at(b, tr.trans.len())],
-            );
-            core::array::from_fn(|k| ta[k] + (tb[k] - ta[k]) * w)
+            let (ta, tb, tw) = tr.at(f, tr.trans.len());
+            let (ta, tb) = (tr.trans[ta], tr.trans[tb]);
+            core::array::from_fn(|k| ta[k] + (tb[k] - ta[k]) * tw)
         });
         bone(usize::from(tr.bone), q, t);
     }
@@ -539,6 +569,7 @@ mod tests {
         };
         Clip {
             slot: s,
+            set: 0,
             looping,
             framerate: 10.0,
             frames,
@@ -613,6 +644,65 @@ mod tests {
         assert!((fast.action().unwrap().1 - 0.5).abs() < 1e-3);
     }
 
+    #[test]
+    fn clip_sets_pick_their_clips_aliases_and_fallbacks() {
+        let mut vm = model();
+        let in_set = |mut c: Clip, set: u8| {
+            c.set = set;
+            c
+        };
+        // Set 1 (an alternate): its own reload and raise, quick raise an alias of the raise; idle shared with set 0.
+        vm.clips
+            .push(in_set(clip(slot::RELOAD, 21, false, 10.0), 1));
+        vm.clips.push(in_set(clip(slot::RAISE, 6, false, 5.0), 1));
+        vm.clips
+            .push(Clip::alias(slot::QUICK_RAISE, 1, slot::RAISE));
+        // Set 2 (a left hand): idle only.
+        vm.clips.push(in_set(clip(slot::IDLE, 3, true, 1.0), 2));
+        let of = |a: &Animator, s: u8| a.clip_of[usize::from(s)];
+        let base = Animator::new(&vm, timers());
+        assert_eq!(of(&base, slot::RELOAD), Some(1));
+        assert_eq!(of(&base, slot::RAISE), None);
+        let alt = Animator::for_set(&vm, timers(), 1, true);
+        assert_eq!(of(&alt, slot::RELOAD), Some(3));
+        assert_eq!(of(&alt, slot::RAISE), Some(4));
+        assert_eq!(of(&alt, slot::QUICK_RAISE), Some(4), "alias");
+        assert!((alt.duration[usize::from(slot::QUICK_RAISE)] - 0.5).abs() < 1e-6);
+        assert_eq!(of(&alt, slot::IDLE), Some(0), "falls back to set 0");
+        let left = Animator::for_set(&vm, timers(), 2, false);
+        assert_eq!(of(&left, slot::IDLE), Some(6));
+        assert_eq!(of(&left, slot::RELOAD), None, "no fallback for a hand");
+        // The alternate's reload plays its own 2 s clip, fitted to the reload time.
+        let mut alt = alt;
+        alt.weap_anim(0xd, false);
+        alt.advance(1.0);
+        let (c, t) = alt.action().unwrap();
+        assert_eq!((vm.clips[c].set, vm.clips[c].slot), (1, slot::RELOAD));
+        assert!((t - 1.0).abs() < 1e-3, "{t}");
+    }
+
+    #[test]
+    fn keyed_tracks_sample_like_their_frames() {
+        // A clip whose turn is linear: key-framed it keeps two keys and samples the same pose.
+        let full = clip(slot::RELOAD, 11, false, 90.0);
+        let mut keyed = full.clone();
+        keyed.tracks[0] = keyed.tracks[0].keyed(11, wpk::view::Tolerance::SLIM);
+        assert!(keyed.tracks[0].keys.len() < 11);
+        let vm = |c: &Clip| ViewModel {
+            bones: model().bones,
+            clips: vec![c.clone()],
+            ..ViewModel::default()
+        };
+        for t in [0.0, 0.33, 0.5, 0.97] {
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            crate::viewmodel::pose(&vm(&full), Some((&full, t)), &mut a);
+            crate::viewmodel::pose(&vm(&keyed), Some((&keyed, t)), &mut b);
+            for (x, y) in a[1].iter().flatten().zip(b[1].iter().flatten()) {
+                assert!((x - y).abs() < 1e-3, "t {t}: {x} vs {y}");
+            }
+        }
+    }
+
     /// The M4's first-person file from a locally converted `out/packs/views/m4.wpk` (never in git; skipped when
     /// absent): its clips fill MW2's slots, and a reload plays through in the weapon's reload time.
     #[test]
@@ -666,6 +756,101 @@ mod tests {
         assert_eq!(world.len(), vm.bones.len());
         assert!(world.iter().flatten().flatten().all(|v| v.is_finite()));
     }
+
+    /// From a locally converted pack (never in git; skipped when absent): the M4's grenade launcher and an akimbo USP
+    /// pair play their own clip sets from the weapon files' companions, each action fitted to that weapon's IW4L
+    /// timer (the launcher's reload in `gl_m4_mp`'s reload time; each akimbo hand's reload in the pair's), and the
+    /// left hand's set poses the gun away from the right hand's.
+    #[test]
+    fn real_companion_sets_play_in_their_weapons_times() {
+        extern crate std;
+        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../../out/packs/");
+        let Ok(common) = std::fs::read(std::format!("{base}common.wpk")) else {
+            std::println!("no local pack, skipped");
+            return;
+        };
+        let cp = wpk::Pack::parse(&common, true).unwrap();
+        let weapons = cp.section(wpk::tag::WEAPONS).unwrap().data;
+        let facts = |n: &str| {
+            WeaponCombatFacts::try_from_captured(wpk::weapon::find(weapons, n).unwrap().combat)
+                .unwrap()
+        };
+        let load = |base_name: &str, variant: &str| {
+            let file = std::fs::read(std::format!("{base}views/{base_name}.wpk")).ok()?;
+            let pack = wpk::Pack::parse(&file, true).unwrap();
+            let mut vm =
+                ViewModel::decode(pack.section(wpk::tag::VIEWMODEL).unwrap().data).unwrap();
+            let sets = pack.section(wpk::tag::VIEW_SETS).unwrap().data;
+            let r = wpk::view::find_set(sets, variant).unwrap();
+            let name = wpk::view::companion_name(base_name, r.set);
+            let comp = std::fs::read(std::format!("{base}views/{name}.wpk")).unwrap();
+            let cpk = wpk::Pack::parse(&comp, true).unwrap();
+            let clips = wpk::view::decode_clip_set(cpk.section(wpk::tag::VIEW_CLIPS).unwrap().data)
+                .unwrap();
+            assert!(vm.add_clips(clips));
+            Some((vm, r))
+        };
+        // Plays weap_anim `event` to its end; the seconds it took.
+        let play = |a: &mut Animator, event: i32| {
+            a.weap_anim(event, false);
+            let mut t = 0.0;
+            while a.action().is_some() && t < 10.0 {
+                a.advance(1.0 / 120.0);
+                a.weap_anim(0, false);
+                t += 1.0 / 120.0;
+            }
+            t
+        };
+        let Some((vm, r)) = load("m4", "m4_gl_mp") else {
+            std::println!("no local view pack, skipped");
+            return;
+        };
+        assert!(r.alternate && r.left == 0);
+        let gl = facts("gl_m4_mp");
+        let mut a = Animator::for_set(&vm, Timers::of(&gl), r.set, true);
+        a.weap_anim(0xd, false);
+        let (clip, _) = a.action().unwrap();
+        assert_eq!(vm.clips[clip].set, r.set, "the launcher's own reload");
+        let mut a = Animator::for_set(&vm, Timers::of(&gl), r.set, true);
+        let t = play(&mut a, 0xd);
+        let want = gl.reload_time_ms as f32 / 1000.0;
+        assert!(
+            (t - want).abs() < 0.05,
+            "launcher reload {t} s, IW4L {want} s"
+        );
+        // The shotgun: another set of the same file.
+        let (_, rs) = load("m4", "m4_shotgun_mp").unwrap();
+        assert!(rs.alternate && rs.set != r.set);
+
+        let (vm, r) = load("usp", "usp_akimbo_mp").unwrap();
+        assert!(!r.alternate && r.left != 0);
+        let pair = facts("usp_akimbo_mp");
+        assert!(pair.dual_wield, "noDualWield clear in the user's data");
+        for set in [r.set, r.left] {
+            let mut a = Animator::for_set(&vm, Timers::of(&pair), set, false);
+            let t = play(&mut a, 0xd);
+            let want = pair.reload_time_ms as f32 / 1000.0;
+            assert!(
+                (t - want).abs() < 0.05,
+                "hand set {set}: reload {t} s, IW4L {want} s"
+            );
+            let fire = play(&mut a, 2);
+            assert!(fire > 0.0 && fire < 1.0, "fire {fire}");
+        }
+        // The two hands' idle poses put the gun (`tag_flash`) on opposite sides of the view.
+        let side = |set: u8| {
+            let a = Animator::for_set(&vm, Timers::of(&pair), set, false);
+            let mut playing = Vec::new();
+            let mut world = Vec::new();
+            a.playing(&mut playing);
+            pose_blend(&vm, &playing, &mut BlendScratch::default(), &mut world);
+            world[usize::from(vm.flash_bone)][1][3]
+        };
+        let (right, left) = (side(r.set), side(r.left));
+        std::println!("flash y: right {right}, left {left}");
+        assert!(right * left < 0.0, "right {right}, left {left}");
+    }
+
     #[test]
     fn ads_overlay_blends_the_ads_up_pose_by_the_fraction() {
         let vm = model();

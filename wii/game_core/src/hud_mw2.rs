@@ -30,6 +30,8 @@ pub struct Weapon<'a> {
     pub name: &'a str,
     pub display: &'a str,
     pub clip: i32,
+    /// The left gun's magazine (an akimbo pair; MW2's weapon bar shows it at `AMMO_CLIP_GRAPHIC_LEFT`).
+    pub left_clip: Option<i32>,
     pub stock: i32,
     pub clip_size: i32,
     /// IW4 weapon class (rifle 0, sniper 1, MG 2, SMG 3, spread 4, pistol 5, grenade 6, launcher 7 ...).
@@ -288,7 +290,12 @@ fn weaponbar(h: &mut Hud<'_>, s: &State<'_>) {
                 h.item_text(i, n.as_str(), if w.stock > 0 { WHITE } else { RED });
             }
             od::WEAPON_NAME => h.item_text(i, w.display, i.rgba),
-            od::AMMO_CLIP_GRAPHIC => clip_pips(h, i, &w),
+            od::AMMO_CLIP_GRAPHIC => clip_pips(h, i, &w, w.clip),
+            od::AMMO_CLIP_GRAPHIC_LEFT => {
+                if let Some(c) = w.left_clip {
+                    clip_pips(h, i, &w, c);
+                }
+            }
             od::OFFHAND_FRAG_ICON => frag.push(i),
             od::OFFHAND_SMOKE_ICON => smoke.push(i),
             od::LOW_AMMO_WARNING => low_ammo(h, i, &w, s.now),
@@ -311,8 +318,9 @@ fn weaponbar(h: &mut Hud<'_>, s: &State<'_>) {
     }
 }
 
-/// The magazine as rounds from the weapon bar's clip graphic point (right-aligned), spent rounds dimmed.
-fn clip_pips(h: &mut Hud<'_>, i: &HudItem, w: &Weapon<'_>) {
+/// A magazine of `clip` rounds from the weapon bar's clip graphic point (right-aligned), spent rounds dimmed (IW4L
+/// `hud::ammo::paint_clip_pips`: an akimbo pair's left magazine at its own item, laid out the same way).
+fn clip_pips(h: &mut Hud<'_>, i: &HudItem, w: &Weapon<'_>, clip: i32) {
     use hud_iw4 as ammo;
     let Some(m) = ammo::clip_pip_metrics(clip_kind(w.weap_class)) else {
         return;
@@ -320,7 +328,7 @@ fn clip_pips(h: &mut Hud<'_>, i: &HudItem, w: &Weapon<'_>) {
     let Some(t) = h.ui.icon(m.image) else {
         // No pip image: the magazine as a number.
         let mut n = Str::default();
-        n.num(w.clip.max(0) as u32);
+        n.num(clip.max(0) as u32);
         h.item_text(
             &HudItem {
                 text_scale: 0.5,
@@ -351,7 +359,7 @@ fn clip_pips(h: &mut Hud<'_>, i: &HudItem, w: &Weapon<'_>) {
     };
     for k in 0..size {
         let [x, y] = ammo::clip_pip_grid_xy(scaled, [base[0], base[1]], k, i32::from(i.halign));
-        let c = if k < w.clip { i.rgba | 0xff } else { empty };
+        let c = if k < clip { i.rgba | 0xff } else { empty };
         h.quad(
             [x, y, scaled.width, scaled.height],
             [0.0, 0.0, 1.0, 1.0],
@@ -364,10 +372,7 @@ fn clip_pips(h: &mut Hud<'_>, i: &HudItem, w: &Weapon<'_>) {
 /// MW2's "Reload" / "Low ammo" / "No ammo" at the centre, pulsing (`hud_iw4::ammo`).
 fn low_ammo(h: &mut Hud<'_>, i: &HudItem, w: &Weapon<'_>, now: u32) {
     use hud_iw4::{self as ammo, LowAmmoWarningKind as K};
-    if w.clip_size <= 0 || !ammo::check_player_for_low_clip(w.clip, w.clip_size, LOW_AMMO, false) {
-        return;
-    }
-    let Some(kind) = ammo::low_ammo_warning_kind(w.stock, w.clip, w.clip_size) else {
+    let Some(kind) = low_ammo_kind(w) else {
         return;
     };
     let (a, b) = ammo::low_ammo_warning_color_pair(kind);
@@ -389,6 +394,19 @@ fn low_ammo(h: &mut Hud<'_>, i: &HudItem, w: &Weapon<'_>, now: u32) {
         c,
         1,
     );
+}
+
+/// The low ammunition warning (IW4L `draw_player_weapon_low_ammo_warning`'s clip test: either hand of an akimbo pair
+/// low, then the kind from both magazines together).
+fn low_ammo_kind(w: &Weapon<'_>) -> Option<hud_iw4::LowAmmoWarningKind> {
+    if w.clip_size <= 0 {
+        return None;
+    }
+    let low = |c: i32| hud_iw4::check_player_for_low_clip(c, w.clip_size, LOW_AMMO, false);
+    if !low(w.clip) && !w.left_clip.is_some_and(low) {
+        return None;
+    }
+    hud_iw4::low_ammo_warning_kind(w.stock, w.clip + w.left_clip.unwrap_or(0), w.clip_size)
 }
 
 /// The weapon bar's items at fixed places (no layout in the pack).
@@ -832,6 +850,29 @@ mod tests {
             (tv.y - 456.0).abs() < 0.5,
             "5% up from the bottom: {}",
             tv.y
+        );
+    }
+
+    #[test]
+    fn an_akimbo_pair_warns_on_either_magazine() {
+        use hud_iw4::LowAmmoWarningKind as K;
+        let w = |clip, left_clip, stock| Weapon {
+            name: "usp_akimbo_mp",
+            display: "USP .45",
+            clip,
+            left_clip,
+            stock,
+            clip_size: 12,
+            weap_class: 5,
+        };
+        assert_eq!(low_ammo_kind(&w(12, Some(12), 24)), None);
+        // The left magazine low on its own: IW4L warns (the kind from both magazines).
+        assert_eq!(low_ammo_kind(&w(12, Some(1), 24)), Some(K::Reload));
+        assert_eq!(low_ammo_kind(&w(1, None, 24)), Some(K::Reload));
+        // The same rounds left in a single gun's magazine warn alone, not with the pair's other full one.
+        assert_eq!(
+            low_ammo_kind(&w(0, Some(0), 0)),
+            hud_iw4::low_ammo_warning_kind(0, 0, 12)
         );
     }
 

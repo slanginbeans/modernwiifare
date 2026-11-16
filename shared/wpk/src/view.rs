@@ -135,6 +135,61 @@ pub struct Track {
 }
 
 impl Track {
+    /// This per-frame track (`frames` frames) with only the key frames that interpolation between neighbours can't
+    /// reproduce within `tol` (rotation and translation together, one key list; the runtime samples keyed tracks
+    /// directly, so this also saves memory once decoded). Unchanged when keys wouldn't save space.
+    pub fn keyed(&self, frames: usize, tol: Tolerance) -> Track {
+        let n = self.rot.len().max(self.trans.len());
+        if !self.keys.is_empty() || n <= 2 || n != frames {
+            return self.clone();
+        }
+        let tol_r = f64::from(tol.rot_deg);
+        let spread = |len: usize| len == n;
+        let ok = |a: usize, b: usize| {
+            (a + 1..b).all(|m| {
+                let w = (m - a) as f32 / (b - a) as f32;
+                let rot_ok = !spread(self.rot.len())
+                    || compact::rot_err_deg(
+                        compact::lerp_rot(self.rot[a], self.rot[b], w),
+                        self.rot[m],
+                    ) <= tol_r;
+                let trans_ok = !spread(self.trans.len()) || {
+                    let (ta, tb, tm) = (self.trans[a], self.trans[b], self.trans[m]);
+                    let d: f32 = (0..3)
+                        .map(|k| {
+                            let e = ta[k] + (tb[k] - ta[k]) * w - tm[k];
+                            e * e
+                        })
+                        .sum();
+                    libm::sqrtf(d) <= tol.trans
+                };
+                rot_ok && trans_ok
+            })
+        };
+        let keys = compact::reduce(n, ok);
+        // A key costs its frame number (2 bytes) on top of its samples.
+        let per_frame =
+            8 * usize::from(spread(self.rot.len())) + 12 * usize::from(spread(self.trans.len()));
+        if keys.len() * (per_frame + 2) >= n * per_frame {
+            return self.clone();
+        }
+        let pick = |len: usize| len == n;
+        Track {
+            bone: self.bone,
+            rot: if pick(self.rot.len()) {
+                keys.iter().map(|&k| self.rot[k]).collect()
+            } else {
+                self.rot.clone()
+            },
+            trans: if pick(self.trans.len()) {
+                keys.iter().map(|&k| self.trans[k]).collect()
+            } else {
+                self.trans.clone()
+            },
+            keys: keys.iter().map(|&k| k as u16).collect(),
+        }
+    }
+
     /// The samples around frame `f` (fractional, in `0..=frames-1`) and the blend between them: indices into `rot`
     /// (a `len` of 1 gives index 0) for a track of `len` samples.
     pub fn at(&self, f: f32, len: usize) -> (usize, usize, f32) {
@@ -161,10 +216,105 @@ impl Track {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Clip {
     pub slot: u8,
+    /// Which weapon's animations this clip is (0: the weapon file's own; others: [`SetRecord`]'s akimbo hands and
+    /// alternates on the same model). On disk in bits 1..8 of the looping byte (older files: 0).
+    pub set: u8,
     pub looping: bool,
     pub framerate: f32,
     pub frames: u16,
     pub tracks: Vec<Track>,
+}
+
+/// A weapon whose first-person clips are sets of this model's (`VSET` in the weapon file; set 0, the file's own,
+/// is not listed), in the companion file `views/<base>@<set>.wpk` ([`companion_name`]): an akimbo pair `name`
+/// (`set` its right hand's clips, `left` its left hand's, both posing the whole model: the left gun is the model
+/// drawn a second time), or the alternate of weapon `name` (`alternate`: `set` its clips, `left` 0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetRecord {
+    /// The weapon's name (`usp_akimbo_mp`), NUL-padded.
+    pub name: [u8; SetRecord::NAME_LEN],
+    pub set: u8,
+    pub left: u8,
+    /// The clips are `name`'s alternate's (the underbarrel launcher or shotgun), not `name`'s.
+    pub alternate: bool,
+}
+
+/// The companion file of base weapon `base`'s set `set` (`views/<that>.wpk`): the clips (`VCLP`) and sounds of a
+/// [`SetRecord`].
+pub fn companion_name(base: &str, set: u8) -> alloc::string::String {
+    alloc::format!("{base}@{set}")
+}
+
+impl SetRecord {
+    pub const NAME_LEN: usize = 44;
+
+    pub fn new(name: &str, set: u8, left: u8, alternate: bool) -> SetRecord {
+        let mut n = [0u8; Self::NAME_LEN];
+        let len = name.len().min(Self::NAME_LEN);
+        n[..len].copy_from_slice(&name.as_bytes()[..len]);
+        SetRecord {
+            name: n,
+            set,
+            left,
+            alternate,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        let len = self
+            .name
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(Self::NAME_LEN);
+        core::str::from_utf8(&self.name[..len]).unwrap_or("")
+    }
+}
+
+impl crate::records::Record for SetRecord {
+    const LEN: usize = 48;
+    fn write(&self, o: &mut Vec<u8>) {
+        o.extend_from_slice(&self.name);
+        o.u8(self.set);
+        o.u8(self.left);
+        o.u8(u8::from(self.alternate));
+        o.u8(0);
+    }
+    fn read(b: &[u8]) -> Self {
+        let mut name = [0u8; Self::NAME_LEN];
+        name.copy_from_slice(&b[..Self::NAME_LEN]);
+        SetRecord {
+            name,
+            set: b[Self::NAME_LEN],
+            left: b[Self::NAME_LEN + 1],
+            alternate: b[Self::NAME_LEN + 2] != 0,
+        }
+    }
+}
+
+/// The record of weapon `name` in a `VSET` section's data.
+pub fn find_set(data: &[u8], name: &str) -> Option<SetRecord> {
+    crate::records::iter::<SetRecord>(data).find(|r| r.name() == name)
+}
+
+impl Clip {
+    /// A clip of set `set` that plays the same set's clip of slot `target` in slot `slot` (IW4 weapons name one
+    /// animation for several slots: raise, first raise, quick raise ...). Stored as a clip with no frames whose
+    /// frame rate is the target slot.
+    pub fn alias(slot: u8, set: u8, target: u8) -> Clip {
+        Clip {
+            slot,
+            set,
+            looping: false,
+            framerate: f32::from(target),
+            frames: 0,
+            tracks: Vec::new(),
+        }
+    }
+
+    /// The slot this clip plays the clip of, when it is an alias ([`Clip::alias`]).
+    pub fn alias_of(&self) -> Option<u8> {
+        (self.frames == 0 && self.tracks.is_empty()).then_some(self.framerate as u8)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -317,28 +467,7 @@ impl ViewModel {
             o.u8(s.blend);
             o.u8(s.alpha_ref);
         }
-        o.u16(self.clips.len() as u16);
-        for c in &self.clips {
-            o.u8(c.slot);
-            o.u8(u8::from(c.looping));
-            o.f32(c.framerate);
-            o.u16(c.frames);
-            o.u16(c.tracks.len() as u16);
-            for t in &c.tracks {
-                match compact {
-                    Some(tol) => compact::write_track(&mut o, t, usize::from(c.frames), tol),
-                    None => {
-                        o.u16(t.bone);
-                        o.u16(t.rot.len() as u16);
-                        o.u16(t.trans.len() as u16);
-                        o.u16(t.keys.len() as u16);
-                        t.rot.iter().flatten().for_each(|&x| o.u16(x as u16));
-                        t.trans.iter().flatten().for_each(|&x| o.f32(x));
-                        t.keys.iter().for_each(|&k| o.u16(k));
-                    }
-                }
-            }
-        }
+        write_clips(&mut o, &self.clips, compact);
         o
     }
 
@@ -393,56 +522,7 @@ impl ViewModel {
                 alpha_ref: r.u8()?,
             });
         }
-        let nc = usize::from(r.u16()?);
-        let mut clips = Vec::with_capacity(nc);
-        for _ in 0..nc {
-            let slot = r.u8()?;
-            let looping = r.u8()? != 0;
-            let framerate = r.f32()?;
-            let frames = r.u16()?;
-            let nt = usize::from(r.u16()?);
-            let mut tracks = Vec::with_capacity(nt);
-            for _ in 0..nt {
-                if format & flags::COMPACT_TRACKS != 0 {
-                    tracks.push(compact::read_track(&mut r, usize::from(frames))?);
-                    continue;
-                }
-                let bone = r.u16()?;
-                let nr = usize::from(r.u16()?);
-                let ntr = usize::from(r.u16()?);
-                let nk = usize::from(r.u16()?);
-                let mut rot = Vec::with_capacity(nr);
-                for _ in 0..nr {
-                    rot.push([
-                        r.u16()? as i16,
-                        r.u16()? as i16,
-                        r.u16()? as i16,
-                        r.u16()? as i16,
-                    ]);
-                }
-                let mut trans = Vec::with_capacity(ntr);
-                for _ in 0..ntr {
-                    trans.push([r.f32()?, r.f32()?, r.f32()?]);
-                }
-                let mut keys = Vec::with_capacity(nk);
-                for _ in 0..nk {
-                    keys.push(r.u16()?);
-                }
-                tracks.push(Track {
-                    bone,
-                    rot,
-                    trans,
-                    keys,
-                });
-            }
-            clips.push(Clip {
-                slot,
-                looping,
-                framerate,
-                frames,
-                tracks,
-            });
-        }
+        let clips = read_clips(&mut r, format)?;
         let v = ViewModel {
             bones,
             view_bone,
@@ -516,9 +596,119 @@ impl ViewModel {
         self.surfaces = surfaces;
     }
 
+    /// The weapon file's own clip of `slot` (set 0).
     pub fn clip(&self, slot: u8) -> Option<&Clip> {
-        self.clips.iter().find(|c| c.slot == slot)
+        self.clips.iter().find(|c| c.slot == slot && c.set == 0)
     }
+
+    /// Add `clips` (another weapon's sets on this model, [`decode_clip_set`]) when their tracks fit this model;
+    /// false (nothing added) otherwise.
+    pub fn add_clips(&mut self, clips: Vec<Clip>) -> bool {
+        let n = self.clips.len();
+        self.clips.extend(clips);
+        if self.validate().is_err() {
+            self.clips.truncate(n);
+            return false;
+        }
+        true
+    }
+}
+
+/// Clips alone (`VCLP` in a weapon's companion file: an akimbo pair's hands, an alternate), plain tracks (keyed ones
+/// keep their keys).
+pub fn encode_clip_set(clips: &[Clip]) -> Vec<u8> {
+    let mut o = Vec::new();
+    o.u16(0);
+    write_clips(&mut o, clips, None);
+    o
+}
+
+/// The clips of [`encode_clip_set`]; add them to the weapon's model with [`ViewModel::add_clips`].
+pub fn decode_clip_set(b: &[u8]) -> Result<Vec<Clip>, ViewError> {
+    let mut r = Rd { b, at: 0 };
+    let format = r.u16()?;
+    read_clips(&mut r, format)
+}
+
+fn write_clips(o: &mut Vec<u8>, clips: &[Clip], compact: Option<Tolerance>) {
+    o.u16(clips.len() as u16);
+    for c in clips {
+        o.u8(c.slot);
+        o.u8(u8::from(c.looping) | c.set << 1);
+        o.f32(c.framerate);
+        o.u16(c.frames);
+        o.u16(c.tracks.len() as u16);
+        for t in &c.tracks {
+            match compact {
+                Some(tol) => compact::write_track(o, t, usize::from(c.frames), tol),
+                None => {
+                    o.u16(t.bone);
+                    o.u16(t.rot.len() as u16);
+                    o.u16(t.trans.len() as u16);
+                    o.u16(t.keys.len() as u16);
+                    t.rot.iter().flatten().for_each(|&x| o.u16(x as u16));
+                    t.trans.iter().flatten().for_each(|&x| o.f32(x));
+                    t.keys.iter().for_each(|&k| o.u16(k));
+                }
+            }
+        }
+    }
+}
+
+fn read_clips(r: &mut Rd<'_>, format: u16) -> Result<Vec<Clip>, ViewError> {
+    let nc = usize::from(r.u16()?);
+    let mut clips = Vec::with_capacity(nc);
+    for _ in 0..nc {
+        let slot = r.u8()?;
+        let flags = r.u8()?;
+        let (looping, set) = (flags & 1 != 0, flags >> 1);
+        let framerate = r.f32()?;
+        let frames = r.u16()?;
+        let nt = usize::from(r.u16()?);
+        let mut tracks = Vec::with_capacity(nt);
+        for _ in 0..nt {
+            if format & flags::COMPACT_TRACKS != 0 {
+                tracks.push(compact::read_track(r, usize::from(frames))?);
+                continue;
+            }
+            let bone = r.u16()?;
+            let nr = usize::from(r.u16()?);
+            let ntr = usize::from(r.u16()?);
+            let nk = usize::from(r.u16()?);
+            let mut rot = Vec::with_capacity(nr);
+            for _ in 0..nr {
+                rot.push([
+                    r.u16()? as i16,
+                    r.u16()? as i16,
+                    r.u16()? as i16,
+                    r.u16()? as i16,
+                ]);
+            }
+            let mut trans = Vec::with_capacity(ntr);
+            for _ in 0..ntr {
+                trans.push([r.f32()?, r.f32()?, r.f32()?]);
+            }
+            let mut keys = Vec::with_capacity(nk);
+            for _ in 0..nk {
+                keys.push(r.u16()?);
+            }
+            tracks.push(Track {
+                bone,
+                rot,
+                trans,
+                keys,
+            });
+        }
+        clips.push(Clip {
+            slot,
+            set,
+            looping,
+            framerate,
+            frames,
+            tracks,
+        });
+    }
+    Ok(clips)
 }
 
 /// Compact tracks: keyframes chosen against the decoder's own interpolation, expanded back to every frame on load.
@@ -926,6 +1116,7 @@ mod tests {
             .collect();
         Clip {
             slot: slot::RELOAD,
+            set: 0,
             looping: false,
             framerate: 30.0,
             frames: n as u16,
@@ -1051,6 +1242,7 @@ mod tests {
         trans.push(key_tr[key_tr.len() - 1]);
         let clip = Clip {
             slot: slot::RELOAD,
+            set: 0,
             looping: false,
             framerate: 30.0,
             frames: n as u16,
@@ -1091,6 +1283,7 @@ mod tests {
         };
         let clip = Clip {
             slot: slot::IDLE,
+            set: 0,
             looping: true,
             framerate: 30.0,
             frames: 20,
@@ -1128,6 +1321,7 @@ mod tests {
             .collect();
         let v = model_with(vec![Clip {
             slot: slot::FIRE,
+            set: 0,
             looping: false,
             framerate: 30.0,
             frames: 12,
@@ -1143,6 +1337,55 @@ mod tests {
     }
 
     #[test]
+    fn clip_sets_round_trip_and_filter() {
+        let clip = |set: u8, looping: bool| Clip {
+            slot: slot::FIRE,
+            set,
+            looping,
+            framerate: 30.0,
+            frames: 2,
+            tracks: vec![],
+        };
+        let mut v = model_with(vec![clip(0, true)]);
+        let extra = vec![
+            clip(3, false),
+            clip(127, true),
+            Clip::alias(slot::RAISE, 3, slot::FIRE),
+        ];
+        for blob in [v.encode(), v.encode_compact(Tolerance::SLIM)] {
+            assert_eq!(ViewModel::decode(&blob).unwrap().clips, v.clips);
+        }
+        let back = decode_clip_set(&encode_clip_set(&extra)).unwrap();
+        assert_eq!(back, extra);
+        assert_eq!(back[2].alias_of(), Some(slot::FIRE));
+        assert!(v.add_clips(back));
+        assert_eq!(v.clips.len(), 4);
+        assert_eq!(v.clip(slot::FIRE).map(|c| c.set), Some(0));
+        // Tracks for bones the model hasn't: refused.
+        let mut bad = clip(4, false);
+        bad.tracks.push(Track {
+            bone: 999,
+            rot: vec![[0, 0, 0, 32767]],
+            trans: vec![],
+            keys: vec![],
+        });
+        assert!(!v.add_clips(vec![bad]));
+        assert_eq!(v.clips.len(), 4);
+        let r = SetRecord::new("usp_akimbo_xmags_mp", 1, 2, false);
+        let mut data = Vec::new();
+        crate::records::Record::write(&r, &mut data);
+        crate::records::Record::write(&SetRecord::new("m4_gl_mp", 3, 0, true), &mut data);
+        assert_eq!(data.len(), 2 * <SetRecord as crate::records::Record>::LEN);
+        assert_eq!(find_set(&data, "usp_akimbo_xmags_mp"), Some(r));
+        assert_eq!(
+            find_set(&data, "m4_gl_mp").map(|r| (r.set, r.left, r.alternate)),
+            Some((3, 0, true))
+        );
+        assert_eq!(find_set(&data, "gl_mp"), None);
+        assert_eq!(companion_name("m4", 3), "m4@3");
+    }
+
+    #[test]
     fn compact_rejects_bad_keys() {
         // A steady turn over 10 frames: two keys (frames 0 and 9) with a frame list.
         let ramp: Vec<[i16; 4]> = (0..10)
@@ -1150,6 +1393,7 @@ mod tests {
             .collect();
         let clip = Clip {
             slot: slot::FIRE,
+            set: 0,
             looping: false,
             framerate: 30.0,
             frames: 10,
@@ -1229,6 +1473,7 @@ mod tests {
             }],
             clips: vec![Clip {
                 slot: slot::IDLE,
+                set: 0,
                 looping: true,
                 framerate: 30.0,
                 frames: 2,

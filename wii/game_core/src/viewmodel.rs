@@ -126,20 +126,17 @@ pub fn pose(vm: &ViewModel, clip: Option<(&Clip, f32)>, out: &mut Vec<Mtx34>) {
     let mut delta: Vec<[f32; 3]> = alloc::vec![[0.0; 3]; n];
     if let Some((c, t)) = clip {
         let (a, b, w) = frames(c, t);
+        // Fractional frame; keyed tracks (`Track::keys`) find their keys around it.
+        let f = a as f32 + if b > a { w } else { 0.0 };
         for tr in &c.tracks {
             let bone = usize::from(tr.bone);
-            let at = |i: usize, len: usize| if len == 1 { 0 } else { i.min(len - 1) };
-            let (qa, qb) = (
-                quat_from_i16(tr.rot[at(a, tr.rot.len())]),
-                quat_from_i16(tr.rot[at(b, tr.rot.len())]),
-            );
-            rot[bone] = nlerp(qa, qb, w);
+            let (ra, rb, rw) = tr.at(f, tr.rot.len());
+            let (qa, qb) = (quat_from_i16(tr.rot[ra]), quat_from_i16(tr.rot[rb]));
+            rot[bone] = nlerp(qa, qb, rw);
             if !tr.trans.is_empty() {
-                let (ta, tb) = (
-                    tr.trans[at(a, tr.trans.len())],
-                    tr.trans[at(b, tr.trans.len())],
-                );
-                delta[bone] = core::array::from_fn(|k| ta[k] + (tb[k] - ta[k]) * w);
+                let (ta, tb, tw) = tr.at(f, tr.trans.len());
+                let (ta, tb) = (tr.trans[ta], tr.trans[tb]);
+                delta[bone] = core::array::from_fn(|k| ta[k] + (tb[k] - ta[k]) * tw);
             }
         }
     }
@@ -366,6 +363,7 @@ mod tests {
         let h = core::f32::consts::FRAC_1_SQRT_2;
         vm.clips.push(Clip {
             slot: 1,
+            set: 0,
             looping: false,
             framerate: 10.0,
             frames: 2,

@@ -1,0 +1,86 @@
+# Akimbo and the underbarrel attachments in first person (game_core::autoplay syntax). Needs custom classes the
+# defaults don't have: put a `classes.dat` on the card whose first custom class is an M4 with the underbarrel shotgun
+# and akimbo USPs (and, for weapons_akimbo_gl.txt, whose second is an M4 with the grenade launcher); docs/testing.md
+# says how. Bots don't attack and stand still, god mode; infinite ammo off so the magazines count down and reload.
+# The match log records "view_companion" (the companion file each weapon file loaded), "alt_request" and
+# "akimbo_fire".
+wait 90
+# DEBUG: reset, then bots don't attack, frozen, god mode.
+times 3 press DOWN
+press A
+wait 10
+times 18 press DOWN
+press A
+times 18 press UP
+press A
+press DOWN
+press A
+press DOWN
+press A
+press B
+wait 10
+times 3 press UP
+press A
+wait 10
+press A
+wait 700
+# The class menu: the first custom class.
+shot 01_class
+press A
+wait 150
+shot 02_m4
+log underbarrel shotgun
+press Z+LEFT
+wait 4
+shot 03_dropping
+wait 70
+shot 04_shotgun_raised
+log shotgun fire
+hold R
+wait 2
+release R
+wait 3
+shot 05_shotgun_fired
+wait 40
+log shotgun reload
+press X
+wait 15
+shot 06_shotgun_reload
+wait 30
+shot 07_shotgun_reload_late
+wait 120
+log back to the rifle
+press Z+LEFT
+wait 90
+shot 08_rifle_again
+log akimbo
+press Y
+wait 100
+shot 09_akimbo
+log right gun
+hold R
+wait 2
+release R
+wait 2
+shot 10_right_fired
+wait 20
+log left gun
+hold L
+wait 2
+release L
+wait 2
+shot 11_left_fired
+wait 20
+log both, then empty the magazines
+times 12 press L+R
+wait 10
+shot 12_akimbo_after_fire
+log akimbo reload
+press X
+wait 20
+shot 13_akimbo_reload
+wait 40
+shot 14_akimbo_reload_late
+wait 120
+shot 15_akimbo_reloaded
+quit

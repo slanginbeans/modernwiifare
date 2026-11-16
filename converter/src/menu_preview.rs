@@ -522,6 +522,7 @@ pub fn render_hud(common: &[u8], scoped: bool) -> Result<Image, String> {
             name: "m4_mp",
             display: "M4A1",
             clip: 24,
+            left_clip: None,
             stock: 120,
             clip_size: 30,
             weap_class: 0,

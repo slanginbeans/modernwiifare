@@ -2,7 +2,9 @@
 //! (`views/<weapon>.wpk`: model, textures, sounds) loaded into MEM2.
 //!
 //! The files load above a MEM2 and texture mark taken after the map, so a class with other weapons releases them
-//! and loads its own (the map's data below the marks stays). While the player is dead, [`Arsenal::prefetch`] streams
+//! and loads its own (the map's data below the marks stays). A weapon file's companion (`views/<base>@<set>.wpk`:
+//! an akimbo pair's hands' clips, an alternate's clips and sounds) loads after it when the class carries that
+//! variant, and the guns are bound to their clip sets ([`View::bind`]). While the player is dead, [`Arsenal::prefetch`] streams
 //! the next life's files a slice per frame, so the respawn doesn't stop on an SD read; whatever is left then loads
 //! at the respawn.
 
@@ -95,7 +97,7 @@ pub struct Arsenal {
     /// Which weapons were out this life (the first raise is the long one).
     used: [bool; 4],
     /// Per slot: the base weapon whose file is loaded and the weapon names it was loaded for (the first with a
-    /// `VHID` row picks the attachments shown).
+    /// `VHID` row picks the attachments shown; the first with a `VSET` record its companion).
     loaded: [Want; 2],
     mem2_mark: u32,
     tex_mark: i32,
@@ -106,9 +108,12 @@ pub struct Arsenal {
 /// Bytes read from the SD card per frame while streaming (~20-40 ms of SD time).
 const STREAM_SLICE: usize = 192 << 10;
 
-/// Weapon files streaming into MEM2: for `wanted`, slot `slot` next, the open file's buffer and how much of it is in.
+/// Weapon files streaming into MEM2: for `wanted`, slot `slot` next (0 and 1 the weapon files, 2 and 3 their
+/// companions), the open file's buffer and how much of it is in.
 struct Stream {
     wanted: [Want; 2],
+    /// Per slot, the companion found in its weapon file.
+    companion: [Option<alloc::string::String>; 2],
     slot: usize,
     file: Option<(AppPath, &'static mut [u8], usize)>,
 }
@@ -184,6 +189,7 @@ impl Arsenal {
         self.loaded = Default::default();
         self.stream = Some(Stream {
             wanted,
+            companion: [None, None],
             slot: 0,
             file: None,
         });
@@ -192,18 +198,23 @@ impl Arsenal {
     /// Read up to `budget` bytes of the stream (finish it with `usize::MAX`).
     fn step(&mut self, gfx: &mut impl game_core::gfx::Gfx, mut budget: usize) {
         while let Some(s) = self.stream.as_mut() {
-            if s.slot >= 2 {
+            if s.slot >= 4 {
                 self.loaded = core::mem::take(&mut s.wanted);
                 self.stream = None;
                 return;
             }
-            let name = s.wanted[s.slot].0;
-            if name.as_str().is_empty() {
+            // Slots 0 and 1: the weapon files; 2 and 3: their companions (when the class's variant has one).
+            let name: alloc::string::String = if s.slot < 2 {
+                s.wanted[s.slot].0.as_str().into()
+            } else {
+                s.companion[s.slot - 2].clone().unwrap_or_default()
+            };
+            if name.is_empty() {
                 s.slot += 1;
                 continue;
             }
             if s.file.is_none() {
-                s.file = open_view(name.as_str());
+                s.file = open_view(&name);
                 if s.file.is_none() {
                     // Not on the card: no first-person model for this slot.
                     s.slot += 1;
@@ -237,10 +248,25 @@ impl Arsenal {
                 let bytes: &'static [u8] = s.file.take().map_or(&[], |(_, b, _)| b);
                 s.slot += 1;
                 unsafe { ffi::mwf_flush(bytes.as_ptr(), bytes.len() as u32) };
-                self.views[slot] = wpk::Pack::parse(bytes, false)
-                    .is_ok()
-                    .then(|| View::load(bytes, gfx, &s.wanted[slot].1))
-                    .flatten();
+                if slot < 2 {
+                    self.views[slot] = wpk::Pack::parse(bytes, false)
+                        .is_ok()
+                        .then(|| View::load(bytes, gfx, &s.wanted[slot].1))
+                        .flatten();
+                    s.companion[slot] = self.views[slot].as_ref().and_then(|v| {
+                        v.companion_for(
+                            s.wanted[slot].0.as_str(),
+                            s.wanted[slot].1.iter().map(alloc::string::String::as_str),
+                        )
+                    });
+                } else if let Some(v) = self.views[slot - 2].as_mut() {
+                    let ok = v.attach(bytes);
+                    crate::devlog::event(
+                        0,
+                        "view_companion",
+                        format_args!("{name} ok={}", u8::from(ok)),
+                    );
+                }
             }
         }
     }
@@ -320,6 +346,18 @@ impl Arsenal {
             }
             self.step(gfx, usize::MAX);
         }
+        self.bind_views();
+    }
+
+    /// Bind each slot's guns to their clip sets in its first-person file (an akimbo pair's hands, an alternate).
+    fn bind_views(&mut self) {
+        for i in 0..2 {
+            let gun = self.guns[i].as_ref().map(|g| (g.weapon_index(), g.name()));
+            let alt = self.guns[i + 2].as_ref().map(Gun::weapon_index);
+            if let Some(v) = self.views[i].as_mut() {
+                v.bind(gun, alt);
+            }
+        }
     }
 
     /// Ask for the other weapon (IW4L's change: this one drops, then that one raises; asking again while it drops
@@ -386,8 +424,9 @@ impl Arsenal {
             g.adopt(&hand);
             self.active = other;
             self.used[other] = true;
+            let index = g.weapon_index();
             if let Some(v) = self.views[other % 2].as_mut() {
-                v.play_event_alias(wpk::sound::event::RAISE);
+                v.play_event_alias_for(index, wpk::sound::event::RAISE);
             }
         }
         self.pending = None;
@@ -428,6 +467,8 @@ impl Arsenal {
         g.set_penetration(penetration(t, index));
         g.set_ammo(clip, stock);
         let a = self.active;
+        // The slot whose file shows it (an alternate's is its weapon's).
+        let slot = a % 2;
         let old = self.guns[a].as_ref().map(|o| {
             let (c, s) = o.ammo();
             (o.weapon_index(), c, s)
@@ -439,10 +480,10 @@ impl Arsenal {
         self.used[a] = true;
         self.pending = None;
         // The slot's first-person file: the base weapon's (`m4_reflex_mp` → `m4`), showing this weapon's
-        // attachments.
+        // attachments, and its companion for this one.
         let base = rec.name().split('_').next().unwrap_or("");
         let mut wanted = self.loaded.clone();
-        wanted[a] = (
+        wanted[slot] = (
             Name::new(base),
             alloc::vec![alloc::string::String::from(rec.name())],
         );
@@ -450,13 +491,33 @@ impl Arsenal {
             self.begin(wanted);
             self.step(gfx, usize::MAX);
         }
-        if let Some(v) = self.views[a].as_mut() {
+        // The picked-up weapon's own alternate (its underbarrel), loaded full.
+        if a < 2 {
+            self.guns[a + 2] = self.guns[a]
+                .as_ref()
+                .map(Gun::alternate_weapon)
+                .filter(|&k| k != 0)
+                .and_then(|k| {
+                    let r = wpk::records::get::<wpk::weapon::WeaponRecord>(t.weapons, k as usize)?;
+                    let mut g = Gun::with_index(&r, k)?;
+                    g.set_kick(wpk::records::get::<wpk::weapon::KickRecord>(
+                        t.kicks, k as usize,
+                    ));
+                    g.set_moves(wpk::records::get(t.moves, k as usize));
+                    g.set_aim(wpk::records::get(t.aims, k as usize));
+                    g.set_penetration(penetration(t, k));
+                    Some(g)
+                });
+        }
+        self.bind_views();
+        if let Some(v) = self.views[slot].as_mut() {
             v.play_event_alias(wpk::sound::event::RAISE);
         }
         old
     }
 }
 
+/// Each slot's base weapon (its file) and its most specific weapon name (its companion's variant).
 /// Per slot (primary, secondary): the base weapon name (its first-person file) and the weapon names to try for its
 /// gun, `class`'s or the fallback weapon's.
 fn slot_names(

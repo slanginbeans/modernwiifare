@@ -1,0 +1,62 @@
+# The underbarrel grenade launcher's own first-person clips (game_core::autoplay syntax): the second custom class of
+# the `classes.dat` weapons_akimbo_alt.txt describes (an M4 with the grenade launcher). Bots don't attack and stand
+# still, god mode, infinite ammo off: Z + D-pad left to the launcher (its raise), a round down the map (its fire),
+# its reload, then back to the rifle (its drop). The match log records "view_companion", "alt_request", "launch".
+wait 90
+# DEBUG: reset, then bots don't attack, frozen, god mode.
+times 3 press DOWN
+press A
+wait 10
+times 18 press DOWN
+press A
+times 18 press UP
+press A
+press DOWN
+press A
+press DOWN
+press A
+press B
+wait 10
+times 3 press UP
+press A
+wait 10
+press A
+wait 700
+# The class menu: the second custom class.
+press DOWN
+wait 5
+shot 01_class
+press A
+wait 150
+shot 02_m4_gl
+log launcher
+press Z+LEFT
+wait 30
+shot 03_launcher_raising
+wait 50
+shot 04_launcher
+log launcher fire
+cstick 0 30
+wait 5
+cstick 0 0
+hold R
+wait 2
+release R
+wait 4
+shot 05_launcher_fired
+wait 30
+log launcher reload
+press X
+wait 20
+shot 06_launcher_reload
+wait 40
+shot 07_launcher_reload_late
+wait 150
+shot 08_launcher_reloaded
+log back to the rifle
+press Z+LEFT
+wait 20
+shot 09_launcher_dropping
+wait 80
+shot 10_rifle_again
+quit

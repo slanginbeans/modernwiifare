@@ -1961,7 +1961,10 @@ fn run_map(
             if options.southpaw { (c, m) } else { (m, c) }
         };
         let (forward, right) = look::to_move(main_stick);
-        let ads_held = ctl.held(act::ADS);
+        // The aim trigger. With an akimbo pair it is the left gun's fire (IW4L `gameplay_binding`: `+attack`), not
+        // aiming: MW2 never aims down the sights with two guns.
+        let aim_trigger = ctl.held(act::ADS);
+        let ads_held = aim_trigger && !arsenal.gun().is_some_and(Gun::akimbo);
         let offhand_ok = !downed || perk_set.last_stand_offhand;
         // A thrown knife in reach: X (MW2's use / reload button) picks it up instead of reloading.
         let knife_near = match (arena.as_ref(), clip.as_ref()) {
@@ -2417,7 +2420,7 @@ fn run_map(
                                 // melee and, without its Pro perk, the grenades (`DisableOffhandWeapons`).
                                 fire: ctl.held(act::FIRE) && lock_ok && oma.is_none() && !carrying,
                                 // Akimbo fires its left gun with the aim trigger.
-                                ads: ads_held,
+                                ads: aim_trigger,
                                 reload: reload_held && oma.is_none(),
                                 // Melee: the right stick click (360, Default) or D-pad right (GameCube).
                                 melee: ctl.held(act::MELEE) && oma.is_none() && !downed,
@@ -2573,17 +2576,26 @@ fn run_map(
                             if let Some(w) = ui::get().and_then(|u| u.pack.weapon(g.name())) {
                                 rumbler.play(w.fire_rumble, now, 1.0);
                             }
-                            // The first-person muzzle flash, in the gun's own (eye) space.
+                            // The first-person muzzle flash, in the gun's own (eye) space: at each gun that fired
+                            // (an akimbo pair's left gun has its own).
                             if let (Some(fx), Some(v)) =
                                 (effects.as_mut(), arsenal.views[arsenal.active % 2].as_ref())
-                                && let Some((o, f)) = v.muzzle_eye()
                             {
+                                let [right, left] = g.fired_hands();
                                 let e = fx.weapon(g.weapon_index(), effects::VIEW_FLASH);
-                                fx.play_view(e, o, f, now);
+                                for (fired, muzzle) in [
+                                    (right || !left, v.muzzle_eye()),
+                                    (left, v.muzzle_eye_left()),
+                                ] {
+                                    if let (true, Some((o, f))) = (fired, muzzle) {
+                                        fx.play_view(e, o, f, now);
+                                    }
+                                }
                             }
                             // Your tracer, from the gun's muzzle in the world (the eye without a viewmodel).
                             if let Some(fx) = effects.as_mut() {
-                                let start = arsenal.views[arsenal.active]
+                                // An alternate (2, 3) shows its weapon's file.
+                                let start = arsenal.views[arsenal.active % 2]
                                     .as_ref()
                                     .and_then(|v| v.muzzle_eye())
                                     .map_or(s.start, |(o, _)| {
@@ -2622,14 +2634,13 @@ fn run_map(
                         {
                             v.play(s);
                         }
+                        // The event's sound (an alternate's own, from its weapon file's companion).
                         if let (Some(e), Some(v), false) = (
                             event.as_ref(),
                             arsenal.views[a % 2].as_mut(),
                             raise_of_other,
-                        ) && let Some(s) =
-                            game_core::weapon_sound::for_event(&v.sounds, e, g.ammo().0)
-                        {
-                            v.play(s);
+                        ) {
+                            v.play_tick_event(g.weapon_index(), e, g.ammo().0);
                         }
                         if let Some(s) = shot.filter(|s| s.hit) {
                             impacts[next_impact] = (Some(s.end), now);
@@ -3770,7 +3781,7 @@ fn run_map(
                     let (clip, stock) = g.ammo();
                     (
                         g.name(),
-                        clip,
+                        (clip, g.left_clip()),
                         stock,
                         g.facts().clip_size,
                         g.facts().weap_class,
@@ -3786,16 +3797,19 @@ fn run_map(
                     now,
                     match_ms: clock.elapsed_ms(now),
                     safe_area: options.safe_area(),
-                    weapon: weapon.map(|(name, clip, stock, clip_size, weap_class)| {
-                        game_core::hud_mw2::Weapon {
-                            name,
-                            display: display.as_str(),
-                            clip,
-                            stock,
-                            clip_size,
-                            weap_class,
-                        }
-                    }),
+                    weapon: weapon.map(
+                        |(name, (clip, left_clip), stock, clip_size, weap_class)| {
+                            game_core::hud_mw2::Weapon {
+                                name,
+                                display: display.as_str(),
+                                clip,
+                                left_clip,
+                                stock,
+                                clip_size,
+                                weap_class,
+                            }
+                        },
+                    ),
                     grenades,
                     score: (score_pair.0, score_pair.1, a.limits.score_limit),
                     teams: a.mode.teams(),

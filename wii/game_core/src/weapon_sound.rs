@@ -30,18 +30,19 @@ pub fn for_event(sounds: &WeaponSounds, ev: &WeaponTickEvent, clip_after: i32) -
     }
 }
 
-/// Notes of clip `slot` passed going from fraction `from` (exclusive; `None` when the clip just started, so notes
+/// Notes of clip `slot` of clip set `set` (`wpk::view::Clip::set`) passed going from fraction `from` (exclusive; `None` when the clip just started, so notes
 /// at 0 play) to `to` (inclusive). A looping clip that wrapped (`to < from`) plays the notes after `from` and up
 /// to `to`.
 pub fn notes_passed(
     notes: &[Note],
+    set: u8,
     slot: u8,
     from: Option<f32>,
     to: f32,
 ) -> impl Iterator<Item = u16> + '_ {
     notes
         .iter()
-        .filter(move |n| n.slot == slot)
+        .filter(move |n| n.slot == slot && n.set == set)
         .filter_map(move |n| {
             let t = n.time;
             let hit = match from {
@@ -68,23 +69,34 @@ mod tests {
             notes: vec![
                 Note {
                     slot: 9,
+                    set: 0,
                     time: 0.0,
                     alias: 10,
                 },
                 Note {
                     slot: 9,
+                    set: 0,
                     time: 0.3,
                     alias: 11,
                 },
                 Note {
                     slot: 9,
+                    set: 0,
                     time: 0.7,
                     alias: 12,
                 },
                 Note {
                     slot: 1,
+                    set: 0,
                     time: 0.5,
                     alias: 13,
+                },
+                // An alternate's (or an akimbo hand's) reload: its own set.
+                Note {
+                    slot: 9,
+                    set: 2,
+                    time: 0.3,
+                    alias: 14,
                 },
             ],
         }
@@ -105,7 +117,8 @@ mod tests {
     #[test]
     fn notes_play_once_as_the_clip_passes_them() {
         let n = sounds().notes;
-        let got = |slot, from, to| notes_passed(&n, slot, from, to).collect::<alloc::vec::Vec<_>>();
+        let got =
+            |slot, from, to| notes_passed(&n, 0, slot, from, to).collect::<alloc::vec::Vec<_>>();
         assert_eq!(got(9, None, 0.1), [10]);
         assert_eq!(got(9, Some(0.1), 0.3), [11]);
         assert_eq!(got(9, Some(0.3), 0.6), []);
@@ -113,5 +126,8 @@ mod tests {
         // Wrapped loop of slot 1.
         assert_eq!(got(1, Some(0.9), 0.6), [13]);
         assert_eq!(got(1, Some(0.6), 0.9), []);
+        // Set 2's slot 9 plays its own note only.
+        let set2 = notes_passed(&n, 2, 9, None, 1.0).collect::<alloc::vec::Vec<_>>();
+        assert_eq!(set2, [14]);
     }
 }

@@ -4,7 +4,7 @@
 //! The mapping follows IW4L `crates/asset_game/src/weapon_catalog/capture_iw4.rs` (geometry → body facts) and
 //! `combat.rs` (`captured_input`), Apache-2.0, rev `acc57a5`, field for field. Not carried yet: variable scope zoom,
 //! the melee-charge animation flag. The alternate weapon's index and the akimbo flag are set after the weapon list is
-//! sorted (`main.rs`; [`is_akimbo`]).
+//! sorted (`main.rs`; the flag from IW4's `noDualWield`, `material_links::WeaponView::dual`).
 
 use fastfile_iw4::WeaponGeometry;
 use weapon_iw4::{CapturedCombatInput, EmptyReloadPolicy, LOCATION_DAMAGE_IDENTITY, ScopeZoom};
@@ -153,12 +153,6 @@ pub fn missile(g: &WeaponGeometry) -> wpk::weapon::MissileRecord {
         require_lock: g.require_lock_to_fire,
         stick_to_players: g.stick_to_players,
     }
-}
-
-/// Whether a weapon file is an akimbo pair (MW2's `<weapon>_akimbo[_<attachment>]_mp` files). IW4's loaded weapon
-/// data carries no dual-wield flag that IW4L reads (its IW4 capture sets `dual_wield: false`), so the name decides.
-pub fn is_akimbo(name: &str) -> bool {
-    name.contains("_akimbo")
 }
 
 /// ADS zoom and aim-assist ranges.

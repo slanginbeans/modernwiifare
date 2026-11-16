@@ -53,11 +53,12 @@ Gameplay, IW4L has code: ~~camera view bob / landing dip / hit view kick / idle 
 `viewweapon_land_origin_z`); ~~riot shield blocking~~ done (a box in front or on the back:
 bullets stop, blasts are hidden; not yet the shield model's own collision, ricochets, melee, the model on the
 character); weapon drops and pickups, Scavenger (`sim` item); ~~underbarrel grenade launcher / shotgun~~ done (D-pad
-left; not yet their own first-person animations) and ~~akimbo~~ done (two hands, shared reserve; not yet the left
-gun's first-person model, both magazines on the HUD, a dual-wield flag read from the data); ~~attachments on the
-gun~~ done (first person and in hands, `VHID` / `GUNH`; red dot and holographic reticles; not yet the thermal
-scope's thermal view, the heartbeat sensor's dots, a readable ACOG chevron at 480p, the underbarrel alternates'
-held model: `gl_<weapon>_mp` records take the `gl` base's model); hit boxes turned with the body and bullets through players (`sim`
+left; their own first-person animations and sounds from the weapon file's companion) and ~~akimbo~~ done (two hands,
+shared reserve, the left gun drawn and animated by its own hand, both magazines on the HUD, the flag from IW4's
+`noDualWield`; not yet: a trace against MW2); ~~attachments on the gun~~ done (first person and in hands, `VHID` /
+`GUNH`; red dot and holographic reticles; not yet the thermal scope's thermal view, the heartbeat sensor's dots, a
+readable ACOG chevron at 480p, the underbarrel alternates' held model: `gl_<weapon>_mp` records take the `gl` base's
+model); hit boxes turned with the body and bullets through players (`sim`
 bullet_collision, `fire_extended`); glass (`entity_iw4::glass`); ~~killcam~~ done (`killcam_iw4` timing over our pose ring);
 killstreak primitives (sentry turrets, Predator `remote_missile`, helicopters, care package marker; the flow is
 hand-written from MW2's scripts: done, see 11); ~~perks and deathstreaks~~ done (Cold-Blooded, Scrambler, Ninja Pro, Hardline,

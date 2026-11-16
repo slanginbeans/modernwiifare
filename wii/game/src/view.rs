@@ -8,6 +8,11 @@
 //!
 //! Lit by the map's light lattice at IW4's viewmodel lighting origin (`game_core::light`, [`View::tint`], set by
 //! the caller each frame; 0 is ×1).
+//!
+//! Other weapons on the same model (`VSET`): an akimbo pair and an alternate (the underbarrel launcher or shotgun)
+//! play their own clip sets, loaded from the weapon's companion file ([`View::attach`]) and bound to the guns that
+//! use them ([`View::bind`]). An akimbo pair's left gun is the model drawn a second time, posed by the left hand's
+//! clips and its own anim tree (IW4's `szXAnimsLeftHanded`, driven by the left hand's `weap_anim`).
 
 use alloc::vec::Vec;
 
@@ -19,7 +24,7 @@ use game_core::weapon_view::{WeaponView, eye_transform};
 use playerstate_iw4::PlayerState;
 use wpk::records::{self, NONE, TextureRecord, texture_flags};
 use wpk::sound::WeaponSounds;
-use wpk::view::ViewModel;
+use wpk::view::{SetRecord, ViewModel};
 use wpk::weapon::FpvRecord;
 
 use crate::ffi;
@@ -67,8 +72,33 @@ pub struct View {
     bank: Option<crate::sound::Sounds<'static>>,
     /// The clip notetracks follow (action, else idle) and its fraction at the last draw.
     last_frac: Option<(usize, f32)>,
-    /// Notetrack sounds the last draw passed.
-    notes_due: Vec<u16>,
+    /// Notetrack sounds the last draw passed (alias, from the companion's bank).
+    notes_due: Vec<(u16, bool)>,
+    /// The weapons whose clips are sets of this model (`VSET`), the sets bound to each gun (weapon index, set,
+    /// left hand's set or 0), and the companion file's sounds.
+    sets: Vec<SetRecord>,
+    binds: Vec<(u32, u8, u8)>,
+    companion: Option<Companion>,
+    /// The left gun of an akimbo pair: a second pose of the model.
+    left: Option<LeftGun>,
+}
+
+/// The sounds of a weapon's companion file (an alternate's own fire, reload ... and its clips' notetracks).
+struct Companion {
+    sounds: WeaponSounds,
+    bank: Option<crate::sound::Sounds<'static>>,
+    /// The clip sets it brought.
+    sets: Vec<u8>,
+}
+
+/// The left gun's pose: its anim tree, skinned positions (two sets, as the right's) and matrices.
+struct LeftGun {
+    positions: [&'static mut [[f32; 3]]; 2],
+    anim: Option<(u32, Animator)>,
+    playing: Vec<Playing>,
+    world: Vec<Mtx34>,
+    skin: Vec<Mtx34>,
+    last_frac: Option<(usize, f32)>,
 }
 
 /// `count` bytes of 32-byte aligned MEM2, released with the map.
@@ -100,6 +130,10 @@ impl View {
         let sounds = pack
             .section(wpk::tag::WEAPON_SOUNDS)
             .and_then(|s| WeaponSounds::decode(s.data))
+            .unwrap_or_default();
+        let sets = pack
+            .section(wpk::tag::VIEW_SETS)
+            .map(|s| records::iter::<SetRecord>(s.data).collect())
             .unwrap_or_default();
         let bank = crate::sound::Sounds::load(file);
         // Textures (the common pack is in MEM2, 32-byte aligned, flushed).
@@ -210,8 +244,134 @@ impl View {
             bank,
             last_frac: None,
             notes_due: Vec::new(),
+            sets,
+            binds: Vec::new(),
+            companion: None,
+            left: None,
             vm,
         })
+    }
+
+    /// The companion file to load for a slot carrying the first of `names` (weapon names, most specific first) that
+    /// this model has sets for: `views/<that>.wpk`'s name (`wpk::view::companion_name`).
+    pub fn companion_for<'n>(
+        &self,
+        base: &str,
+        names: impl IntoIterator<Item = &'n str>,
+    ) -> Option<alloc::string::String> {
+        names.into_iter().find_map(|n| {
+            let r = self.sets.iter().find(|r| r.name() == n)?;
+            Some(wpk::view::companion_name(base, r.set))
+        })
+    }
+
+    /// Add a companion file (`views/<base>@<set>.wpk`, in MEM2 and flushed): its clip sets join the model, its
+    /// sounds play for the guns bound to them. False when it doesn't fit this model.
+    pub fn attach(&mut self, file: &'static [u8]) -> bool {
+        let Ok(pack) = wpk::Pack::parse(file, false) else {
+            return false;
+        };
+        let Some(clips) = pack
+            .section(wpk::tag::VIEW_CLIPS)
+            .and_then(|s| wpk::view::decode_clip_set(s.data).ok())
+        else {
+            return false;
+        };
+        let mut sets: Vec<u8> = clips.iter().map(|c| c.set).collect();
+        sets.sort_unstable();
+        sets.dedup();
+        if !self.vm.add_clips(clips) {
+            return false;
+        }
+        let sounds = pack
+            .section(wpk::tag::WEAPON_SOUNDS)
+            .and_then(|s| WeaponSounds::decode(s.data))
+            .unwrap_or_default();
+        self.companion = Some(Companion {
+            sounds,
+            bank: crate::sound::Sounds::load(file),
+            sets,
+        });
+        // The anim trees rebuild with the new clips.
+        self.anim = None;
+        true
+    }
+
+    /// Bind the guns of a slot to their clip sets: `gun` (weapon index, name) and its alternate's weapon index.
+    /// An akimbo pair gets its hands' sets (and the left gun's pose), an alternate its set; others play set 0.
+    pub fn bind(&mut self, gun: Option<(u32, &str)>, alternate: Option<u32>) {
+        self.binds.clear();
+        let Some((index, name)) = gun else {
+            return;
+        };
+        let Some(r) = self.sets.iter().find(|r| r.name() == name).copied() else {
+            return;
+        };
+        let have = |s: u8| self.companion.as_ref().is_some_and(|c| c.sets.contains(&s));
+        if r.alternate {
+            if let Some(a) = alternate.filter(|_| have(r.set)) {
+                self.binds.push((a, r.set, 0));
+            }
+        } else if have(r.set) && have(r.left) {
+            self.binds.push((index, r.set, r.left));
+            if self.left.is_none() {
+                self.left = LeftGun::new(self.vm.verts.len(), &self.vm);
+            }
+        }
+        self.anim = None;
+    }
+
+    /// The clip sets weapon `index` plays (its set, its left hand's set or 0).
+    fn sets_of(&self, index: u32) -> (u8, u8) {
+        self.binds
+            .iter()
+            .find(|b| b.0 == index)
+            .map_or((0, 0), |b| (b.1, b.2))
+    }
+
+    /// The sounds weapon `index` plays: the companion's when it is bound to an alternate's set there.
+    fn sounds_of(
+        &mut self,
+        index: u32,
+    ) -> (&WeaponSounds, Option<&mut crate::sound::Sounds<'static>>) {
+        let (set, left) = self.sets_of(index);
+        match self.companion.as_mut() {
+            Some(c) if set != 0 && left == 0 && c.sets.contains(&set) => {
+                (&c.sounds, c.bank.as_mut())
+            }
+            _ => (&self.sounds, self.bank.as_mut()),
+        }
+    }
+
+    /// Play the sound of weapon event `ev` for weapon `index` (`game_core::weapon_sound::for_event`; an alternate's
+    /// from its companion file), `clip_after` rounds left in the magazine. False when it has none.
+    pub fn play_tick_event(
+        &mut self,
+        index: u32,
+        ev: &weapon_iw4::WeaponTickEvent,
+        clip_after: i32,
+    ) -> bool {
+        let (sounds, bank) = self.sounds_of(index);
+        match (
+            game_core::weapon_sound::for_event(sounds, ev, clip_after),
+            bank,
+        ) {
+            (Some(a), Some(b)) => {
+                b.play(a);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Play the sound of weapon event `e` (`wpk::sound::event`) for weapon `index` (an alternate's own).
+    pub fn play_event_alias_for(&mut self, index: u32, e: usize) {
+        let (sounds, bank) = self.sounds_of(index);
+        if let (Some(&a), Some(b)) = (sounds.events.get(e), bank)
+            && a != wpk::sound::NONE
+        {
+            b.play(a);
+        }
     }
 
     /// Play the sound of weapon event `e` (`wpk::sound::event`).
@@ -230,8 +390,13 @@ impl View {
 
     /// Play the notetrack sounds the last draw's animation passed.
     pub fn play_notes(&mut self) {
-        if let Some(b) = self.bank.as_mut() {
-            for &a in &self.notes_due {
+        for &(a, companion) in &self.notes_due {
+            let bank = if companion {
+                self.companion.as_mut().and_then(|c| c.bank.as_mut())
+            } else {
+                self.bank.as_mut()
+            };
+            if let Some(b) = bank {
                 b.play(a);
             }
         }
@@ -241,6 +406,14 @@ impl View {
     pub fn muzzle_eye(&self) -> Option<([f32; 3], [f32; 3])> {
         let eye = self.last_eye.as_ref()?;
         let m = vmod::mul(eye, self.world.get(usize::from(self.vm.flash_bone))?);
+        Some(([m[0][3], m[1][3], m[2][3]], [m[0][0], m[1][0], m[2][0]]))
+    }
+
+    /// The left gun's `tag_flash` in eye space (an akimbo pair), from the last draw.
+    pub fn muzzle_eye_left(&self) -> Option<([f32; 3], [f32; 3])> {
+        let eye = self.last_eye.as_ref()?;
+        let left = self.left.as_ref().filter(|l| l.anim.is_some())?;
+        let m = vmod::mul(eye, left.world.get(usize::from(self.vm.flash_bone))?);
         Some(([m[0][3], m[1][3], m[2][3]], [m[0][0], m[1][0], m[2][0]]))
     }
 
@@ -272,12 +445,23 @@ impl View {
         dt: f32,
         now_ms: u32,
     ) {
-        // The anim tree, built for this gun's timers (again when the gun changes).
+        // The anim tree, built for this gun's timers and clip set (again when the gun changes).
         let index = gun.weapon_index();
+        let (set, left_set) = self.sets_of(index);
         if self.anim.as_ref().is_none_or(|(w, _)| *w != index) {
-            self.anim = Some((index, Animator::new(&self.vm, Timers::of(gun.facts()))));
+            let timers = Timers::of(gun.facts());
+            // An akimbo hand's set is whole (no fallback to the right-handed clips of set 0).
+            self.anim = Some((
+                index,
+                Animator::for_set(&self.vm, timers, set, left_set == 0),
+            ));
             self.placement.reset();
             self.last_frac = None;
+            if let Some(l) = self.left.as_mut() {
+                l.anim = (left_set != 0)
+                    .then(|| (index, Animator::for_set(&self.vm, timers, left_set, false)));
+                l.last_frac = None;
+            }
         }
         let Some((_, anim)) = self.anim.as_mut() else {
             return;
@@ -289,6 +473,16 @@ impl View {
         anim.playing(&mut self.playing);
         // Notetrack sounds of the clip in front (the action, else the idle) passed since the last frame.
         self.notes_due.clear();
+        let companion_sets = self
+            .companion
+            .as_ref()
+            .map_or(&[][..], |c| c.sets.as_slice());
+        let notes_of = |c: &wpk::view::Clip| -> &[wpk::sound::Note] {
+            match self.companion.as_ref() {
+                Some(k) if companion_sets.contains(&c.set) => &k.sounds.notes,
+                _ => &self.sounds.notes,
+            }
+        };
         if let Some((clip, time)) = anim.action().or_else(|| anim.idle())
             && let Some(c) = self.vm.clips.get(clip)
         {
@@ -297,16 +491,53 @@ impl View {
                 .last_frac
                 .filter(|(k, f)| *k == clip && *f <= frac)
                 .map(|(_, f)| f);
-            self.notes_due.extend(game_core::weapon_sound::notes_passed(
-                &self.sounds.notes,
-                c.slot,
-                from,
-                frac,
-            ));
+            let from_companion = companion_sets.contains(&c.set);
+            self.notes_due.extend(
+                game_core::weapon_sound::notes_passed(notes_of(c), c.set, c.slot, from, frac)
+                    .map(|a| (a, from_companion)),
+            );
             self.last_frac = Some((clip, frac));
         }
         pose_blend(&self.vm, &self.playing, &mut self.blend, &mut self.world);
         vmod::skin_matrices(&self.vm, &self.world, &mut self.skin);
+        // The left gun of an akimbo pair: its own hand's state on its own tree.
+        let left_raw = gun.left_weap_anim_raw();
+        let left_drawn = match (self.left.as_mut(), left_raw) {
+            (Some(l), Some(raw)) if l.anim.is_some() => {
+                let Some((_, la)) = l.anim.as_mut() else {
+                    return;
+                };
+                la.set_perks(ps.perks);
+                la.weap_anim(raw, gun.left_clip() == Some(0));
+                la.advance(dt);
+                la.ads(ps.f_weapon_pos_frac);
+                la.playing(&mut l.playing);
+                if let Some((clip, time)) = la.action().or_else(|| la.idle())
+                    && let Some(c) = self.vm.clips.get(clip)
+                {
+                    let frac = vmod::fraction(c, time);
+                    let from = l
+                        .last_frac
+                        .filter(|(k, f)| *k == clip && *f <= frac)
+                        .map(|(_, f)| f);
+                    self.notes_due.extend(
+                        game_core::weapon_sound::notes_passed(
+                            &self.sounds.notes,
+                            c.set,
+                            c.slot,
+                            from,
+                            frac,
+                        )
+                        .map(|a| (a, false)),
+                    );
+                    l.last_frac = Some((clip, frac));
+                }
+                pose_blend(&self.vm, &l.playing, &mut self.blend, &mut l.world);
+                vmod::skin_matrices(&self.vm, &l.world, &mut l.skin);
+                true
+            }
+            _ => false,
+        };
         self.parity ^= 1;
         let positions = &mut self.positions[self.parity];
         // The blended vertices, skinned straight into this frame's MEM2 positions (the GPU may still read the other
@@ -314,9 +545,13 @@ impl View {
         vmod::skin_listed_into(&self.vm, &self.skin, &self.blended, positions);
         unsafe {
             ffi::mwf_flush(positions.as_ptr().cast(), (positions.len() * 12) as u32);
-            ffi::mwf_view_begin(FOVY, ZNEAR, ZFAR);
-            ffi::mwf_view_arrays_indexed(positions.as_ptr().cast(), self.attributes);
         }
+        if left_drawn && let Some(l) = self.left.as_mut() {
+            let lp = &mut l.positions[self.parity];
+            vmod::skin_listed_into(&self.vm, &l.skin, &self.blended, lp);
+            unsafe { ffi::mwf_flush(lp.as_ptr().cast(), (lp.len() * 12) as u32) };
+        }
+        unsafe { ffi::mwf_view_begin(FOVY, ZNEAR, ZFAR) };
         // MW2's weapon placement (sway, bob, idle sway, movement offsets, recoil) about the eye.
         let placed = self.placement.update(
             ps,
@@ -330,30 +565,89 @@ impl View {
         let eye = vmod::eye_from_model(&self.world[usize::from(self.vm.view_bone)]);
         let eye = vmod::mul(&eye_transform(&placed), &eye);
         self.last_eye = Some(eye);
-        let mut last: Option<DrawState> = None;
-        let mut loaded: [u16; vmod::MATRIX_SLOTS] = [u16::MAX - 1; vmod::MATRIX_SLOTS];
-        for d in &self.draws {
-            // This draw's matrices: model to eye, times the bone's skin matrix for rigid parts.
-            for (slot, &key) in d.slots.iter().enumerate() {
-                if loaded[slot] == key {
-                    continue;
-                }
-                loaded[slot] = key;
-                let m = match self.skin.get(usize::from(key)) {
-                    Some(s) if key != vmod::BLENDED => vmod::mul(&eye, s),
-                    _ => eye,
-                };
-                unsafe { ffi::mwf_pos_matrix_slot(&m, slot as u32) };
-            }
-            let state = DrawState {
-                tint: self.tint,
-                ..d.state
-            };
-            if last != Some(state) {
-                gfx.world_state(&state);
-                last = Some(state);
-            }
-            gfx.call_dl(d.dl);
+        let positions = self.positions[self.parity].as_ptr();
+        draw_copy(
+            gfx,
+            &self.draws,
+            &self.skin,
+            &eye,
+            self.tint,
+            positions,
+            self.attributes,
+        );
+        // The left gun: the same model, placed the same way (its clips put it in the left hand).
+        if left_drawn && let Some(l) = self.left.as_ref() {
+            let lp = l.positions[self.parity].as_ptr();
+            draw_copy(
+                gfx,
+                &self.draws,
+                &l.skin,
+                &eye,
+                self.tint,
+                lp,
+                self.attributes,
+            );
         }
+    }
+}
+
+/// Draw the model's display lists once: `positions` (this copy's skinned positions) with `attributes`, each rigid
+/// part placed by its bone's `skin` matrix about `eye`.
+fn draw_copy(
+    gfx: &mut impl Gfx,
+    draws: &[Draw],
+    skin: &[Mtx34],
+    eye: &Mtx34,
+    tint: u32,
+    positions: *const [f32; 3],
+    attributes: *const u8,
+) {
+    unsafe { ffi::mwf_view_arrays_indexed(positions.cast(), attributes) };
+    let mut last: Option<DrawState> = None;
+    let mut loaded: [u16; vmod::MATRIX_SLOTS] = [u16::MAX - 1; vmod::MATRIX_SLOTS];
+    for d in draws {
+        // This draw's matrices: model to eye, times the bone's skin matrix for rigid parts.
+        for (slot, &key) in d.slots.iter().enumerate() {
+            if loaded[slot] == key {
+                continue;
+            }
+            loaded[slot] = key;
+            let m = match skin.get(usize::from(key)) {
+                Some(s) if key != vmod::BLENDED => vmod::mul(eye, s),
+                _ => *eye,
+            };
+            unsafe { ffi::mwf_pos_matrix_slot(&m, slot as u32) };
+        }
+        let state = DrawState { tint, ..d.state };
+        if last != Some(state) {
+            gfx.world_state(&state);
+            last = Some(state);
+        }
+        gfx.call_dl(d.dl);
+    }
+}
+
+impl LeftGun {
+    /// Positions for `n` vertices (two sets in MEM2, the rigid ones in model space as loaded), or None when MEM2 is
+    /// short.
+    fn new(n: usize, vm: &ViewModel) -> Option<LeftGun> {
+        let set = || -> Option<&'static mut [[f32; 3]]> {
+            let b = mem2(n * 12)?;
+            let p =
+                unsafe { core::slice::from_raw_parts_mut(b.as_mut_ptr().cast::<[f32; 3]>(), n) };
+            for (o, v) in p.iter_mut().zip(&vm.verts) {
+                *o = v.pos;
+            }
+            unsafe { ffi::mwf_flush(p.as_ptr().cast(), (n * 12) as u32) };
+            Some(p)
+        };
+        Some(LeftGun {
+            positions: [set()?, set()?],
+            anim: None,
+            playing: Vec::with_capacity(8),
+            world: Vec::with_capacity(vm.bones.len()),
+            skin: Vec::with_capacity(vm.bones.len()),
+            last_frac: None,
+        })
     }
 }

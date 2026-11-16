@@ -88,12 +88,27 @@ ignores the section.
 | Tag | Records | Content |
 |---|---|---|
 | `TEXT` / `TXDA` | as in map packs | the first-person model's textures |
-| `VIEW` | one blob (`wpk::view::ViewModel`), `count` = the weapon's `WEAP` index | skinned first-person model and its clips; every attachment one of the weapon's variants shows (textures of attachment parts at most 128 texels; sight reticles at full size without mips, the reflex sight's tinted red) |
+| `VIEW` | one blob (`wpk::view::ViewModel`), `count` = the weapon's `WEAP` index | skinned first-person model and its clips (clip set 0: the weapon's own); every attachment one of the weapon's variants shows (textures of attachment parts at most 128 texels; sight reticles at full size without mips, the reflex sight's tinted red) |
 | `VHID` | `wpk::parts` (key: `parts::name_key` of the variant's name) | per attachment variant of the weapon, the `VIEW` surfaces it hides; the game keeps the first of the class's weapon names with a row |
-| `WSND` | one blob (`wpk::sound::WeaponSounds`) | the alias of each weapon event (fire, last shot, empty, reload, empty reload, raise, first raise, put away, melee swipe) and notetrack sounds (anim slot, time fraction, alias) |
+| `VSET` | `wpk::view::SetRecord` (48 B), only when it has any | the weapons whose clips are other sets of this model: an akimbo file (its name; `set` the right hand's clips, `left` the left hand's) or the weapon carrying an alternate on this model (`alternate` set; `set` the alternate's clips). Each record's clips are in the companion file `views/<base>@<set>.wpk` |
+| `WSND` | one blob (`wpk::sound::WeaponSounds`) | the alias of each weapon event (fire, last shot, empty, reload, empty reload, raise, first raise, put away, melee swipe) and notetrack sounds (anim slot, clip set, time fraction, alias; the akimbo hands' notetracks are here, they play this weapon's sounds) |
 | `SNDA` | `AliasRecord` (4 B) | a sound alias: a run of `SNDV` variants |
 | `SNDV` | `VariantRecord` (40 B) | a clip in `SNDD` (offset, padded length, rate), volume and pitch ranges, probability weight, falloff distances (min / max) |
 | `SNDD` | – | mono 16-bit big-endian PCM, each clip 32-byte aligned and padded to 32 (ASND DMA). Section `count` 1 (`wpk::adpcm::SNDD_ADPCM`, `--adpcm`): 4-bit DSP ADPCM clips instead (below) |
+
+A clip's header byte after its slot holds `looping` in bit 0 and its **clip set** in bits 1..7 (older files: 0); a
+`WSND` note's byte after its slot is its clip set (it was padding). A clip with no frames and no tracks is an
+**alias**: it plays its own set's clip of the slot in its frame rate field (`wpk::view::Clip::alias`; IW4 weapons name
+one animation for raise, first raise, quick raise ...).
+
+`views/<base>@<set>.wpk`, a weapon file's **companion** (`mwf-convert common` writes one per `VSET` record kind:
+an akimbo pair's two hands together, each alternate alone), loaded after the weapon file only when the class carries
+that weapon (`wii/game/src/arsenal.rs`):
+
+| Tag | Records | Content |
+|---|---|---|
+| `VCLP` | one blob (`wpk::view::encode_clip_set`: a format word, then clips as in `VIEW`) | the clips of its sets, on the weapon file's model (bones by index). Slots naming the same animation as the weapon's own are left out (set 0's plays); tracks key-framed within `Tolerance::SLIM` (`Track::keyed`), kept keyed in memory |
+| `WSND` / `SNDA` / `SNDV` / `SNDD` | as above | an alternate's own sounds (its fire, reload ... and its clips' notetracks), at most 32 kHz; empty for an akimbo pair |
 
 ### Smaller map packs (toggles, off by default)
 Three switches on `pack` (or in `builder.bat`), each folded into the map pack's stamp so turning it on or off rebuilds

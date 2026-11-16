@@ -1362,9 +1362,16 @@ fn run_common(args: &[String]) -> ExitCode {
             let mut tex = pack::Textures::default();
             tex.base_level_only = a.slim_views;
             match viewmodel::build(s, links, w, &variants, &index, &tex_dir, &mut tex) {
-                Ok((vm, report, parts)) => {
+                Ok((vm, mut report, parts)) => {
                     let view = &links.weapon_views[w];
-                    let notes = sounds::view_notes(s, links, view);
+                    let mut notes: Vec<_> = sounds::view_notes(s, links, view)
+                        .into_iter()
+                        .map(|(slot, n, t)| (slot, 0, n, t))
+                        .collect();
+                    // The akimbo hands and alternates on this model: their clips (and an alternate's sounds) in
+                    // companion files; the akimbo hands' notetracks play this weapon's sounds, from this file.
+                    let (companions, records) =
+                        companions(s, links, base, w, &vm, &mut report, &mut notes);
                     views.push(View {
                         base: base.clone(),
                         name,
@@ -1377,6 +1384,8 @@ fn run_common(args: &[String]) -> ExitCode {
                             .into_iter()
                             .map(|(v, bits)| (links.weapons[v].clone(), bits))
                             .collect(),
+                        sets: records,
+                        companions,
                     });
                 }
                 Err(e) => {
@@ -1500,7 +1509,7 @@ fn run_common(args: &[String]) -> ExitCode {
     both.dedup_by(|x, y| x.0.name == y.0.name);
     let (mut weapons, extra): (Vec<_>, Vec<_>) = both.into_iter().unzip();
     // Each weapon's alternate (`altWeapon`: the underbarrel launcher or shotgun) as its index in this sorted list (0:
-    // none; the first weapon is never an alternate), and the akimbo pairs (`weapons::is_akimbo`).
+    // none; the first weapon is never an alternate), and the akimbo pairs (IW4's `noDualWield` clear: `WeaponView::dual`).
     let index_of: HashMap<String, u32> = weapons
         .iter()
         .enumerate()
@@ -1520,7 +1529,11 @@ fn run_common(args: &[String]) -> ExitCode {
             w.combat.alternate_weapon = k;
             alts += 1;
         }
-        w.combat.dual_wield = weapons::is_akimbo(&name);
+        w.combat.dual_wield = links
+            .weapons
+            .iter()
+            .position(|n| *n == name)
+            .is_some_and(|i| links.weapon_views[i].dual);
     }
     println!("alternate weapons: {alts}");
     let kicks: Vec<_> = extra.iter().map(|e| e.0).collect();
@@ -2227,6 +2240,13 @@ fn run_common(args: &[String]) -> ExitCode {
             v.vm.encode()
         };
         b.section(wpk::tag::VIEWMODEL, w as u32, view_blob);
+        if !v.sets.is_empty() {
+            b.section(
+                wpk::tag::VIEW_SETS,
+                v.sets.len() as u32,
+                wpk::records::encode(&v.sets),
+            );
+        }
         b.section(wpk::tag::WEAPON_SOUNDS, w as u32, snd.encode());
         // The attachment variants' hidden surfaces, by name key.
         let rows: Vec<(u32, wpk::parts::Bits)> = v
@@ -2274,9 +2294,55 @@ fn run_common(args: &[String]) -> ExitCode {
         variants += bank.variants.len();
         missing_sounds += bank.missing;
         missing_clips += v.report.missing_clips;
+        for c in std::mem::take(&mut v.companions) {
+            let mut bank = sounds::Bank::default();
+            // Loaded beside the weapon file when a class carries the alternate: its sounds at most 32 kHz.
+            bank.max_rate = Some(sounds::SLIM_RATE);
+            bank.adpcm = a.adpcm;
+            bank.trim = a.trim_sounds;
+            let snd = sounds::weapon_sounds(&capture, &mut bank, &c.sounds, &c.notes);
+            let file = wpk::view::companion_name(&v.base, c.set);
+            let mut b = wpk::PackBuilder::new(&file);
+            b.section(
+                wpk::tag::VIEW_CLIPS,
+                c.clips.len() as u32,
+                wpk::view::encode_clip_set(&c.clips),
+            );
+            b.section(wpk::tag::WEAPON_SOUNDS, w as u32, snd.encode());
+            b.section(
+                wpk::tag::SOUND_ALIASES,
+                bank.aliases.len() as u32,
+                wpk::records::encode(&bank.aliases),
+            );
+            b.section(
+                wpk::tag::SOUND_VARIANTS,
+                bank.variants.len() as u32,
+                wpk::records::encode(&bank.variants),
+            );
+            views_report.sounds.merge(&bank.report());
+            b.section(
+                wpk::tag::SOUND_DATA,
+                sounds::data_count(&bank),
+                std::mem::take(&mut bank.data),
+            );
+            let bytes = b.finish();
+            if !write_file(&view_dir.join(format!("{file}.wpk")), &bytes) {
+                return ExitCode::FAILURE;
+            }
+            total += bytes.len();
+            views_report.companions += 1;
+            views_report.companion_bytes += bytes.len() as u64;
+            for (k, v) in section_sizes(&bytes) {
+                *views_report.sections.entry(k).or_default() += v;
+            }
+            variants += bank.variants.len();
+            missing_sounds += bank.missing;
+        }
     }
     println!(
-        "first-person weapons: {count} files ({failed} failed), {:.2} MiB, {variants} sound variants ({missing_sounds} aliases without a clip), {missing_clips} animations missing -> {}",
+        "first-person weapons: {count} files ({failed} failed) and {} companions ({:.2} MiB), {:.2} MiB, {variants} sound variants ({missing_sounds} aliases without a clip), {missing_clips} animations missing -> {}",
+        report.views.companions,
+        report.views.companion_bytes as f64 / (1024.0 * 1024.0),
         total as f64 / (1024.0 * 1024.0),
         view_dir.display()
     );
@@ -2329,6 +2395,9 @@ struct PlayerAnimReport {
 struct ViewFilesReport {
     files: usize,
     bytes: u64,
+    /// The companion files (`views/<base>@<set>.wpk`: akimbo hands' and alternates' clips and sounds), in `bytes`.
+    companions: usize,
+    companion_bytes: u64,
     sections: BTreeMap<String, u64>,
     textures: tex_report::Breakdown,
     sounds: sounds::BankReport,
@@ -2354,9 +2423,163 @@ struct View {
     report: viewmodel::ViewReport,
     tex: pack::Textures,
     sounds: sounds::WeaponSoundNames,
-    notes: Vec<(u8, String, f32)>,
+    /// (slot, clip set, notetrack, time) of its clips.
+    notes: Vec<(u8, u8, String, f32)>,
     /// Per weapon file sharing this model (by name): the `VIEW` surfaces it hides.
     parts: Vec<(String, wpk::parts::Bits)>,
+    /// The weapons whose clips are sets of this model (`VSET`), in `companions`.
+    sets: Vec<wpk::view::SetRecord>,
+    companions: Vec<Companion>,
+}
+
+/// A weapon file's companion (`views/<base>@<set>.wpk`): an akimbo pair's or an alternate's clips (`VCLP`) and the
+/// sounds they and that weapon play.
+struct Companion {
+    set: u8,
+    clips: Vec<wpk::view::Clip>,
+    sounds: sounds::WeaponSoundNames,
+    notes: Vec<(u8, u8, String, f32)>,
+}
+
+/// The companion files of base weapon `base` (first-person weapon `w`, model `vm`) and the `VSET` records naming
+/// them; clip counts and missing animations go into `report`, the akimbo hands' notetracks into `base_notes` (they
+/// play the weapon's own sounds, in its file).
+fn companions(
+    s: &fastfile_iw4::ZoneStream<'_>,
+    links: &material_links::Links,
+    base: &str,
+    w: usize,
+    vm: &wpk::view::ViewModel,
+    report: &mut viewmodel::ViewReport,
+    base_notes: &mut Vec<(u8, u8, String, f32)>,
+) -> (Vec<Companion>, Vec<wpk::view::SetRecord>) {
+    let (sets, records) = clip_sets(links, base, w);
+    let view = &links.weapon_views[w];
+    let mut out: Vec<Companion> = Vec::new();
+    // One file per record kind: an akimbo pair's two sets together, an alternate's alone.
+    let mut groups: Vec<(u8, Vec<u8>)> = Vec::new();
+    for r in &records {
+        let members = if r.left != 0 {
+            vec![r.set, r.left]
+        } else {
+            vec![r.set]
+        };
+        if !groups.iter().any(|(k, _)| *k == r.set) {
+            groups.push((r.set, members));
+        }
+    }
+    for (id, members) in groups {
+        let mut clips = Vec::new();
+        let mut notes = Vec::new();
+        let mut owner = None;
+        for (k, anims, o) in sets.iter().filter(|(k, _, _)| members.contains(k)) {
+            let no_ads = links.weapon_views[*o].dual;
+            match viewmodel::clip_sets(s, links, w, vm, &[(*k, anims.as_slice(), no_ads)]) {
+                Ok((c, missing)) => {
+                    report.missing_clips += missing;
+                    clips.extend(c);
+                    let into = if no_ads { &mut *base_notes } else { &mut notes };
+                    set_notes(s, links, view, anims, *k, no_ads, into);
+                    owner.get_or_insert(*o);
+                }
+                Err(e) => eprintln!("warning: {base}'s akimbo / alternate clips: {e}"),
+            }
+        }
+        let Some(o) = owner else { continue };
+        let own = &links.weapon_views[o];
+        // An alternate's own sounds (its fire, reload ...); an akimbo pair's are its weapon's (in the weapon file).
+        let sounds = if own.dual {
+            sounds::WeaponSoundNames::default()
+        } else {
+            own.sounds.clone()
+        };
+        report.clips += clips.len();
+        out.push(Companion {
+            set: id,
+            clips,
+            sounds,
+            notes,
+        });
+    }
+    (out, records)
+}
+
+/// A clip set and the weapon (an index into `links.weapons`) whose animation list it is.
+type ClipSet = (u8, Vec<Option<String>>, usize);
+
+/// The clip sets of base weapon `base`'s file (its first-person weapon `w`): the akimbo hands of its akimbo files
+/// (IW4 `szXAnimsRightHanded` / `LeftHanded`) and the alternates (`altWeapon`) of its files that show the same model,
+/// each distinct animation list once, and which weapon uses which (an alternate by the weapon carrying it).
+fn clip_sets(
+    links: &material_links::Links,
+    base: &str,
+    w: usize,
+) -> (Vec<ClipSet>, Vec<wpk::view::SetRecord>) {
+    let mut sets: Vec<ClipSet> = Vec::new();
+    let mut records: Vec<wpk::view::SetRecord> = Vec::new();
+    let own = &links.weapon_views[w];
+    let mut set_of = |anims: &Vec<Option<String>>, owner: usize| -> Option<u8> {
+        if let Some((k, _, _)) = sets.iter().find(|(_, a, _)| a == anims) {
+            return Some(*k);
+        }
+        // 127 sets fit the clip header (7 bits).
+        let k = u8::try_from(sets.len() + 1).ok().filter(|&k| k < 128)?;
+        sets.push((k, anims.clone(), owner));
+        Some(k)
+    };
+    let prefix = format!("{base}_");
+    for (i, name) in links.weapons.iter().enumerate() {
+        if !(name.starts_with(&prefix) && name.ends_with("_mp")) {
+            continue;
+        }
+        let v = &links.weapon_views[i];
+        if v.dual
+            && !records.iter().any(|r| r.name() == name)
+            && let (Some(r), Some(l)) = (set_of(&v.right, i), set_of(&v.left, i))
+        {
+            records.push(wpk::view::SetRecord::new(name, r, l, false));
+        }
+        let Some(alt) = links.weapon_alt.get(i).cloned().flatten() else {
+            continue;
+        };
+        let Some(j) = links.weapons.iter().position(|n| *n == alt) else {
+            continue;
+        };
+        let av = &links.weapon_views[j];
+        // An alternate on another model (none in MW2) keeps its weapon's clips.
+        if av.gun != own.gun || av.anims == own.anims || records.iter().any(|r| r.name() == name) {
+            continue;
+        }
+        // Keyed by the weapon carrying it (the Wii knows the class's weapon names before its guns are built).
+        if let Some(k) = set_of(&av.anims, j) {
+            records.push(wpk::view::SetRecord::new(name, k, 0, true));
+        }
+    }
+    (sets, records)
+}
+
+/// The notetracks of clip set `set` (animations `anims`) into `notes`: those of the slots the set bakes
+/// (`viewmodel::set_slots`; an alias plays its target's clip, with its notes, and a slot left out set 0's).
+#[allow(clippy::too_many_arguments)]
+fn set_notes(
+    s: &fastfile_iw4::ZoneStream<'_>,
+    links: &material_links::Links,
+    view: &material_links::WeaponView,
+    anims: &[Option<String>],
+    set: u8,
+    no_ads: bool,
+    notes: &mut Vec<(u8, u8, String, f32)>,
+) {
+    let baked: Vec<u8> = viewmodel::set_slots(&view.anims, anims, no_ads)
+        .into_iter()
+        .filter(|(_, p)| matches!(p, viewmodel::SetSlot::Bake(_)))
+        .map(|(k, _)| k)
+        .collect();
+    for (slot, n, t) in sounds::anim_notes(s, links, anims) {
+        if baked.contains(&slot) {
+            notes.push((slot, set, n, t));
+        }
+    }
 }
 
 /// Write `bytes` to `path`, creating its folder; false (with a message) on failure.
