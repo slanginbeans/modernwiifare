@@ -1200,6 +1200,14 @@ impl Arena {
         }
     }
 
+    /// Fighter `i` lands for `d` fall damage (`MOD_FALLING`: Last Stand can send it down).
+    pub fn fall_damage(&mut self, i: usize, d: i32, now: u32, out: &mut Vec<Event>) {
+        if d > 0 {
+            let dir = [0.0, 0.0, -1.0];
+            self.hurt(i, i, d, damage::hitloc::NONE, dir, now, out, Means::Falling);
+        }
+    }
+
     /// Run last stand at `now` (`lastStandTimer`): Final Stand gets back up after its time (`lastStandBleedOut` with
     /// revive: full health, the perk spent); Last Stand bleeds out after its time, or once the human held use
     /// (`human_use`) for the give-up time (`lastStandAllowSuicide`), the death credited to whoever put them down.

@@ -285,6 +285,13 @@ impl Killcam {
         start.wrapping_add((self.played(now.wrapping_sub(self.start_ms)) * 1000.0) as u32)
     }
 
+    /// A clock for the replay's animations: wall time at the start plus the archive played (it only moves forward,
+    /// and slows with the final killcam).
+    pub fn anim_ms(&self, now: u32) -> u32 {
+        self.start_ms
+            .wrapping_add((self.played(now.wrapping_sub(self.start_ms)) * 1000.0) as u32)
+    }
+
     /// Whether it has played out (`waittillKillcamOver`: `killcamlength - 0.05`).
     pub fn over(&self, now: u32) -> bool {
         self.played(now.wrapping_sub(self.start_ms))
