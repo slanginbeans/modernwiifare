@@ -1777,13 +1777,20 @@ fn run_map(
                     cam.pitch += view_pose.angles[0];
                     cam.yaw += view_pose.angles[1];
                     cam.roll = view_pose.angles[2];
+                    // A warp or spawn resets the count: only a new landing logs.
                     if view_kick.landings != landings_logged {
+                        let landed = view_kick.landings > landings_logged;
                         landings_logged = view_kick.landings;
-                        devlog::event(
-                            now,
-                            "land_dip",
-                            format_args!("dip={} z={:.1}", view_kick.land_view_dip, p.ps.origin[2]),
-                        );
+                        if landed {
+                            devlog::event(
+                                now,
+                                "land_dip",
+                                format_args!(
+                                    "dip={} z={:.1}",
+                                    view_kick.land_view_dip, p.ps.origin[2]
+                                ),
+                            );
+                        }
                     }
                     // Holding breath, for the log (IW4 `WEAPON_FLAG_HOLD_BREATH`).
                     let holding = p.ps.weap_flags & playerstate_iw4::weap_flags::HOLD_BREATH != 0;
