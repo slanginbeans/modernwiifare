@@ -156,8 +156,8 @@ models are converted; their explosions are MW2's effects (below). Their sounds p
 it lands. Special grenades: the flashbang blinds by distance and where you look (IW4L's flashbang amounts, then
 `_flashgrenades.gsc`'s duration; a white-out by the shock file's fade times; flashed bots see nothing); the stun
 grenade's shock caps how fast you can turn (its `.shock` file's look control: 75°/s in MW2's, easing off over its last two seconds; the stick doesn't take the file's mouse sensitivity scale) and slows movement for `2 + 4 × closeness` seconds (`_weapons.gsc`). Teammates' flashes and stuns
-don't affect you. The throwing knife flies as IW4L's knife does (no fuse; it sticks in what it hits square, skips off what it glances, lies where it slides to a stop), kills whoever it passes through with the weapon's damage, then drops; hold X over a knife you can carry (within 90 units, in sight) for a quarter second to pick it back up (IW4L's use-item rule; X doesn't reload while one is in reach). Claymores and C4 stick as IW4L's equipment does (a claymore to the ground, facing your throw; C4 to anything) and, without a timed detonation, lose their fuse once stuck. A claymore trips on an enemy moving inside its trigger, far enough ahead and inside its cone, in its sight (_weapons.gsc's radius, cone, minimum distance and grace period), then goes off with the weapon's 60° blast cone; C4 goes off when you double-tap X (pressed under 0.5 s, again within 0.5 s, watchC4AltDetonate). Two of each at once (scr_maxPerPlayerExplosives): a third blows the oldest; your charges go when you respawn. The smoke grenade waits until it lands (IW4L), then lays MW2's smoke: the particles of its effect's sight-blocking elements (WSMK: how many, where around the blast, their delays, lives, size and alpha curves), and a sight line through them loses each particle's alpha as IW4L's `get_client_visibility` takes it (bots can't see you once it drops under IW4L's threshold: about 2.75 to 10 s after it lands). Deviation: MW2's smoke elements have no distance fade, which IW4L's `vis_blocker_add_prepared` treats as not blocking at all; here they block at full strength. The particles show as see-through grey boxes until the smoke sprites are converted, and don't drift. Tactical insertion, tactical insertion, blast shield, smoke and deathstreaks are
-chosen and saved but do nothing yet.
+don't affect you. The throwing knife flies as IW4L's knife does (no fuse; it sticks in what it hits square, skips off what it glances, lies where it slides to a stop), kills whoever it passes through with the weapon's damage, then drops; hold X over a knife you can carry (within 90 units, in sight) for a quarter second to pick it back up (IW4L's use-item rule; X doesn't reload while one is in reach). Claymores and C4 stick as IW4L's equipment does (a claymore to the ground, facing your throw; C4 to anything) and, without a timed detonation, lose their fuse once stuck. A claymore trips on an enemy moving inside its trigger, far enough ahead and inside its cone, in its sight (_weapons.gsc's radius, cone, minimum distance and grace period), then goes off with the weapon's 60° blast cone; C4 goes off when you double-tap X (pressed under 0.5 s, again within 0.5 s, watchC4AltDetonate). Two of each at once (scr_maxPerPlayerExplosives): a third blows the oldest; your charges go when you respawn. The smoke grenade waits until it lands (IW4L), then lays MW2's smoke: the particles of its effect's sight-blocking elements (WSMK: how many, where around the blast, their delays, lives, size and alpha curves), and a sight line through them loses each particle's alpha as IW4L's `get_client_visibility` takes it (bots can't see you once it drops under IW4L's threshold: about 2.75 to 10 s after it lands). Deviation: MW2's smoke elements have no distance fade, which IW4L's `vis_blocker_add_prepared` treats as not blocking at all; here they block at full strength. The particles show as see-through grey boxes until the smoke sprites are converted, and don't drift. Tactical insertion and blast shield are
+chosen and saved but do nothing yet (deathstreaks: see Life and match).
 Weapons with attachments use the attachment variant's combat numbers (`m4_acog_mp` ...) but the base weapon's
 first-person model.
 
@@ -274,8 +274,10 @@ feed, and hits show MW2's hitmarker.
 
 ## Life and match
 Health 100; fall damage from IW4L's crash land (falls under 128 units are free, 300 and over kill); dropping 2048
-units below the lowest spawn point kills (MW2 uses trigger volumes). A death shows "YOU DIED", then you respawn at
-the spawn MW2's free-for-all weighting picks after 3 s, with a fresh gun. Health regenerates as MW2's
+units below the lowest spawn point kills (MW2 uses trigger volumes). A death runs MW2's death sequence (IW4L
+`killcam_iw4::DeathSequence`: a quarter second to watch yourself die, a double tap of X cancels the killcam, the
+1.5 s death delay), then the killcam (`game_core::killcam`, below), then you respawn at the spawn MW2's
+free-for-all weighting picks, with a fresh gun (no respawn delay: `scr_player_respawndelay` is 0 in MW2). Health regenerates as MW2's
 `_healthoverlay.gsc` does (numbers read from your scripts). A red vignette shows missing health and flashes on
 damage; the bottom left shows the match clock (the time limit from your `dm.gsc`) and deaths. A free-flying player
 (D-pad up) is out of the match: the bots ignore it.
@@ -283,7 +285,43 @@ The minimap (top left, MW2's `minimap_fullscreen` layout) turns with your view; 
 Killstreaks: kills in a row since your last death earn your class's streaks at their killstreakTable cost; the UAV
 (D-pad left) runs MW2's radar sweep for its script time (every enemy marked as the sweep passes). Bots call in a UAV
 at its cost too. The other streaks are earned but not in this build yet.
-Placeholder until the death cam / killcam flow is ported (ADR 0007): the 3 s respawn.
+Killcam: every player's pose (position, view, animation inputs, weapon) is recorded each server frame (50 ms) into a
+ring in MEM2 (`wii/game/src/replay.rs`: 10 s, 200 frames of 272 bytes a player; the log's `killcam_ring bytes=`:
+327 KB with 5 bots in Dolphin, 436 KB with the most, 7), with the bullet impacts. After the
+death delay the last seconds replay from your killer's eye: MW2's camtime chain (5 s before the death with no respawn
+wait, 2 s after; IW4L `camtime`, `plan_window`, trimmed to what the ring holds by `recalc_after_first_frame`), the
+other players' bodies at their recorded poses (their own animation state), the killer's weapon held in front of the eye
+(its world model: the killer's first-person files aren't loaded), their muzzle flashes and the impacts. MW2's killcam
+HUD (`game_core::killcam_hud`, `_killcam.gsc`'s elements): KILLCAM, the camtime countdown in tenths, who killed you
+with what, "Press X to respawn"; a fresh press of X skips (IW4L `SkipEdge`). At the match's end the final killcam
+replays the last kill (MW2's "game winning kill": 4 s of camtime, `doFinalKillCamFX`'s slow motion to a quarter
+around the kill, no skip), then the scoreboard. Not yet: the killer's playercard, sounds in the replay, explosions
+and grenades in it, MW2's spectator HUD hiding.
+Perks beyond movement and damage (`game_core::perks`, applied in `game_core::arena`; numbers read from your
+`_damage.gsc`, `_perkfunctions.gsc`, `_perks.gsc`, `_weapons.gsc`, `_class.gsc` and `_tweakables.gsc` into
+`common.wpk`'s `LIFE`):
+- Cold-Blooded: off the UAV's radar (yours and the bots'; IW4L `radar_contact_trail_visible` on the perk bits).
+- Scrambler: enemies within 800 units see their minimap fade (full static within 350; IW4L `radar_jam_intensity`);
+  bots under a UAV lose it past half. Its Pro: a claymore you trip waits 3 s.
+- Ninja Pro: your steps are silent to the others and the bots don't hear them (bots hear other steps within 600
+  units: ours, MW2's bots are players). MW2 plays faint `qstep_` aliases; this build plays none.
+- Hardline: killstreaks a kill sooner (`setKillstreaks`' modifier); its Pro: deathstreaks a death sooner.
+- One Man Army: Y opens the class menu (the match waits, unlike MW2's), then 6 s (3 s with its Pro) of "Changing
+  Kit" with the weapon down, and the class is yours where you stand.
+- Last Stand: a killing bullet or fall (not a headshot, explosion or melee: `mayDoLastStand`) puts you down at 1
+  health, crawling (pmove's `LAST_STAND` flag and crawl scale, IW4L `sim::script_player`), the class's pistol in
+  hand (bots: their sidearm or a Beretta), no grenades without its Pro, for 10 s; then you bleed out (the kill is the
+  one who put you down's), or hold X 0.7 s to give up.
+- Bomb Squad: enemy C4, claymores, frags and semtex marked through walls (`waypoint_bombsquad`).
+- Silenced weapons: their shots don't ping the enemies' minimap and the bots don't hear them.
+- Deathstreaks (deaths in a row without a kill, perkTable's count): Copycat (Y during the killcam takes your killer's
+  class for one life; bots copy at once), Painkiller (a third of the damage for 10 s after spawning, its icon and
+  timer on the HUD), Martyrdom (a live frag dropped where you die), Final Stand (down as Last Stand with your
+  weapons, back up at full health after 20 s, once a life).
+Bots carry their default class's perks and deathstreak (Lightweight's speed, Stopping Power ...).
+Not yet: Cold-Blooded against the killstreaks that target players (none yet), Ninja against heartbeat sensors,
+bots' One Man Army, a Beretta for a class without a pistol in your Last Stand, MW2's revive (Diehard mode).
+A feel trace against MW2 is still to do for all of these: the numbers are the scripts', the code IW4L's.
 
 ## Movement status
 - `pmove` is IW4L's, unchanged; the context uses MW2's MP dvar defaults (190 speed, 800 gravity, jump 39, sprint ×1.5).

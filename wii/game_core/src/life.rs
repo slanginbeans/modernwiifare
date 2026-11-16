@@ -3,12 +3,12 @@
 //!
 //! Sources: fall damage is IW4L `movement_iw4` (128 units safe, 300 fatal). Health and its regeneration follow MW2's
 //! `_healthoverlay.gsc` loop step by step ([`Life::regen`]), with the numbers read from the user's scripts at convert
-//! time (`wpk::rules::Rules`); the clock's limit too. MW2's killcam and per-mode respawn rules come with the GSC
-//! runtime (ADR 0002); until then a death waits [`RESPAWN_DELAY_MS`] (a placeholder, not MW2's flow).
+//! time (`wpk::rules::Rules`); the clock's limit too. Your death runs MW2's death sequence and killcam
+//! (`crate::killcam::Death`); bots, which skip their killcam, wait [`RESPAWN_DELAY_MS`].
 
 use wpk::rules::Rules;
 
-/// Placeholder until the scripted death / killcam flow: time from death to respawn.
+/// A bot's time from death to respawn (MW2's death delay and a skipped killcam, roughly; ours).
 pub const RESPAWN_DELAY_MS: u32 = 3000;
 /// Falling this far below the lowest spawn point kills (MW2 maps use trigger_hurt volumes; this stands in).
 pub const OUT_OF_WORLD_DEPTH: f32 = 2048.0;

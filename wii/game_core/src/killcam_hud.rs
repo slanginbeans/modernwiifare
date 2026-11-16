@@ -114,7 +114,18 @@ impl Page<'_> {
         else {
             return;
         };
-        let scale = fontscale * FONT_SCALE;
+        // IW4 hud elem text is `fontscale` times the font's own height on the 480-line screen.
+        let base = match font {
+            "fonts/hudbigfont" => 24.0,
+            "fonts/smallfont" => 10.0,
+            _ => 12.0,
+        };
+        let unit = f32::from(f.pixel_height) * crate::ui_text::glyph_scale(f, 1.0);
+        let scale = if unit > 0.0 {
+            fontscale * base / unit
+        } else {
+            fontscale * FONT_SCALE
+        };
         let w = crate::ui_text::width(f, s, scale);
         let x = if center { at[0] - w * 0.5 } else { at[0] };
         // The baseline under the top (the font's height at this scale).

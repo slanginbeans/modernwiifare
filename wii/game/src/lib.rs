@@ -2918,6 +2918,8 @@ fn run_map(
                 let name = fighter_name(killer);
                 loop {
                     let t = ffi::ms();
+                    // A pad read a frame (no skip in the final killcam; a test script advances with it).
+                    let _ = ffi::pads();
                     let Some(c) = r.camera(&kc, t, aspect) else {
                         break;
                     };
