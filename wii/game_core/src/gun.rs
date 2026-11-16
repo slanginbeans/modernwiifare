@@ -896,7 +896,7 @@ impl Gun {
             eye[1] + dir[1] * range,
             eye[2] + dir[2] * range,
         ];
-        let t: Trace = clip.trace(eye, end, [0.0; 3], [0.0; 3], MASK_SHOT);
+        let t: Trace = clip.bullet_trace(eye, end, MASK_SHOT);
         let f = t.fraction.clamp(0.0, 1.0);
         let first = [
             eye[0] + (end[0] - eye[0]) * f,
@@ -954,7 +954,7 @@ fn penetrate(
         let Some(next) = advance_trace(entry, normal, dir, true, ADVANCE_TRACE_FWD) else {
             return;
         };
-        let fwd = clip.trace(next, end, [0.0; 3], [0.0; 3], MASK_SHOT);
+        let fwd = clip.bullet_trace(next, end, MASK_SHOT);
         if fwd.startsolid != 0 && fwd.allsolid != 0 {
             // Still inside the wall all the way: it doesn't come out.
             return;
@@ -1006,6 +1006,31 @@ fn penetrate(
         entry = fwd_pos;
         normal = fwd.normal;
         last_surf = depth_surface_type(fwd.surface_flags, last_surf);
+    }
+}
+
+/// Ammunition from the ground (`crate::item`): pickups, swaps and Scavenger bags.
+impl Gun {
+    /// Set the magazine and the reserve (a weapon taken from the ground keeps its rounds, IW4L `set_ammo_on_ps`).
+    pub fn set_ammo(&mut self, clip: i32, stock: i32) {
+        self.hand.clip = clip.clamp(0, self.facts.clip_size.max(0));
+        self.hand.stock = stock.clamp(0, self.facts.max_ammo.max(0));
+    }
+
+    /// Add up to `rounds` to the reserve, at most the weapon's maximum (IW4L `add_ammo_on_ps`); returns how many
+    /// went in.
+    pub fn add_stock(&mut self, rounds: i32) -> i32 {
+        let room = (self.facts.max_ammo - self.hand.stock).max(0);
+        let n = rounds.clamp(0, room);
+        self.hand.stock += n;
+        n
+    }
+
+    /// One more of each grenade carried, each at most `cap(weapon)` (MW2's Scavenger: `SetWeaponAmmoClip` + 1).
+    pub fn add_offhand_ammo(&mut self, cap: impl Fn(u32) -> i32) {
+        for r in self.offhand.inventory.iter_mut().filter(|r| r.weapon != 0) {
+            r.ammo = (r.ammo + 1).min(cap(r.weapon).max(r.ammo));
+        }
     }
 }
 

@@ -13,6 +13,7 @@ use game_core::character::{
     Body, Death, Held as HeldType, Motion, NO_BONE, PlayerAnims, Rig, Scratch, conditions,
     death_conditions, motion_events, movetype, strafing,
 };
+use game_core::damage::HitBox;
 use game_core::gfx::{DrawState, Gfx, Mtx34};
 use game_core::viewmodel as vmod;
 use wpk::anim_script::{Conditions, Script};
@@ -55,6 +56,8 @@ struct Team {
     rig: Rig,
     attributes: *const u8,
     draws: Vec<Draw>,
+    /// Its bones' hit boxes (`CHHB`; none with an older pack).
+    hitboxes: Vec<records::BoneHitRecord>,
 }
 
 /// What the animation saw of one player last frame.
@@ -116,6 +119,8 @@ pub struct Characters {
     scratch: Scratch,
     world: Vec<Mtx34>,
     skin: Vec<Mtx34>,
+    /// Per slot: when its body was last posed and its bones' hit boxes then (world space).
+    hits: Vec<(u32, Vec<HitBox>)>,
 }
 
 fn mem2(count: usize) -> Option<&'static mut [u8]> {
@@ -201,6 +206,10 @@ impl Characters {
     ) -> Option<Characters> {
         let pack = wpk::Pack::parse_prefix(map).ok()?;
         let teams = wpk::view::decode_characters(pack.section(wpk::tag::CHARACTERS)?.data);
+        let hitboxes: Vec<records::BoneHitRecord> = pack
+            .section(wpk::tag::CHARACTER_HITBOXES)
+            .map(|s| records::iter(s.data).collect())
+            .unwrap_or_default();
         let common = wpk::Pack::parse(common, false).ok()?;
         let held = Held::load(&common, gfx);
         let clips = Anims::parse(common.section(wpk::tag::PLAYER_ANIMS)?.data)?;
@@ -257,10 +266,20 @@ impl Characters {
                     },
                 });
             }
+            let team = out.len() as u8;
             out.push(Team {
                 attributes: attr.as_ptr(),
                 draws,
                 rig,
+                hitboxes: hitboxes
+                    .iter()
+                    // No location ("none", the head model's own bones in packs from before the converter left
+                    // them out): not a hit volume.
+                    .filter(|h| {
+                        h.team == team && h.loc != 0 && usize::from(h.bone) < vm.bones.len()
+                    })
+                    .copied()
+                    .collect(),
                 vm,
             });
         }
@@ -274,6 +293,7 @@ impl Characters {
             scratch: Scratch::default(),
             world: Vec::new(),
             skin: Vec::new(),
+            hits: Vec::new(),
         })
     }
 
@@ -342,6 +362,73 @@ impl Characters {
         }
     }
 
+    /// Weapons lying on the ground: each weapon's third-person model (`GUNM`) at the item, turned to its yaw and
+    /// laid on its side (MW2 draws its item model; ours lies flat so its grip doesn't sink into the floor).
+    /// Scavenger bags aren't drawn here (no bag model is packed: the caller draws a stand-in).
+    pub fn draw_items(&self, gfx: &mut impl Gfx, view: &Mtx34, items: &[game_core::item::Dropped]) {
+        let Some(held) = &self.held else {
+            return;
+        };
+        for d in items.iter().filter(|d| !d.scavenger) {
+            let Some(gun) = held.model(d.weapon) else {
+                continue;
+            };
+            let o = d.origin;
+            if vmod::apply(view, o)[2] > 32.0 {
+                continue;
+            }
+            let (s, c) = (
+                libm::sinf(d.yaw.to_radians()),
+                libm::cosf(d.yaw.to_radians()),
+            );
+            // Yaw about z, then a quarter roll about the barrel (x): the model's up (z) lies along -y.
+            let model: Mtx34 = [
+                [c, 0.0, s, o[0]],
+                [s, 0.0, -c, o[1]],
+                [0.0, 1.0, 0.0, o[2] + 2.0],
+            ];
+            unsafe {
+                ffi::mwf_world_view();
+                ffi::mwf_view_arrays(gun.positions.as_ptr(), gun.attributes.as_ptr());
+            }
+            gfx.pos_matrix(&vmod::mul(view, &model));
+            let mut last: Option<DrawState> = None;
+            for i in 0..gun.draws() {
+                let Some(dr) = gun.draw(i) else { continue };
+                let state = DrawState {
+                    tex: held
+                        .textures
+                        .get(usize::from(dr.texture))
+                        .copied()
+                        .unwrap_or(-1),
+                    lightmap: -1,
+                    blend: dr.blend,
+                    alpha_ref: dr.alpha_ref,
+                    cull: 0,
+                    tint: 0,
+                };
+                if last != Some(state) {
+                    gfx.world_state(&state);
+                    last = Some(state);
+                }
+                gfx.call_dl(dr.dl);
+            }
+        }
+    }
+
+    /// The bone hit boxes of every team's model (`CHHB`; 0 with an older pack).
+    pub fn hitbox_count(&self) -> usize {
+        self.teams.iter().map(|t| t.hitboxes.len()).sum()
+    }
+
+    /// Player `slot`'s bone hit boxes, when its body was posed at `now` (drawn this frame).
+    pub fn hit_boxes(&self, slot: usize, now: u32) -> Option<&[HitBox]> {
+        self.hits
+            .get(slot)
+            .filter(|(t, l)| *t == now && !l.is_empty())
+            .map(|(_, l)| l.as_slice())
+    }
+
     /// Where player `slot`'s muzzle was last drawn (world origin and forward), if it was.
     pub fn muzzle(&self, slot: usize) -> Option<([f32; 3], [f32; 3])> {
         self.seen.get(slot).and_then(|s| s.flash)
@@ -408,6 +495,19 @@ impl Characters {
                 libm::cosf(legs_yaw.to_radians()),
             );
             let model: Mtx34 = [[c, -s, 0.0, o[0]], [s, c, 0.0, o[1]], [0.0, 0.0, 1.0, o[2]]];
+            // The bones' hit boxes as drawn (IW4L poses its collision bones the same way).
+            if p.alive && !team.hitboxes.is_empty() {
+                while self.hits.len() <= p.slot {
+                    self.hits.push((0, Vec::new()));
+                }
+                let (when, list) = &mut self.hits[p.slot];
+                *when = now_ms;
+                list.clear();
+                list.extend(team.hitboxes.iter().filter_map(|h| {
+                    let bone = self.world.get(usize::from(h.bone))?;
+                    game_core::damage::bone_box(&model, bone, h)
+                }));
+            }
             unsafe {
                 ffi::mwf_flush(buf.as_ptr().cast(), (n * 12) as u32);
                 ffi::mwf_world_view();

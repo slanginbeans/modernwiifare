@@ -512,6 +512,41 @@ impl Record for SpawnRecord {
     }
 }
 
+/// A character's hit box on one bone (`CHHB`): IW4 `XBoneInfo` bounds (`midpoint`, `half_size`, in the bone's space)
+/// and its `partClassification` (the hit location), for team `team` (0 allies, 1 axis) on bone `bone` of that team's
+/// `CHAR` model.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BoneHitRecord {
+    pub team: u8,
+    pub bone: u8,
+    pub loc: u8,
+    pub midpoint: [f32; 3],
+    pub half_size: [f32; 3],
+}
+
+impl Record for BoneHitRecord {
+    const LEN: usize = 28;
+    fn write(&self, o: &mut Vec<u8>) {
+        o.u8(self.team);
+        o.u8(self.bone);
+        o.u8(self.loc);
+        o.zeros(1);
+        for v in self.midpoint.into_iter().chain(self.half_size) {
+            o.f32(v);
+        }
+    }
+    fn read(b: &[u8]) -> Self {
+        let f = |k: usize| be::f32(b, 4 + k * 4);
+        BoneHitRecord {
+            team: b[0],
+            bone: b[1],
+            loc: b[2],
+            midpoint: [f(0), f(1), f(2)],
+            half_size: [f(3), f(4), f(5)],
+        }
+    }
+}
+
 /// Game-mode objectives in a map (`OBJS`).
 pub mod objective_kind {
     /// A Domination flag (`flag_primary` / `flag_secondary` trigger).

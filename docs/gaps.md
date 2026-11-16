@@ -53,6 +53,9 @@ killstreak primitives (sentry turrets, Predator `remote_missile`, helicopters, c
 hand-written from MW2's scripts); perks and deathstreaks with no effect yet (Cold-Blooded, Scrambler, Ninja,
 Hardline, One Man Army, Last Stand, Copycat, Painkiller, Martyrdom, Final Stand); silenced weapons off the radar;
 bot upgrades from IW4L `bots` (memory confidence, weapon switching, low-health recover, varied loadouts, perks).
+Since done (hit detection and world objects, IW4L's code as the reference, a trace against MW2 still to do): hit
+boxes turned with the body and per-bone boxes from the character models, bullets through players, glass, weapon
+drops and pickups with the Y-hold swap, Scavenger bags (`docs/runtime.md`, "Bots and damage").
 
 Presentation, IW4L has code: other players' gunfire, `MP_hit_alert`, melee sounds; looping effect elements
 (`fx_iw4::looping_spawn_schedule`: lingering smoke, fire) and tracers (`fx_iw4::beam`); light-grid lighting for the
@@ -83,8 +86,8 @@ scripted Dolphin runs, the PC menu preview.
    `clipmap_iw4::transformed_temp_capsule_trace` (bullets and sight still see the world only).
 5. ~~Health regeneration~~ done: MW2's `_healthoverlay.gsc` loop step by step (`life::Life::regen`), the numbers
    read from the user's scripts (`RULE`).
-6. ~~Bullet penetration~~ done: IW4L `fire_penetrate` through world walls (the user's `info/bullet_penetration_mp` depths by type and surface, each weapon's type and multiplier; thickness from a trace back from the far side; up to five walls; damage scaled by what is left). Not yet: through players (collateral), glass panes, impact marks on exits.
-7. **Hit volumes**: turn the boxes with the body's yaw now; the character models' hit boxes later. Character models: drawn (`CHAR`), animated by MW2's own player animation script (`PSCR`, `PANM`): legs and torso animations by movement type, weapon type and stance, firing, reloading, melee, grenade throws, jumps (backwards too), hard landings (falling faster than 200 units/s), going prone and getting up, the hit flinch and stumble (pmove's damage timer picks FLINCH / STUMBLE movement types, as IW4L's `footsteps_anim_move_type`) and death animations (by hit location, direction and explosive damage), cross-fades with IW4's blend times, the spine turned to the aim pitch and the torso's yaw (IW4's controller tags), legs that follow the view after 20 degrees. The weapon in their hands: done (each weapon's world model on `tag_weapon_right`, `GUNM`). Not yet: the riot shield model on the left arm and back (the shield blocks already, `game_core::shield`), weapons dropped on death, attachments on the held model, per-class bodies (riot, sniper, ghillie) and random heads, ragdolls and bodies that stay after the respawn, shellshock and stun torso animations, playback rate from the move speed, light-grid lighting.
+6. ~~Bullet penetration~~ done: IW4L `fire_penetrate` through world walls (the user's `info/bullet_penetration_mp` depths by type and surface, each weapon's type and multiplier; thickness from a trace back from the far side; up to five walls; damage scaled by what is left). Through players: done (penetrating weapons lose thickness / flesh depth, non-penetrating rifle bullets go on at half, IW4L `fire_penetrate` / `fire_extended`). Glass panes: done (bullets go through intact panes and damage them). Not yet: impact marks on exits; a trace against MW2 for the collateral numbers.
+7. ~~Hit volumes~~ done: oriented boxes; your shots use the drawn character's bones (MW2's `XBoneInfo` and `partClassification`, `CHHB`), bots' shots and undrawn bodies a stand-in column turned with the view yaw (cost in the log's `hitvol`). Not yet: bones for bodies you don't see (bots shooting each other or you), the riot shield's box beyond the stand-in (`game_core::shield`), a trace against MW2. Character models: drawn (`CHAR`), animated by MW2's own player animation script (`PSCR`, `PANM`): legs and torso animations by movement type, weapon type and stance, firing, reloading, melee, grenade throws, jumps (backwards too), hard landings (falling faster than 200 units/s), going prone and getting up, the hit flinch and stumble (pmove's damage timer picks FLINCH / STUMBLE movement types, as IW4L's `footsteps_anim_move_type`) and death animations (by hit location, direction and explosive damage), cross-fades with IW4's blend times, the spine turned to the aim pitch and the torso's yaw (IW4's controller tags), legs that follow the view after 20 degrees. The weapon in their hands: done (each weapon's world model on `tag_weapon_right`, `GUNM`). Not yet: the riot shield model on the left arm and back (the shield blocks already, `game_core::shield`), attachments on the held model, per-class bodies (riot, sniper, ghillie) and random heads, ragdolls and bodies that stay after the respawn, shellshock and stun torso animations, playback rate from the move speed, light-grid lighting.
 8. **FFA rules**: points (a kill, the headshot bonus), score and time limits from the user's `dm.gsc`, ties to fewer
    deaths: done. Spawns follow MW2's free-for-all weighting (`_spawnlogic.gsc`: distance to everyone, enemies in
    sight, the nearest enemy, the last spawn used): done. Still to do: the playlist's overrides (the stock script
@@ -97,7 +100,7 @@ scripted Dolphin runs, the PC menu preview.
     for the first spawn, team killstreaks shared by the team (the UAV is yours alone).
 12. **Grenades**: frag, semtex, the throwing knife (its hit, stick and pickup), claymore (trip and cone) and C4 (double-tap detonation) (lethal), flashbang, stun and smoke (tactical; the smoke's sight blocking) done (`game_core::grenade`, IW4L's throw /
     bounce / fuse / blast and flashbang amounts, the scripts' flash and stun durations, the shock files' white-out
-    and slowdown; bots throw frags). Not yet: shooting charges to set them off, the C4 detonator in hand, the claymore's trip sound, Bomb Squad / Scavenger interplay, tactical insertion, blast shield; smoke sprites and drift;
+    and slowdown; bots throw frags). Not yet: shooting charges to set them off, the C4 detonator in hand, the claymore's trip sound, Bomb Squad (Scavenger bags give a grenade of each kind: done), tactical insertion, blast shield; smoke sprites and drift;
     the shock's blur and tinnitus; the grenade models (explosion effects: done, MW2's own, one-shot elements); looping effect elements (lingering smoke, fire), impact marks; per-surface explosion sounds; the grenade
     danger indicator; Danger Close.
 11. **Minimap and killstreaks**: the HUD minimap (map pack `MINI`: MW2's `setupMiniMap` frame, the script's
@@ -109,7 +112,7 @@ scripted Dolphin runs, the PC menu preview.
     everything unlocked) become IW4's `ps.perks` bits that IW4L's movement and weapon code read (Marathon,
     Sleight of Hand, Steady Aim and their Pros, Commando's flag, ...); move speed by the primary's class and
     Lightweight's scaler come from the user's `_weapons.gsc` / `_perkfunctions.gsc` (`RULE`); Stopping Power and Danger Close add `_perks.gsc`'s
-    `perk_bulletDamage` / `perk_explosiveDamage` percent to bullet / explosive damage. Not yet: Scavenger packs, Hardline and the killstreak perks, Cold-Blooded /
+    `perk_bulletDamage` / `perk_explosiveDamage` percent to bullet / explosive damage. Scavenger bags: done (`game_core::item`). Not yet: Hardline and the killstreak perks, Cold-Blooded /
     Scrambler / Ninja against radar and sound, Last Stand, One Man Army, deathstreaks (the bits are set; nothing
     reads them).
 

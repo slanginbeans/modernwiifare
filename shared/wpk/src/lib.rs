@@ -77,6 +77,9 @@ pub mod tag {
     pub const OBJECTIVES: Tag = *b"OBJS";
     /// Player characters, allies then axis (`view::encode_characters`).
     pub const CHARACTERS: Tag = *b"CHAR";
+    /// The characters' hit boxes, one per bone that has one (`records::BoneHitRecord`: MW2's `boneInfo` and
+    /// `partClassification`).
+    pub const CHARACTER_HITBOXES: Tag = *b"CHHB";
     /// Player animations (`view::ViewModel` clips, tracks by `PANB` bone name).
     pub const PLAYER_ANIMS: Tag = *b"PANM";
     pub const PLAYER_ANIM_BONES: Tag = *b"PANB";

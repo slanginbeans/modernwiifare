@@ -1,0 +1,350 @@
+# Hit volumes, collateral, glass, drops (docs/testing.md). Free-for-all on the first map: turn, walk, fire in
+# bursts, and hold Y now and then (a swap when over a weapon). Read the match log: hit, hitvol, glass*, item_drop,
+# ammo_pickup, scavenged, weapon_swap.
+wait 90
+press A
+wait 10
+press A
+wait 700
+shot hw_00_class
+press A
+wait 60
+shot hw_01_hud
+cstick 70 0
+wait 17
+cstick 0 0
+hold R
+wait 45
+shot hw_02_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick -70 0
+wait 24
+cstick 0 0
+hold R
+wait 45
+shot hw_03_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick 70 0
+wait 31
+cstick 0 0
+hold R
+wait 45
+shot hw_04_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick -70 0
+wait 13
+cstick 0 0
+hold R
+wait 45
+shot hw_05_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick 70 0
+wait 20
+cstick 0 0
+hold R
+wait 45
+shot hw_06_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick -70 0
+wait 27
+cstick 0 0
+hold R
+wait 45
+shot hw_07_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick 70 0
+wait 34
+cstick 0 0
+hold R
+wait 45
+shot hw_08_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick -70 0
+wait 16
+cstick 0 0
+hold R
+wait 45
+shot hw_09_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick 70 0
+wait 23
+cstick 0 0
+hold R
+wait 45
+shot hw_10_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick -70 0
+wait 30
+cstick 0 0
+hold R
+wait 45
+shot hw_11_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick 70 0
+wait 12
+cstick 0 0
+hold R
+wait 45
+shot hw_12_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick -70 0
+wait 19
+cstick 0 0
+hold R
+wait 45
+shot hw_13_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick 70 0
+wait 26
+cstick 0 0
+hold R
+wait 45
+shot hw_14_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick -70 0
+wait 33
+cstick 0 0
+hold R
+wait 45
+shot hw_15_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick 70 0
+wait 15
+cstick 0 0
+hold R
+wait 45
+shot hw_16_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick -70 0
+wait 22
+cstick 0 0
+hold R
+wait 45
+shot hw_17_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick 70 0
+wait 29
+cstick 0 0
+hold R
+wait 45
+shot hw_18_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick -70 0
+wait 11
+cstick 0 0
+hold R
+wait 45
+shot hw_19_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick 70 0
+wait 18
+cstick 0 0
+hold R
+wait 45
+shot hw_20_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick -70 0
+wait 25
+cstick 0 0
+hold R
+wait 45
+shot hw_21_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick 70 0
+wait 32
+cstick 0 0
+hold R
+wait 45
+shot hw_22_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick -70 0
+wait 14
+cstick 0 0
+hold R
+wait 45
+shot hw_23_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick 70 0
+wait 21
+cstick 0 0
+hold R
+wait 45
+shot hw_24_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+cstick -70 0
+wait 28
+cstick 0 0
+hold R
+wait 45
+shot hw_25_fire
+release R
+stick 0 110
+wait 50
+stick 0 0
+hold Y
+wait 20
+release Y
+wait 10
+log hits_world done
+quit
