@@ -30,6 +30,12 @@ Three read-only reviews (gameplay, presentation, network / input) against the pi
 for modes, killstreaks, last stand and deathstreaks; we don't (ADR 0007), so for those it offers primitives only.
 Feel changes in this round take IW4L's code as the reference (host tests against its values); a trace against MW2
 is still to do for each.
+The gap work landed on 2026-11-16 as seven merged branches (converter `REVISION` 39). The combined build ran every
+pad script in `tools/autoplay/` in Dolphin. Every script got through, and their events show in the match logs. The
+exceptions: you never went down in Last Stand (with the fixed seed the script dies to an explosion, which MW2 never
+lets you survive in Last Stand; a bot's Final Stand was seen), and `hud_match` got no killstreak splash (the bot
+brought in front carried a riot shield). Bots now take a random default class each life, so both scripts' scenarios
+need new set-ups.
 
 Bugs: ~~**mantle** moves nothing~~ fixed (2026-11-15): pmove gets IW4L's `CreateAnimsMantleRootDelta`, so a mantle
 climbs over 400 / 600 ms (with the zero delta the player was put on the ledge at once and stood there for the mantle's

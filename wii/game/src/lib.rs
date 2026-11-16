@@ -1306,7 +1306,7 @@ fn run_map(
             a.glass = game_core::glass::Glass::from_clip(c);
             let panes = a.glass.panes.iter().flatten().count();
             devlog::event(
-                0,
+                ffi::ms(),
                 "glass",
                 format_args!("pieces={} panes={panes}", a.glass.len()),
             );
