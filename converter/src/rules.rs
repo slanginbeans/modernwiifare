@@ -42,6 +42,146 @@ pub const SCRIPTS: [&str; 15] = [
     SHOCK_FLASH,
 ];
 
+/// The scripts the perk, deathstreak, last stand and killcam rules come from (`wpk::life_rules`), besides some of
+/// [`SCRIPTS`].
+pub const DAMAGE: &str = "maps/mp/gametypes/_damage.gsc";
+pub const CLASS: &str = "maps/mp/gametypes/_class.gsc";
+pub const LIFE_SCRIPTS: [&str; 2] = [DAMAGE, CLASS];
+
+/// Read the perk, deathstreak, last stand and killcam rules (`LIFE`) from the scripts (by rawfile name).
+pub fn read_life(scripts: &HashMap<String, String>) -> wpk::life_rules::LifeRules {
+    use wpk::life_rules::{LifeRules, found as lf};
+    let mut r = LifeRules::default();
+    let get = |name: &str| scripts.get(name).map(|t| strip_comments(t));
+    let secs = |s: &str| number(s).map(|v| (v * 1000.0).round() as u32);
+    if let Some(t) = get(DAMAGE) {
+        // `Callback_PlayerLastStand`: `lastStandTimer( 20, true )` (Final Stand) and, last, the normal last stand's
+        // `lastStandTimer( 10, false )`.
+        if let Some(body) = function_body(&t, "Callback_PlayerLastStand") {
+            let timers = calls(body, "lastStandTimer", 0);
+            if let Some(ms) = timers
+                .iter()
+                .find(|(_, a)| a.get(1).is_some_and(|b| b == "true"))
+                .and_then(|(_, a)| secs(&a[0]))
+            {
+                r.final_stand_ms = ms;
+                r.found |= lf::FINAL_STAND;
+            }
+            if let Some(ms) = timers
+                .iter()
+                .rev()
+                .find(|(_, a)| a.get(1).is_some_and(|b| b == "false"))
+                .and_then(|(_, a)| secs(&a[0]))
+            {
+                r.last_stand_ms = ms;
+                r.found |= lf::LAST_STAND;
+            }
+        }
+        // `lastStandAllowSuicide`: `if ( gettime() - pressStartTime > 700 )`.
+        if let Some(body) = function_body(&t, "lastStandAllowSuicide")
+            && let Some(i) = body.find("pressStartTime >")
+            && let Some(v) = body[i + "pressStartTime >".len()..]
+                .split(')')
+                .next()
+                .and_then(number)
+        {
+            r.give_up_ms = v as u32;
+            r.found |= lf::GIVE_UP;
+        }
+    }
+    // Painkiller (`setCombatHigh`): its waits add up to its time.
+    if let Some(t) = get(PERK_FUNCTIONS) {
+        if let Some(body) = function_body(&t, "setCombatHigh") {
+            let waits: Vec<f32> = calls(body, "wait", 0)
+                .into_iter()
+                .filter_map(|(_, a)| a.first().and_then(|s| number(s)))
+                .collect();
+            if !waits.is_empty() {
+                r.painkiller_ms = (waits.iter().sum::<f32>() * 1000.0).round() as u32;
+                r.found |= lf::PAINKILLER;
+            }
+        }
+        // `giveOneManArmyClass`: `changeDuration = 3.0;` with `specialty_omaquickchange`, else `6.0`.
+        if let Some(body) = function_body(&t, "giveOneManArmyClass") {
+            let set: Vec<f32> = body
+                .match_indices("changeDuration =")
+                .filter_map(|(i, m)| number(body[i + m.len()..].split(';').next()?))
+                .collect();
+            if let [quick, full, ..] = set[..] {
+                r.oma_quick_ms = (quick * 1000.0).round() as u32;
+                r.oma_ms = (full * 1000.0).round() as u32;
+                r.found |= lf::OMA;
+            }
+        }
+    }
+    // Painkiller's divisor (`cac_modified_damage`: `damage = damage/3;` in the `specialty_combathigh` block).
+    if let Some(t) = get(PERKS)
+        && let Some(at) = t.find("\"specialty_combathigh\"")
+        && let Some(i) = t[at..].find("damage = damage/")
+        && let Some(v) = t[at + i + "damage = damage/".len()..]
+            .split(';')
+            .next()
+            .and_then(number)
+        && v > 0.0
+    {
+        r.painkiller_divisor = v;
+        r.found |= lf::PAINKILLER_DIVISOR;
+    }
+    // Scrambler Pro: `if ( player _hasPerk( "specialty_delaymine" ) ) wait 3.0;` in the claymore's trip.
+    if let Some(t) = get(WEAPONS)
+        && let Some(at) = t.find("\"specialty_delaymine\"")
+    {
+        let rest = &t[at..];
+        let wait = rest.find("wait").and_then(|i| {
+            let s = rest[i + 4..].trim_start().trim_start_matches('(');
+            number(s.split([';', ')']).next()?)
+        });
+        if let Some(v) = wait {
+            r.delay_mine_ms = (v * 1000.0).round() as u32;
+            r.found |= lf::DELAY_MINE;
+        }
+    }
+    // Hardline (`setKillstreaks`): `modifier = -1;`.
+    if let Some(t) = get(CLASS)
+        && let Some(body) = function_body(&t, "setKillstreaks")
+        && let Some(v) = assignment(body, "modifier").filter(|v| *v != 0.0)
+    {
+        r.hardline_modifier = v as i32;
+        r.found |= lf::HARDLINE;
+    }
+    // Killcams: `registerTweakable( "game", "allowkillcam", "scr_game_allowkillcam", 1 )`.
+    if let Some(t) = get(TWEAKABLES)
+        && let Some(v) = calls(&t, "registerTweakable", 0)
+            .into_iter()
+            .find(|(_, a)| a.len() >= 4 && a[1] == "allowkillcam")
+            .and_then(|(_, a)| number(&a[3]))
+    {
+        r.killcam = v != 0.0;
+        r.found |= lf::KILLCAM;
+    }
+    r
+}
+
+/// The names of the values `r` did not read from the scripts.
+pub fn missing_life(r: &wpk::life_rules::LifeRules) -> Vec<&'static str> {
+    use wpk::life_rules::found as lf;
+    [
+        (lf::LAST_STAND, "last stand time"),
+        (lf::FINAL_STAND, "final stand time"),
+        (lf::GIVE_UP, "last stand give-up hold"),
+        (lf::PAINKILLER, "painkiller time"),
+        (lf::PAINKILLER_DIVISOR, "painkiller divisor"),
+        (lf::OMA, "one man army change"),
+        (lf::DELAY_MINE, "scrambler pro claymore delay"),
+        (lf::HARDLINE, "hardline modifier"),
+        (lf::KILLCAM, "killcam allowed"),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| r.found & bit == 0)
+    .map(|(_, name)| name)
+    .collect()
+}
+
 /// The text without `/* */` and `//` comments (scanned in order, so a `//*` line comment isn't a block).
 fn strip_comments(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -529,7 +669,59 @@ pub fn read(scripts: &HashMap<String, String>) -> Rules {
 mod tests {
     use super::*;
 
-    // Made-up scripts in GSC's syntax (not MW2's text).
+    // Made-up scripts in GSC's syntax (not MW2's text; other values than MW2's).
+    #[test]
+    fn reads_life_rules_from_scripts() {
+        let mut s = HashMap::new();
+        s.insert(
+            DAMAGE.to_owned(),
+            "Callback_PlayerLastStand( a, b )\n{\n\tif ( x )\n\t\tself thread lastStandTimer( 25, true );\n\
+             /* self thread lastStandTimer( 3, false ); */\n\telse\n\t\tself thread lastStandTimer( 12, false );\n}\n\
+             lastStandAllowSuicide()\n{\n\tif ( gettime() - pressStartTime > 900 )\n\t\tbreak;\n}\n"
+                .to_owned(),
+        );
+        s.insert(
+            PERK_FUNCTIONS.to_owned(),
+            "setCombatHigh()\n{\n\tself.x fadeOverTime( 1.0 );\n\twait( 6 );\n\twait( 1.5 );\n}\n\
+             giveOneManArmyClass( c )\n{\n\tif ( q )\n\t\tchangeDuration = 2.5;\n\telse\n\t\tchangeDuration = 5.0;\n}\n"
+                .to_owned(),
+        );
+        s.insert(
+            PERKS.to_owned(),
+            "if ( victim _hasperk( \"specialty_combathigh\" ) )\n{\n\tdamage = damage/4;\n}\n"
+                .to_owned(),
+        );
+        s.insert(
+            WEAPONS.to_owned(),
+            "if ( player _hasPerk( \"specialty_delaymine\" ) )\n\twait 2.5;\nelse\n\twait level.g;\n".to_owned(),
+        );
+        s.insert(
+            CLASS.to_owned(),
+            "setKillstreaks( a, b, c )\n{\n\tif ( h )\n\t\tmodifier = -2;\n\telse\n\t\tmodifier = 0;\n}\n".to_owned(),
+        );
+        s.insert(
+            TWEAKABLES.to_owned(),
+            "registerTweakable( \"game\", \"allowkillcam\", \"scr_game_allowkillcam\", 0 );"
+                .to_owned(),
+        );
+        let r = read_life(&s);
+        assert_eq!(
+            (r.final_stand_ms, r.last_stand_ms, r.give_up_ms),
+            (25_000, 12_000, 900)
+        );
+        assert_eq!((r.painkiller_ms, r.painkiller_divisor), (7500, 4.0));
+        assert_eq!(
+            (r.oma_quick_ms, r.oma_ms, r.delay_mine_ms),
+            (2500, 5000, 2500)
+        );
+        assert_eq!((r.hardline_modifier, r.killcam), (-2, false));
+        assert_eq!(r.found, wpk::life_rules::found::ALL);
+        assert!(missing_life(&r).is_empty());
+        let none = read_life(&HashMap::new());
+        assert_eq!(none, wpk::life_rules::LifeRules::default());
+        assert_eq!(missing_life(&none).len(), 9);
+    }
+
     #[test]
     fn reads_rules_from_scripts() {
         let mut s = HashMap::new();

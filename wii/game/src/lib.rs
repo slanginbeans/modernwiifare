@@ -18,6 +18,7 @@ mod effects;
 mod ffi;
 mod front;
 mod objects;
+mod replay;
 mod rt;
 mod sound;
 mod ui;
@@ -508,6 +509,15 @@ fn fighter_name(i: usize) -> Str {
     s
 }
 
+/// A weapon's display name (`m4_acog_mp` -> the class catalog's "M4A1"), its base name in capitals without one.
+fn weapon_display(catalog: Option<&wpk::classes::Catalog>, name: &str) -> alloc::string::String {
+    let base = name.split('_').next().unwrap_or("");
+    match catalog.and_then(|c| c.weapons.iter().find(|w| w.name == base)) {
+        Some(w) => w.display.clone(),
+        None => base.to_ascii_uppercase(),
+    }
+}
+
 /// Kills (yours and the leader's), the kill feed (4 s) and the hitmarker (150 ms).
 fn draw_match_hud(
     gfx: &mut Shim,
@@ -639,7 +649,15 @@ fn draw_minimap(
     };
     // An enemy Counter-UAV jams your radar: a dimmed map and no pings but you.
     let jammed = arena.is_some_and(|a| a.radar_blocked(0, now));
-    let verts = f.map_quad(if jammed { 0x5050_50ff } else { 0xffff_ffff });
+    // A nearby enemy Scrambler fades it (IW4L `compass_fade_alpha` of the jam's intensity).
+    let fade = hud_iw4::compass_fade_alpha(1.0, arena.map_or(0.0, |a| a.radar_jam(0, now)));
+    let jammed = jammed || fade <= 0.0;
+    let map_alpha = (fade.max(0.25) * 255.0) as u32;
+    let verts = f.map_quad(if jammed {
+        0x5050_50ff
+    } else {
+        0xffff_ff00 | map_alpha
+    });
     unsafe { ffi::mwf_ui_verts(*handle, verts.as_ptr(), 1) };
     let enemy = u.pack.icon("compassping_enemy");
     let firing = u.pack.icon("compassping_enemyfiring").or(enemy);
@@ -657,7 +675,7 @@ fn draw_minimap(
             }));
         }
         let first = q.len();
-        let alpha = |a: f32| 0xffff_ff00 | (a.clamp(0.0, 1.0) * 255.0) as u32;
+        let alpha = |a: f32| 0xffff_ff00 | ((a * fade).clamp(0.0, 1.0) * 255.0) as u32;
         if let Some(a) = arena.filter(|_| !jammed) {
             for (i, fi) in a.fighters.iter().enumerate().skip(1) {
                 if !fi.life.alive() {
@@ -681,8 +699,10 @@ fn draw_minimap(
                 if let (Some((p, al)), Some(t)) = (radar_hit, enemy) {
                     q.push(Frame::icon(f.to_screen(p), Frame::ENEMY_SIZE, t, alpha(al)));
                 }
+                // Silenced shots don't ping the radar.
                 let fired = fi
                     .last_fire_ms
+                    .filter(|_| !fi.fire_silenced)
                     .and_then(|t| ping_alpha(now.wrapping_sub(t), FIRING_PING_MS));
                 if let (Some(al), Some(t)) = (fired, firing) {
                     q.push(Frame::icon(
@@ -870,6 +890,12 @@ fn run_map(
         .ok()
         .and_then(|p| p.section(wpk::tag::RULES))
         .and_then(|s| wpk::rules::Rules::decode(s.data))
+        .unwrap_or_default();
+    // Perk, deathstreak, last stand and killcam rules from the user's scripts (stock values with an older pack).
+    let life_rules = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::LIFE_RULES))
+        .and_then(|s| wpk::life_rules::LifeRules::decode(s.data))
         .unwrap_or_default();
     let mut file = [0u8; 96];
     let n = name.len() + 4;
@@ -1075,10 +1101,8 @@ fn run_map(
         l
     };
     // Arm for a spawn; returns the class's perks (with their Pro perks: everything is unlocked).
-    let equip =
-        |arsenal: &mut arsenal::Arsenal, gfx: &mut Shim, class: Option<usize>, primary: u8| {
-            let l = loadout_of(class, primary);
-            let l = l.as_ref();
+    let equip_loadout =
+        |arsenal: &mut arsenal::Arsenal, gfx: &mut Shim, l: Option<&wpk::classes::Loadout>| {
             arsenal.equip(
                 gfx,
                 &arsenal::WeaponTables {
@@ -1097,6 +1121,11 @@ fn run_map(
                 (Some(c), Some(l)) => game_core::perks::of_loadout(c, l),
                 _ => game_core::perks::PerkSet::default(),
             }
+        };
+    let equip =
+        |arsenal: &mut arsenal::Arsenal, gfx: &mut Shim, class: Option<usize>, primary: u8| {
+            let l = loadout_of(class, primary);
+            equip_loadout(arsenal, gfx, l.as_ref())
         };
     let mut perk_set = equip(&mut arsenal, gfx, class, debug.primary);
     // The class menu at the first frame (`Loadouts::ask`).
@@ -1127,22 +1156,37 @@ fn run_map(
             dm
         }
     };
-    // Bot i carries the primary of MW2's default class i (Grenadier, First Recon ...), else the fallback.
-    let bot_gun = |i: usize| -> Option<Gun> {
-        let names = loadouts
+    // Bot i carries MW2's default class i (Grenadier, First Recon ...): its primary (else the fallback) and perks.
+    let bot_loadout = |i: usize| -> Option<wpk::classes::Loadout> {
+        let c = loadouts.catalog?;
+        c.defaults
+            .get((i + c.defaults.len().max(1) - 1) % c.defaults.len().max(1))
+            .cloned()
+    };
+    // The weapon of a class slot's names (with attachments first), `fallback` without them.
+    let class_weapon = |l: Option<&wpk::classes::Loadout>, secondary: bool, fallback: &str| {
+        loadouts
             .catalog
-            .and_then(|c| {
-                let l = c
-                    .defaults
-                    .get((i + c.defaults.len().max(1) - 1) % c.defaults.len().max(1))?;
-                let mut n = c.weapon_names(l.primary, l.primary_attachments);
-                n.push(alloc::format!(
-                    "{}_mp",
-                    c.weapons.get(usize::from(l.primary))?.name
-                ));
+            .zip(l)
+            .and_then(|(c, l)| {
+                let (w, att) = if secondary {
+                    (l.secondary, l.secondary_attachments)
+                } else {
+                    (l.primary, l.primary_attachments)
+                };
+                let item = c.weapons.get(usize::from(w))?;
+                // Last Stand's pistol is the class's sidearm, else `beretta_mp` (`_damage.gsc`).
+                if secondary && item.kind != wpk::classes::group::PISTOL {
+                    return None;
+                }
+                let mut n = c.weapon_names(w, att);
+                n.push(alloc::format!("{}_mp", item.name));
                 Some(n)
             })
-            .unwrap_or_else(|| alloc::vec![alloc::string::String::from("m4_mp")]);
+            .unwrap_or_else(|| alloc::vec![alloc::string::String::from(fallback)])
+    };
+    // A gun of the first of `names` the pack has, with MW2's frag when `frag`.
+    let make_gun = |names: &[alloc::string::String], frag: bool| -> Option<Gun> {
         names.iter().find_map(|n| {
             let (index, rec) = wpk::weapon::find_indexed(weapons, n)?;
             let mut g = Gun::with_index(&rec, index)?;
@@ -1159,20 +1203,40 @@ fn run_map(
                 pen_table,
             };
             g.set_penetration(arsenal::penetration(&tables, index));
-            if let Some(row) = arsenal::offhand_row(&tables, "frag_grenade_mp") {
+            if frag && let Some(row) = arsenal::offhand_row(&tables, "frag_grenade_mp") {
                 g.set_offhands(&[row], arsenal::OFFHAND_CLASS_FRAG, 2);
             }
             Some(g)
         })
     };
+    // A copied class (Copycat) replaces the bot's own for that life.
+    let bot_gun = |i: usize, copied: Option<&wpk::classes::Loadout>| -> Option<Gun> {
+        let own = bot_loadout(i);
+        make_gun(&class_weapon(copied.or(own.as_ref()), false, "m4_mp"), true)
+    };
     let mut arena = match (&clip, &player) {
         (Some(c), Some(p)) if !spawn_list.is_empty() => {
             Some(Arena::new(c, &spawn_list, bots, p.clone(), rules, |i| {
-                if i == 0 { None } else { bot_gun(i) }
+                if i == 0 { None } else { bot_gun(i, None) }
             }))
         }
         _ => None,
     };
+    // The bots' classes and their perks, their Last Stand pistols; the perk rules; Martyrdom's frag.
+    if let Some(a) = arena.as_mut() {
+        a.life_rules = life_rules;
+        a.martyrdom = wpk::weapon::find_indexed(weapons, "frag_grenade_mp").map(|(i, _)| i);
+        for i in 1..a.fighters.len() {
+            let l = bot_loadout(i);
+            let perks = match (loadouts.catalog, l.as_ref()) {
+                (Some(c), Some(l)) => game_core::perks::of_loadout(c, l),
+                _ => game_core::perks::PerkSet::default(),
+            };
+            a.fighters[i].sidearm = make_gun(&class_weapon(l.as_ref(), true, "beretta_mp"), false);
+            a.set_class(i, l, perks);
+            a.spawned(i, ffi::ms());
+        }
+    }
     if let Some(a) = arena.as_mut() {
         if let Some(o) = map_objects {
             a.objects = o;
@@ -1267,7 +1331,31 @@ fn run_map(
         if setup.0 == arena::Mode::Dom {
             a.dom = game_core::dom::Domination::from_objectives(&objectives);
         }
+        // Your class and its perks in the arena (bots read them: Cold-Blooded, Scrambler; Copycat copies them).
+        a.set_class(0, loadout_of(class, debug.primary), perk_set.clone());
+        a.spawned(0, ffi::ms());
     }
+    // The killcam's record of everyone (MEM2) and your death's flow (`game_core::killcam`).
+    let mut replay = arena
+        .as_ref()
+        .and_then(|a| replay::Replay::new(a, ffi::ms()));
+    if let Some(r) = replay.as_ref() {
+        devlog::event(
+            ffi::ms(),
+            "killcam_ring",
+            format_args!(
+                "bytes={} frames={} slots={}",
+                r.bytes,
+                r.ring.frames(),
+                r.ring.slots()
+            ),
+        );
+    }
+    let mut death: Option<game_core::killcam::Death> = None;
+    // The match's last kill (killer, victim, when) for the final killcam.
+    let mut last_kill: Option<(usize, usize, u32)> = None;
+    // One Man Army changing the class: since when, for how long, to which class.
+    let mut oma: Option<(u32, u32, usize)> = None;
     // Below the lowest spawn point by this much is out of the world.
     let floor_z = world
         .spawns
@@ -1579,12 +1667,42 @@ fn run_map(
                 arsenal.guns[1].as_ref().map(held),
             ];
         }
+        // Down in last stand (not Final Stand): the pistol only, no switching (`DisableWeaponSwitch`).
+        let downed = arena
+            .as_ref()
+            .and_then(|a| a.fighters[0].last_stand)
+            .is_some_and(|l| !l.final_stand);
         // Y: the other weapon (MW2's console layout). Over a weapon on the ground, Y held for IW4L's
-        // `ITEM_USE_HOLD_MS` takes it in place of the one in hand; let go sooner, it switches as usual.
+        // `ITEM_USE_HOLD_MS` takes it in place of the one in hand; let go sooner, it switches as usual. With One Man
+        // Army the other weapon is the bag: its class menu (`selectOneManArmyClass`; the match waits here, unlike
+        // MW2's), then the change (`giveOneManArmyClass`).
         let over = arena.as_ref().and_then(|a| a.item_hint);
         let mut switch_now = false;
-        if ctl.pressed(act::SWITCH) && !flying && life.alive() {
-            if over.is_some() {
+        if ctl.pressed(act::SWITCH) && !flying && life.alive() && !downed && oma.is_none() {
+            if perk_set.one_man_army && !loadouts.classes.is_empty() {
+                unsafe { ffi::mwf_snd_stop_all() };
+                front::grab_screen();
+                if let Some(c) = front::pick_class(
+                    gfx,
+                    input,
+                    loadouts.catalog,
+                    &front::choose_class_title(),
+                    loadouts.classes,
+                    loadouts.cursor,
+                    Some(&front::grabbed),
+                ) {
+                    let ms = if perk_set.oma_quick {
+                        life_rules.oma_quick_ms
+                    } else {
+                        life_rules.oma_ms
+                    };
+                    oma = Some((ffi::ms(), ms, c));
+                    devlog::event(now, "one_man_army", format_args!("class={c} ms={ms}"));
+                }
+                last = ffi::ms();
+                frame_start = ffi::us();
+                continue;
+            } else if over.is_some() {
                 y_hold = Some(now);
             } else {
                 switch_now = true;
@@ -1636,9 +1754,29 @@ fn run_map(
                 format_args!("from={}", arsenal.active),
             );
         }
+        // One Man Army's change done: the new class in hand (`giveLoadout`), where you stand.
+        if let Some((t0, ms, c)) = oma
+            && now.wrapping_sub(t0) >= ms
+        {
+            oma = None;
+            if life.alive() {
+                class = Some(c);
+                perk_set = equip(&mut arsenal, gfx, class, debug.primary);
+                if let Some(a) = arena.as_mut() {
+                    a.set_class(0, loadout_of(class, debug.primary), perk_set.clone());
+                }
+                devlog::event(now, "class_change", format_args!("class={c} oma=1"));
+            }
+        }
         // D-pad left (360; Z + D-pad left on the GameCube pad): the weapon's underbarrel launcher or shotgun and back
         // (MW2's action slot 3).
-        if ctl.pressed(act::ALT) && !flying && life.alive() && arsenal.alternate() {
+        if ctl.pressed(act::ALT)
+            && !flying
+            && life.alive()
+            && !downed
+            && oma.is_none()
+            && arsenal.alternate()
+        {
             devlog::event(now, "alt_request", format_args!("from={}", arsenal.active));
         }
         // Call in the newest killstreak reward (D-pad right on the 360 pad, as MW2's action slot 4; D-pad left on the
@@ -1715,6 +1853,7 @@ fn run_map(
         };
         let (forward, right) = look::to_move(main_stick);
         let ads_held = ctl.held(act::ADS);
+        let offhand_ok = !downed || perk_set.last_stand_offhand;
         // A thrown knife in reach: X (MW2's use / reload button) picks it up instead of reloading.
         let knife_near = match (arena.as_ref(), clip.as_ref()) {
             (Some(a), Some(c)) if life.alive() && !flying => a.knife_in_reach(c, 0, |w| {
@@ -1860,6 +1999,9 @@ fn run_map(
                     // The class's perks and move speed (MW2: the primary's class, Lightweight), every step since a
                     // spawn resets the player state.
                     p.ps.perks = perk_set.bits;
+                    // Scrambler's radar jam is an entity flag (IW4L `perk_bits`).
+                    p.ps.e_flags =
+                        (p.ps.e_flags & !playerstate_iw4::eflags::RADAR_JAM) | perk_set.e_flags();
                     p.ps.move_speed_scale_multiplier = {
                         let class = arsenal.guns[0].as_ref().and_then(|g| {
                             game_core::perks::speed_class(
@@ -1944,7 +2086,19 @@ fn run_map(
                         cam.yaw += g.kick_angles[1];
                     }
                     if fall > 0 && !debug.god_mode {
-                        life.damage(fall, now);
+                        // Through the arena: a fall can send Last Stand down (`MOD_FALLING`).
+                        match arena.as_mut() {
+                            Some(a) => {
+                                a.fighters[0].life = life;
+                                a.fighters[0].player.ps = p.ps;
+                                a.fall_damage(0, fall, now, &mut events);
+                                life = a.fighters[0].life;
+                                a.sync_last_stand(0, &mut p.ps);
+                            }
+                            None => {
+                                life.damage(fall, now);
+                            }
+                        }
                         // A fall kicks the view as damage from nowhere (IW4 `P_DamageFeedback`, the world).
                         view_kick.hit(&p.ps, None, fall, now);
                     }
@@ -2098,15 +2252,17 @@ fn run_map(
                             c,
                             tick_ms,
                             &GunInput {
-                                fire: ctl.held(act::FIRE) && lock_ok,
+                                // One Man Army's change takes the weapon (`_disableWeapon`); last stand the
+                                // melee and, without its Pro perk, the grenades (`DisableOffhandWeapons`).
+                                fire: ctl.held(act::FIRE) && lock_ok && oma.is_none(),
                                 // Akimbo fires its left gun with the aim trigger.
                                 ads: ads_held,
-                                reload: reload_held,
+                                reload: reload_held && oma.is_none(),
                                 // Melee: the right stick click (360, Default) or D-pad right (GameCube).
-                                melee: ctl.held(act::MELEE),
+                                melee: ctl.held(act::MELEE) && oma.is_none() && !downed,
                                 // Lethal and tactical grenades, held to cook (RB / LB; D-pad up / down).
-                                frag: ctl.held(act::FRAG),
-                                smoke: ctl.held(act::TACTICAL),
+                                frag: ctl.held(act::FRAG) && oma.is_none() && offhand_ok,
+                                smoke: ctl.held(act::TACTICAL) && oma.is_none() && offhand_ok,
                                 pm_flags: p.ps.pm_flags,
                                 perks: p.ps.perks,
                                 switch_to,
@@ -2283,6 +2439,7 @@ fn run_map(
                             next_trail = (next_trail + 1) % shot_trails.len();
                             if let Some(a) = arena.as_mut() {
                                 a.fighters[0].last_fire_ms = Some(now);
+                                a.fighters[0].fire_silenced = game_core::perks::silenced(g.name());
                                 let facts = *g.facts();
                                 a.bullet(0, s, &facts, now, &mut events);
                                 for pellet in g.extra_pellets() {
@@ -2331,13 +2488,66 @@ fn run_map(
                 }
             }
             (Some(_), Some(c)) if !flying => {
-                // Dead: the view stays where the player fell until the respawn. A second in (the gun's last sounds
-                // have played from its file), the next life's weapon files stream in, a slice a frame.
-                if life.respawn_in(now) <= game_core::life::RESPAWN_DELAY_MS.saturating_sub(1000) {
-                    let l = loadout_of(class, debug.primary);
+                // Dead: MW2's death sequence (the view stays where you fell), the killcam from your killer's eye,
+                // then the respawn (`game_core::killcam::Death`).
+                let d = death.get_or_insert_with(|| {
+                    let killer = arena
+                        .as_ref()
+                        .and_then(|a| a.fighters[0].last_attacker)
+                        .filter(|&k| k != 0);
+                    let copycat = arena
+                        .as_ref()
+                        .is_some_and(|a| a.fighters[0].copycat_from.is_some());
+                    if let Some(r) = replay.as_mut() {
+                        r.restart();
+                    }
+                    devlog::event(
+                        now,
+                        "death",
+                        format_args!("killer={killer:?} copycat={}", u8::from(copycat)),
+                    );
+                    game_core::killcam::Death::start(now, 0, killer, life_rules.killcam, copycat)
+                });
+                // The class of the next life: Copycat's copy for one life, else yours.
+                let next_class = || {
+                    arena
+                        .as_ref()
+                        .and_then(|a| a.fighters[0].copied.as_ref().map(|c| c.0.clone()))
+                        .or_else(|| loadout_of(class, debug.primary))
+                };
+                // A second in (the gun's last sounds have played from its file), the next life's weapon files
+                // stream in, a slice a frame.
+                if now.wrapping_sub(d.at_ms) >= 1000 {
+                    let l = next_class();
                     arsenal.prefetch(gfx, loadouts.catalog, l.as_ref());
                 }
-                if life.ready_to_respawn(now) {
+                // Copycat: Y takes the killer's class (`waitCopyCatButton`: `weapnext`), ending the killcam.
+                let mut copied_now = false;
+                if ctl.pressed(act::SWITCH)
+                    && let Some(a) = arena.as_mut()
+                    && a.use_copycat(0)
+                {
+                    reward_note = Some(("COPYCAT", now));
+                    copied_now = d.watching().is_some();
+                    devlog::event(now, "copycat", format_args!(""));
+                }
+                let span = replay.as_ref().and_then(|r| r.ring.span());
+                let was_watching = d.watching().is_some();
+                let next = d.update(now, ctl.held(act::USE), span);
+                if !was_watching && let Some(k) = d.watching() {
+                    devlog::event(
+                        now,
+                        "killcam",
+                        format_args!(
+                            "killer={} camtime={:.2} predelay_ms={}",
+                            k.killer,
+                            k.camtime,
+                            now.wrapping_sub(d.at_ms)
+                        ),
+                    );
+                }
+                if copied_now || next == game_core::killcam::Next::Respawn {
+                    death = None;
                     spawn += 1;
                     // MW2's spawn weighting, as for the bots.
                     // Your C4 and claymores from the last life go (`_weapons.gsc` on spawn).
@@ -2351,13 +2561,31 @@ fn run_map(
                         }
                         _ => spawn_player(&world, c, spawn),
                     });
-                    perk_set = equip(&mut arsenal, gfx, class, debug.primary);
+                    // Copycat's class for this life (its perks, Copycat kept), else yours.
+                    let copied = arena.as_mut().and_then(|a| a.fighters[0].copied.take());
+                    let worn = copied
+                        .as_ref()
+                        .map(|c| c.0.clone())
+                        .or_else(|| loadout_of(class, debug.primary));
+                    perk_set = match copied {
+                        Some((l, p)) => {
+                            equip_loadout(&mut arsenal, gfx, Some(&l));
+                            p
+                        }
+                        None => equip(&mut arsenal, gfx, class, debug.primary),
+                    };
                     if debug.all_killstreaks {
                         rewards = all_rewards();
                     }
                     life.respawn();
                     stance_button.reset();
                     view_kick.reset();
+                    oma = None;
+                    if let Some(a) = arena.as_mut() {
+                        a.fighters[0].life = life;
+                        a.set_class(0, worn, perk_set.clone());
+                        a.spawned(0, now);
+                    }
                 }
             }
             _ => fly::update(
@@ -2394,13 +2622,26 @@ fn run_map(
             a.update_items(c, now, &mut events);
             a.update_objectives(dt * 1000.0, now, &mut events);
             a.footsteps(c, &mut events);
+            // Last stand's bleed-out, Final Stand's revive; holding X gives up (`lastStandAllowSuicide`).
+            a.update_last_stand(now, ctl.held(act::USE), &mut events);
             life = a.fighters[0].life;
+            // Down in last stand you crawl, back up you stand (your player lives outside the arena).
+            if let Some(p) = player.as_mut() {
+                a.sync_last_stand(0, &mut p.ps);
+            }
             // Hits slow you (IW4 damage timer, set on the arena's copy of you).
             if let Some(p) = player.as_mut() {
                 let ps = &a.fighters[0].player.ps;
                 p.ps.damage_timer = ps.damage_timer;
                 p.ps.damage_duration = ps.damage_duration;
                 p.ps.flinch_yaw_anim = ps.flinch_yaw_anim;
+            }
+        }
+        // The killcam's record: everyone's pose this server frame, and the impacts.
+        if let (Some(r), Some(a)) = (replay.as_mut(), arena.as_ref()) {
+            r.record(a, now, arsenal.gun().map(|g| g.weapon_index()));
+            for e in &events {
+                r.note(now, e, effects.as_ref());
             }
         }
         for e in events.drain(..) {
@@ -2681,7 +2922,34 @@ fn run_map(
                         ),
                     );
                 }
+                Event::LastStand {
+                    victim,
+                    final_stand,
+                } => {
+                    // Last Stand: the class's pistol in hand (`switchToWeapon( pistolWeapon )`; MW2 gives a Beretta
+                    // to a class without one, which this build doesn't load mid-life).
+                    if victim == 0
+                        && !final_stand
+                        && arsenal.active == 0
+                        && arsenal.guns[1]
+                            .as_ref()
+                            .is_some_and(|g| g.facts().weap_class == 5)
+                    {
+                        arsenal.switch();
+                    }
+                    devlog::event(
+                        now,
+                        "last_stand",
+                        format_args!("on={victim} final={}", u8::from(final_stand)),
+                    );
+                }
+                Event::Revived { fighter } => {
+                    devlog::event(now, "revived", format_args!("on={fighter}"));
+                }
                 Event::Kill { attacker, victim } => {
+                    if attacker != victim {
+                        last_kill = Some((attacker, victim, now));
+                    }
                     feed.rotate_right(1);
                     feed[0] = (Some((attacker, victim)), now);
                     // The killer's weapon in hand (yours from the arsenal) and whether the last hit was to the head.
@@ -2711,8 +2979,13 @@ fn run_map(
                             class.and_then(|i| loadouts.classes.get(i)),
                         ) {
                             for &k in &l.killstreaks {
+                                // Hardline: a kill sooner (`setKillstreaks`' modifier).
                                 if let Some(item) = c.killstreaks.get(usize::from(k))
-                                    && u32::from(item.kind) == streak
+                                    && game_core::perks::streak_cost(
+                                        item.kind,
+                                        perk_set.hardline,
+                                        life_rules.hardline_modifier,
+                                    ) == streak
                                 {
                                     rewards.push(item.name.clone());
                                     reward_note = Some(("KILLSTREAK READY: D-PAD LEFT", now));
@@ -2741,6 +3014,13 @@ fn run_map(
             sections[section::BOT_MOVE] = a.bot_cost.move_us;
             sections[section::BOT_GUN] = a.bot_cost.gun_us;
         }
+        // The killcam: the world from your killer's eye as it was.
+        let watching = death.as_ref().and_then(|d| d.watching().copied());
+        if let (Some(k), Some(r)) = (watching.as_ref(), replay.as_ref())
+            && let Some(kc) = r.camera(k, now, aspect)
+        {
+            cam = kc;
+        }
         let stats = world.draw(gfx, &cam, scratch);
         // Destructible objects, as part of the world.
         if let (Some(p), Some(a)) = (props.as_ref(), arena.as_ref()) {
@@ -2752,7 +3032,18 @@ fn run_map(
         }
         sections[section::WORLD] = lap(&mut mark);
         // The other players' bodies (timed with the placeholder boxes as `bod`).
-        if let (Some(ch), Some(a), true) = (characters.as_mut(), arena.as_ref(), debug.characters) {
+        if let (Some(k), Some(r)) = (watching.as_ref(), replay.as_mut()) {
+            r.draw(
+                gfx,
+                characters.as_mut().filter(|_| debug.characters),
+                effects.as_mut(),
+                k,
+                &cam,
+                now,
+            );
+        } else if let (Some(ch), Some(a), true) =
+            (characters.as_mut(), arena.as_ref(), debug.characters)
+        {
             poses.clear();
             // Living players, and the dead until they respawn (their death animations).
             for (i, f) in a.fighters.iter().enumerate().skip(1) {
@@ -3060,7 +3351,24 @@ fn run_map(
             }
         }
         sections[section::VIEW] = lap(&mut mark);
-        if !flying {
+        if let (Some(k), Some(u), Some(a)) = (watching.as_ref(), ui::get(), arena.as_ref()) {
+            // MW2's killcam HUD (`_killcam.gsc`), Copycat's offer while it stands.
+            let killer = fighter_name(k.killer);
+            let weapon = a.fighters[k.killer]
+                .gun
+                .as_ref()
+                .map(|g| weapon_display(loadouts.catalog, g.name()))
+                .unwrap_or_default();
+            let s = game_core::killcam_hud::Killcam {
+                safe_area: options.safe_area(),
+                final_kill: false,
+                timer_tenths: k.timer_tenths(now),
+                killer: killer.as_str(),
+                weapon: &weapon,
+                copycat: a.fighters[0].copycat_from.is_some(),
+            };
+            u.page(|ui, q| game_core::killcam_hud::killcam(ui, &s, q));
+        } else if !flying {
             // MW2's HUD (its fonts and images) when the common pack has the UI; else the plain one.
             let mw2 = ui::get().is_some() && arena.is_some();
             if let Some(g) = arsenal.gun().filter(|_| life.alive()) {
@@ -3308,7 +3616,8 @@ fn run_map(
                     reward: rewards.last().map(|r| r.as_str()),
                     // The splash stands in for the "killstreak ready" notice.
                     notice: reward_note.filter(|_| splash.is_none()),
-                    respawn_in: (!life.alive()).then(|| life.respawn_in(now).div_ceil(1000)),
+                    // MW2 shows no countdown: the death sequence and the killcam lead to the respawn.
+                    respawn_in: None,
                     nuke_in: a
                         .nuke
                         .filter(|n| !n.done)
@@ -3330,6 +3639,42 @@ fn run_map(
                 {
                     splash = None;
                 }
+                // The perks' notices: last stand, One Man Army's change, Painkiller.
+                let me = &a.fighters[0];
+                let notes = game_core::killcam_hud::Notices {
+                    safe_area: options.safe_area(),
+                    last_stand: me
+                        .last_stand
+                        .map(|l| (l.final_stand, now.wrapping_sub(l.since_ms))),
+                    changing_kit: oma
+                        .map(|(t0, ms, _)| now.wrapping_sub(t0) as f32 / ms.max(1) as f32),
+                    painkiller_ms: me
+                        .painkiller_until
+                        .filter(|_| me.painkiller(now))
+                        .map(|u| u.wrapping_sub(now)),
+                    note: None,
+                };
+                u.page(|ui, q| game_core::killcam_hud::notices(ui, &notes, q));
+                // Bomb Squad: enemy explosives marked through walls (`waypoint_bombsquad`, 14 × 14).
+                if let Some(t) = u.pack.icon("waypoint_bombsquad") {
+                    let marks: Vec<[f32; 2]> = a
+                        .explosives_seen_by(0)
+                        .filter_map(|o| cam.project([o[0], o[1], o[2] + 8.0]))
+                        .collect();
+                    if !marks.is_empty() {
+                        u.page(|_, q| {
+                            q.extend(marks.iter().map(|m| wpk::ui::Quad {
+                                x: m[0] - 7.0,
+                                y: m[1] - 7.0,
+                                w: 14.0,
+                                h: 14.0,
+                                uv: [0.0, 0.0, 1.0, 1.0],
+                                rgba: 0xffff_ffff,
+                                texture: t,
+                            }))
+                        });
+                    }
+                }
             } // The UAV's sweep, then the minimap.
             if let (Some((m, _)), Some(a)) = (world.minimap.as_ref(), arena.as_ref()) {
                 let enemies: Vec<(usize, [f32; 3])> = a
@@ -3337,7 +3682,8 @@ fn run_map(
                     .iter()
                     .enumerate()
                     .skip(1)
-                    .filter(|(_, f)| f.life.alive())
+                    // Cold-Blooded stays off the UAV's radar.
+                    .filter(|(i, f)| f.life.alive() && a.on_radar(*i))
                     .map(|(i, f)| (i, f.player.ps.origin))
                     .collect();
                 radar.sweep(m, radar_at, now, &enemies);
@@ -3442,6 +3788,69 @@ fn run_map(
                     a.leader().1
                 ),
             );
+            // MW2's final killcam of the match's last kill (`_damage.gsc` / IW4L `FinalKillcamSequence`), when the
+            // record still reaches it: slow motion around the kill, no skip.
+            if life_rules.killcam
+                && let (Some((killer, victim, at)), Some(r)) = (last_kill, replay.as_mut())
+                && let Some(kc) =
+                    game_core::killcam::final_killcam(killer, victim, at, ffi::ms(), r.ring.span())
+            {
+                devlog::event(
+                    now,
+                    "final_killcam",
+                    format_args!("killer={killer} victim={victim} camtime={:.2}", kc.camtime),
+                );
+                devlog::flush(now);
+                gfx.frame_end();
+                r.restart();
+                let weapon = match a.fighters[killer].gun.as_ref() {
+                    Some(g) => weapon_display(loadouts.catalog, g.name()),
+                    None if killer == 0 => arsenal
+                        .gun()
+                        .map(|g| weapon_display(loadouts.catalog, g.name()))
+                        .unwrap_or_default(),
+                    None => alloc::string::String::new(),
+                };
+                let name = fighter_name(killer);
+                loop {
+                    let t = ffi::ms();
+                    // A pad read a frame (no skip in the final killcam; a test script advances with it).
+                    let _ = ffi::pads();
+                    let Some(c) = r.camera(&kc, t, aspect) else {
+                        break;
+                    };
+                    world.draw(gfx, &c, scratch);
+                    if let Some(p) = props.as_ref() {
+                        p.draw(gfx, &c.view(), c.eye, c.forward(), &a.objects);
+                    }
+                    r.draw(
+                        gfx,
+                        characters.as_mut().filter(|_| debug.characters),
+                        effects.as_mut(),
+                        &kc,
+                        &c,
+                        t,
+                    );
+                    if let Some(fx) = effects.as_mut() {
+                        fx.draw_world(gfx, &c, t);
+                    }
+                    if let Some(u) = ui::get() {
+                        let s = game_core::killcam_hud::Killcam {
+                            safe_area: options.safe_area(),
+                            final_kill: true,
+                            timer_tenths: kc.timer_tenths(t),
+                            killer: name.as_str(),
+                            weapon: &weapon,
+                            copycat: false,
+                        };
+                        u.page(|ui, q| game_core::killcam_hud::killcam(ui, &s, q));
+                    }
+                    gfx.frame_end();
+                    if kc.over(t) || ffi::should_exit() {
+                        break;
+                    }
+                }
+            }
             devlog::end(now);
             scoreboard(gfx, input, a);
             return Exit::Menu;
@@ -3469,6 +3878,10 @@ fn run_map(
                 devlog::event(ffi::ms(), "class_change", format_args!("class={c}"));
                 class = Some(c);
                 perk_set = equip(&mut arsenal, gfx, class, debug.primary);
+                if let Some(a) = arena.as_mut() {
+                    a.set_class(0, loadout_of(class, debug.primary), perk_set.clone());
+                    a.spawned(0, ffi::ms());
+                }
             }
             // The match waited: no time passed.
             last = ffi::ms();

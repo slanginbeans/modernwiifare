@@ -132,6 +132,7 @@ fn mem2(count: usize) -> Option<&'static mut [u8]> {
 }
 
 /// What one player looks like and does this frame.
+#[derive(Clone, Copy)]
 pub struct Pose {
     /// The fighter's slot (its animation state).
     pub slot: usize,
@@ -431,6 +432,51 @@ impl Characters {
             .get(slot)
             .filter(|(t, l)| *t == now && !l.is_empty())
             .map(|(_, l)| l.as_slice())
+    }
+
+    /// The killcam's stand-in for the killer's first-person weapon: weapon record `weapon`'s world model (`GUNM`)
+    /// held in front of the eye at `in_view` (model to eye space; IW4 axes, x forward). Returns where its muzzle is
+    /// in the world (through `eye_to_world`) for the replay's flashes.
+    pub fn draw_held_in_view(
+        &self,
+        gfx: &mut impl Gfx,
+        weapon: u32,
+        in_view: &Mtx34,
+        eye_to_world: &Mtx34,
+    ) -> Option<([f32; 3], [f32; 3])> {
+        let held = self.held.as_ref()?;
+        let gun = held.model(weapon)?;
+        unsafe {
+            ffi::mwf_world_view();
+            ffi::mwf_view_arrays(gun.positions.as_ptr(), gun.attributes.as_ptr());
+        }
+        gfx.pos_matrix(in_view);
+        let mut last: Option<DrawState> = None;
+        for i in 0..gun.draws() {
+            let Some(d) = gun.draw(i) else { continue };
+            let state = DrawState {
+                tex: held
+                    .textures
+                    .get(usize::from(d.texture))
+                    .copied()
+                    .unwrap_or(-1),
+                lightmap: -1,
+                blend: d.blend,
+                alpha_ref: d.alpha_ref,
+                cull: 0,
+                tint: 0,
+            };
+            if last != Some(state) {
+                gfx.world_state(&state);
+                last = Some(state);
+            }
+            gfx.call_dl(d.dl);
+        }
+        let world = vmod::mul(eye_to_world, in_view);
+        let [o, f] = gun.flash;
+        let dir =
+            core::array::from_fn(|r| world[r][0] * f[0] + world[r][1] * f[1] + world[r][2] * f[2]);
+        Some((vmod::apply(&world, o), dir))
     }
 
     /// Where player `slot`'s muzzle was last drawn (world origin and forward), if it was.

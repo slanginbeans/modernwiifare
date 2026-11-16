@@ -454,6 +454,7 @@ dependencies = [
  "fx_iw4",
  "gamemode_iw4",
  "hud_iw4",
+ "killcam_iw4",
  "libm",
  "marks_iw4",
  "math_iw4",

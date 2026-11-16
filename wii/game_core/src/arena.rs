@@ -15,8 +15,16 @@ use crate::collision::{Body, MapClip};
 use crate::damage;
 use crate::gun::{Gun, GunInput, MASK_SHOT, Shot, SpreadInput};
 use crate::life::Life;
+use crate::perks::{Deathstreak, Means, PerkSet};
 use crate::player::Player;
 use wpk::rules::Rules;
+/// How far a bot hears an enemy's footsteps (ours: MW2's bots are players, and IW4L's bots don't hear steps). Ninja
+/// Pro's steps aren't heard.
+const STEP_HEARING: f32 = 600.0;
+/// How long a footstep stays heard.
+const STEP_HEARD_MS: u32 = 600;
+/// A bot under its UAV loses it near an enemy Scrambler once the jam is this strong (the radar's static).
+const BOT_JAM_LIMIT: f32 = 0.5;
 /// How far a bot looks to either side of where it faces, and how far it sees (IW4L `bots` sensor: a 90° field of
 /// view, 5906 units).
 const VIEW_HALF_DEG: f32 = 45.0;
@@ -77,6 +85,41 @@ pub struct Fighter {
     last_bob: Option<u8>,
     /// A riot shield in the hands or on the back ([`crate::shield`]).
     pub shield: crate::shield::Carry,
+    /// This life's perks (the class's, or a copied class's with Copycat), and the class itself with its perks (set
+    /// with [`Arena::set_class`]; Copycat copies it).
+    pub perks: PerkSet,
+    pub class: Option<(wpk::classes::Loadout, PerkSet)>,
+    /// Deaths since this fighter's last kill (MW2's `cur_death_streak`).
+    pub deaths_in_row: u32,
+    /// The deathstreak active this life, and Painkiller's end.
+    pub deathstreak: Option<Deathstreak>,
+    pub painkiller_until: Option<u32>,
+    /// Down in last stand (or Final Stand).
+    pub last_stand: Option<LastStand>,
+    /// Final Stand (or Last Stand) used up this life (`unsetFinalStand` takes the perk once you're back up).
+    last_stand_used: bool,
+    /// Copycat: the killer whose class this fighter may copy until it respawns, and the class copied for the next
+    /// life (with its perks).
+    pub copycat_from: Option<usize>,
+    pub copied: Option<(wpk::classes::Loadout, PerkSet)>,
+    /// Whether the last shot was silenced (silenced shots don't show on the radar or reach the bots' ears).
+    pub fire_silenced: bool,
+    /// When this fighter's last audible footstep fell (Ninja Pro's don't).
+    pub last_step_heard_ms: Option<u32>,
+    /// A bot's pistol for last stand (`_damage.gsc`: the sidearm, `beretta_mp` without one); swapped with the gun
+    /// while down.
+    pub sidearm: Option<Gun>,
+    sidearm_out: bool,
+}
+
+/// A fighter down in last stand (`_damage.gsc` `Callback_PlayerLastStand`): since when, who put them down (credited
+/// when they bleed out), Final Stand (gets back up) or Last Stand, and when the human began holding use to give up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LastStand {
+    pub since_ms: u32,
+    pub attacker: usize,
+    pub final_stand: bool,
+    pub give_up_from: Option<u32>,
 }
 
 impl Fighter {
@@ -110,7 +153,44 @@ impl Fighter {
             last_step_ms: 0,
             last_bob: None,
             shield: crate::shield::Carry::None,
+            perks: PerkSet::default(),
+            class: None,
+            deaths_in_row: 0,
+            deathstreak: None,
+            painkiller_until: None,
+            last_stand: None,
+            last_stand_used: false,
+            copycat_from: None,
+            copied: None,
+            fire_silenced: false,
+            last_step_heard_ms: None,
+            sidearm: None,
+            sidearm_out: false,
         }
+    }
+
+    /// This life's perks: their bits into the player state (IW4L's movement and weapon code read them; Scrambler's
+    /// radar jam is an entity flag), their damage scales.
+    pub fn set_perks(&mut self, perks: PerkSet, rules: &Rules) {
+        self.bullet_scale = perks.bullet_scale(rules);
+        self.explosive_scale = perks.explosive_scale(rules);
+        self.player.ps.perks = perks.bits;
+        self.player.ps.e_flags =
+            (self.player.ps.e_flags & !playerstate_iw4::eflags::RADAR_JAM) | perks.e_flags();
+        self.perks = perks;
+    }
+
+    /// Painkiller is on at `now`.
+    pub fn painkiller(&self, now: u32) -> bool {
+        self.painkiller_until
+            .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
+    }
+
+    /// Whether this fighter can still go down in last stand this life (Last Stand, or Final Stand's deathstreak).
+    fn can_last_stand(&self) -> bool {
+        !self.last_stand_used
+            && self.last_stand.is_none()
+            && (self.perks.last_stand || self.deathstreak == Some(Deathstreak::FinalStand))
     }
 
     /// Where to draw this fighter at `now`: between its last two steps (bots step every 50 ms).
@@ -212,6 +292,15 @@ pub enum Event {
     /// A destructible object blew up at `origin`.
     ObjectExploded {
         origin: [f32; 3],
+    },
+    /// `victim` went down in last stand (or Final Stand).
+    LastStand {
+        victim: usize,
+        final_stand: bool,
+    },
+    /// `fighter` got back up from Final Stand.
+    Revived {
+        fighter: usize,
     },
 }
 
@@ -370,6 +459,12 @@ pub struct Arena {
     pub item_hint: Option<usize>,
     /// Each fighter's origin at the last [`Arena::update_items`] while alive (None: dead then).
     touch_prev: Vec<Option<[f32; 3]>>,
+    /// Perk, deathstreak and last stand rules from the user's scripts (`LIFE`).
+    pub life_rules: wpk::life_rules::LifeRules,
+    /// The grenade Martyrdom drops (`frag_grenade_mp`'s weapon index; None: none dropped).
+    pub martyrdom: Option<u32>,
+    /// The time of the last [`Arena::update_bots`] (footsteps are stamped with it).
+    clock_ms: u32,
 }
 
 /// IW4 surface type glass (`SURF_TYPE_GLASS`) and impact type small bullet, for the break effect's impacts.
@@ -593,6 +688,9 @@ impl Arena {
             items: crate::item::Items::new(),
             item_hint: None,
             touch_prev: Vec::new(),
+            life_rules: wpk::life_rules::LifeRules::default(),
+            martyrdom: None,
+            clock_ms: 0,
         };
         a.fighters.push(Fighter::new(human, gun(0), None, &rules));
         for i in 1..=bots {
@@ -676,11 +774,116 @@ impl Arena {
         f.prev_origin = o;
         f.act = Act::default();
         f.life.respawn();
+        // The pistol back to its pocket before the new life's gun.
+        if core::mem::take(&mut f.sidearm_out) {
+            core::mem::swap(&mut f.gun, &mut f.sidearm);
+        }
         f.gun = gun;
         f.last_attacker = None;
         if let Some(b) = f.brain.as_mut() {
             b.respawned();
         }
+    }
+
+    /// Give fighter `i` its class and the class's perks (bots: MW2's default classes; the human: on every spawn and
+    /// class change). Damage scales follow the perks.
+    pub fn set_class(&mut self, i: usize, loadout: Option<wpk::classes::Loadout>, perks: PerkSet) {
+        let rules = self.rules;
+        let f = &mut self.fighters[i];
+        f.class = loadout.map(|l| (l, perks.clone()));
+        f.set_perks(perks, &rules);
+    }
+
+    /// Fighter `i` (re)spawned at `now`: the deathstreak its deaths in a row earn (`_class.gsc` `giveLoadout`) and
+    /// Painkiller's time (`setCombatHigh`); last stand, Copycat's offer and Martyrdom reset.
+    pub fn spawned(&mut self, i: usize, now: u32) {
+        let lr = self.life_rules;
+        let f = &mut self.fighters[i];
+        f.deathstreak = f.perks.deathstreak_due(f.deaths_in_row);
+        f.painkiller_until = (f.deathstreak == Some(Deathstreak::Painkiller))
+            .then(|| now.wrapping_add(lr.painkiller_ms));
+        f.last_stand = None;
+        f.last_stand_used = false;
+        f.copycat_from = None;
+    }
+
+    /// Fighter `i` takes the class of the killer its Copycat offers (`waitCopyCatButton`): for its next life. True
+    /// when there was one to copy.
+    pub fn use_copycat(&mut self, i: usize) -> bool {
+        let Some(k) = self.fighters[i].copycat_from.take() else {
+            return false;
+        };
+        let Some((l, p)) = self.fighters.get(k).and_then(|f| f.class.clone()) else {
+            return false;
+        };
+        let mine = self.fighters[i].perks.clone();
+        self.fighters[i].copied = Some((l, crate::perks::copied(p, &mine)));
+        true
+    }
+
+    /// Fighter `i`'s player state follows the arena's last stand (the human's player lives outside the arena:
+    /// down, it crawls; back up, it stands).
+    pub fn sync_last_stand(&self, i: usize, ps: &mut playerstate_iw4::PlayerState) {
+        match (
+            self.fighters[i].last_stand.is_some(),
+            crate::perks::in_last_stand(ps),
+        ) {
+            (true, false) => crate::perks::enter_last_stand(ps),
+            (false, true) => crate::perks::revive(ps),
+            _ => {}
+        }
+    }
+
+    /// Whether fighter `i` shows on its enemies' UAV radar (Cold-Blooded doesn't: IW4L
+    /// `hud_iw4::radar_contact_trail_visible` on its perk bits).
+    pub fn on_radar(&self, i: usize) -> bool {
+        hud_iw4::radar_contact_trail_visible(self.fighters[i].player.ps.perks[0])
+    }
+
+    /// How strongly fighter `me`'s radar is jammed by the nearest enemy Scrambler (IW4L `hud_iw4`
+    /// `radar_jam_nearest_distance` / `radar_jam_intensity`: full within 350 units, none past 800; an EMP jams
+    /// fully). 0..1.
+    pub fn radar_jam(&self, me: usize, now: u32) -> f32 {
+        let emp = self.fighters.iter().enumerate().any(|(i, f)| {
+            self.enemies(me, i)
+                && f.emp_until
+                    .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
+        });
+        let origin = self.fighters[me].player.ps.origin;
+        let jammers = self
+            .fighters
+            .iter()
+            .enumerate()
+            .filter(|(i, f)| {
+                self.enemies(me, *i)
+                    && f.life.alive()
+                    && (*i != 0 || self.human_present)
+                    && f.player.ps.e_flags & playerstate_iw4::eflags::RADAR_JAM != 0
+            })
+            .map(|(_, f)| f.player.ps.origin);
+        let dist = hud_iw4::radar_jam_nearest_distance(origin, jammers);
+        hud_iw4::radar_jam_intensity(
+            dist,
+            hud_iw4::RADARJAM_DIST_MIN,
+            hud_iw4::RADARJAM_DIST_MAX,
+            emp,
+        )
+    }
+
+    /// Where fighter `me` sees enemy explosives with Bomb Squad (`_weapons.gsc` `bombSquadVisibilityUpdater`: the
+    /// enemies' C4, claymores, frags and semtex; nothing without the perk).
+    pub fn explosives_seen_by(&self, me: usize) -> impl Iterator<Item = [f32; 3]> + '_ {
+        use crate::grenade::Effect;
+        let sees = self.fighters[me].perks.bomb_squad;
+        self.grenades
+            .iter()
+            .filter(move |g| {
+                sees && g.owner != me
+                    && (!self.mode.teams() || self.enemies(me, g.owner))
+                    && !g.is_knife()
+                    && (g.charge().is_some() || crate::grenade::effect(&g.facts) == Effect::Blast)
+            })
+            .map(|g| g.origin)
     }
 
     /// Set the game type and limits before play: in team deathmatch the human and every second bot are allies, the
@@ -984,7 +1187,7 @@ impl Arena {
             });
         }
         for (victim, d, loc) in hits {
-            self.hurt(from, victim, d, loc, dir, now, out);
+            self.hurt(from, victim, d, loc, dir, now, out, Means::Bullet);
         }
     }
 
@@ -1322,7 +1525,16 @@ impl Arena {
         self.rng ^= self.rng >> 17;
         self.rng ^= self.rng << 5;
         let d = melee_damage + (self.rng % 5) as i32;
-        self.hurt(from, victim, d, damage::hitloc::NONE, forward, now, out);
+        self.hurt(
+            from,
+            victim,
+            d,
+            damage::hitloc::NONE,
+            forward,
+            now,
+            out,
+            Means::Melee,
+        );
         true
     }
 
@@ -1338,6 +1550,7 @@ impl Arena {
         dir: [f32; 3],
         now: u32,
         out: &mut Vec<Event>,
+        means: Means,
     ) {
         // No friendly fire in team modes (MW2's default `scr_team_fftype` 0); your own grenade still hurts you.
         if from != victim && self.mode.teams() && !self.enemies(from, victim) {
@@ -1346,7 +1559,14 @@ impl Arena {
         if victim == 0 && self.god_mode {
             return;
         }
+        let lr = self.life_rules;
         let v = &mut self.fighters[victim];
+        // Painkiller: a third of the damage (`cac_modified_damage`).
+        let d = if v.painkiller(now) {
+            crate::perks::painkiller_damage(d, means, lr.painkiller_divisor).max(1)
+        } else {
+            d
+        };
         v.last_attacker = Some(from);
         // The hit slows the victim for a moment (IW4L `update_damage_timer`: 100 ms a point, at most 750 ms).
         movement_iw4::update_damage_timer(&mut v.player.ps, d, Some(dir));
@@ -1356,6 +1576,39 @@ impl Arena {
             damage: d,
             location: loc,
         });
+        // A killing bullet or fall sends a Last Stand (or Final Stand) player down instead (`mayDoLastStand`; never
+        // from a teammate, already excluded above).
+        let head = loc == damage::hitloc::HEAD || loc == damage::hitloc::HELMET;
+        if v.life.alive()
+            && d >= v.life.health
+            && v.can_last_stand()
+            && crate::perks::may_last_stand(means, head)
+        {
+            let final_stand = v.deathstreak == Some(Deathstreak::FinalStand);
+            v.life.health = 1;
+            v.life.last_damage_ms = now;
+            crate::perks::enter_last_stand(&mut v.player.ps);
+            v.last_stand = Some(LastStand {
+                since_ms: now,
+                attacker: from,
+                final_stand,
+                give_up_from: None,
+            });
+            // Last Stand: the pistol (Final Stand keeps the weapons, `enableLastStandWeapons`).
+            if !final_stand && v.sidearm.is_some() && !v.sidearm_out {
+                core::mem::swap(&mut v.gun, &mut v.sidearm);
+                v.sidearm_out = true;
+                if let Some(g) = v.gun.as_mut() {
+                    g.refill_ammo();
+                    g.raise();
+                }
+            }
+            out.push(Event::LastStand {
+                victim,
+                final_stand,
+            });
+            return;
+        }
         if v.life.damage(d, now) {
             v.death = crate::character::Death {
                 location: loc,
@@ -1367,6 +1620,7 @@ impl Arena {
                 victim,
             });
             self.fighters[victim].streak = 0;
+            self.after_death(from, victim, now);
             if from != victim {
                 let head = loc == damage::hitloc::HEAD || loc == damage::hitloc::HELMET;
                 let (rules, uav_kills, limits) = (self.rules, self.bot_uav_kills, self.limits);
@@ -1386,9 +1640,113 @@ impl Arena {
                     self.team_score[team] += limits.kill_score;
                 }
                 let k = &mut self.fighters[from];
-                if k.brain.is_some() && uav_kills > 0 && k.streak == uav_kills {
+                // Hardline: a kill sooner.
+                let cost = crate::perks::streak_cost(
+                    uav_kills.min(255) as u8,
+                    k.perks.hardline,
+                    lr.hardline_modifier,
+                );
+                if k.brain.is_some() && uav_kills > 0 && k.streak == cost {
                     k.uav_until = Some(now.wrapping_add(rules.uav_time_ms));
                 }
+            }
+        }
+    }
+
+    /// A death's bookkeeping (`_damage.gsc` `PlayerKilled`): the victim's deaths in a row grow and the killer's end;
+    /// Copycat offers the killer's class (bots take it at once); Martyrdom drops a live grenade at the victim's feet;
+    /// last stand and Painkiller end.
+    fn after_death(&mut self, from: usize, victim: usize, now: u32) {
+        let enemy = from != victim && self.enemies(from, victim);
+        let v = &mut self.fighters[victim];
+        v.deaths_in_row += 1;
+        v.last_stand = None;
+        v.painkiller_until = None;
+        // `self.pers["copyCatLoadout"] = undefined`, then the killer's when this life had Copycat.
+        v.copied = None;
+        v.copycat_from = (enemy && v.deathstreak == Some(Deathstreak::Copycat)).then_some(from);
+        let bot = v.brain.is_some();
+        let martyr = v.deathstreak == Some(Deathstreak::Martyrdom);
+        let feet = v.player.ps.origin;
+        if from != victim {
+            self.fighters[from].deaths_in_row = 0;
+        }
+        if bot && self.fighters[victim].copycat_from.is_some() {
+            self.use_copycat(victim);
+        }
+        if martyr
+            && let Some(w) = self.martyrdom
+            && let Some(e) = wpk::records::get::<wpk::weapon::EquipRecord>(self.equips, w as usize)
+        {
+            let mut g = crate::grenade::Grenade::throw(
+                victim,
+                w,
+                e,
+                [feet[0], feet[1], feet[2] + 16.0],
+                [0.0, 0.0, -1.0],
+                [0.0; 3],
+                None,
+                now,
+            );
+            g.velocity = [0.0; 3];
+            self.grenades.push(g);
+        }
+    }
+
+    /// Fighter `i` lands for `d` fall damage (`MOD_FALLING`: Last Stand can send it down).
+    pub fn fall_damage(&mut self, i: usize, d: i32, now: u32, out: &mut Vec<Event>) {
+        if d > 0 {
+            let dir = [0.0, 0.0, -1.0];
+            self.hurt(i, i, d, damage::hitloc::NONE, dir, now, out, Means::Falling);
+        }
+    }
+
+    /// Run last stand at `now` (`lastStandTimer`): Final Stand gets back up after its time (`lastStandBleedOut` with
+    /// revive: full health, the perk spent); Last Stand bleeds out after its time, or once the human held use
+    /// (`human_use`) for the give-up time (`lastStandAllowSuicide`), the death credited to whoever put them down.
+    pub fn update_last_stand(&mut self, now: u32, human_use: bool, out: &mut Vec<Event>) {
+        let lr = self.life_rules;
+        for i in 0..self.fighters.len() {
+            let f = &mut self.fighters[i];
+            let Some(mut ls) = f.last_stand else {
+                continue;
+            };
+            if !f.life.alive() {
+                f.last_stand = None;
+                continue;
+            }
+            let held = now.wrapping_sub(ls.since_ms);
+            if ls.final_stand {
+                if held >= lr.final_stand_ms {
+                    f.last_stand = None;
+                    f.last_stand_used = true;
+                    f.life.health = f.life.max_health;
+                    crate::perks::revive(&mut f.player.ps);
+                    out.push(Event::Revived { fighter: i });
+                }
+                continue;
+            }
+            // The human holds use to give up (MW2's "cowards way out").
+            if i == 0 {
+                ls.give_up_from = if human_use {
+                    Some(ls.give_up_from.unwrap_or(now))
+                } else {
+                    None
+                };
+                f.last_stand = Some(ls);
+            }
+            let gave_up = ls
+                .give_up_from
+                .is_some_and(|t| now.wrapping_sub(t) > lr.give_up_ms);
+            if held >= lr.last_stand_ms || gave_up {
+                let dir = [0.0, 0.0, -1.0];
+                let hp = f.life.max_health * 1000;
+                let by = if ls.attacker < self.fighters.len() {
+                    ls.attacker
+                } else {
+                    i
+                };
+                self.hurt(by, i, hp, damage::hitloc::NONE, dir, now, out, Means::Other);
             }
         }
     }
@@ -1573,7 +1931,16 @@ impl Arena {
                     let dir: [f32; 3] =
                         core::array::from_fn(|k| f.player.ps.origin[k] - g.origin[k]);
                     let dist = libm::sqrtf(dir.iter().map(|x| x * x).sum());
-                    self.hurt(g.owner, v, d, damage::hitloc::NONE, dir, now, out);
+                    self.hurt(
+                        g.owner,
+                        v,
+                        d,
+                        damage::hitloc::NONE,
+                        dir,
+                        now,
+                        out,
+                        Means::Explosive,
+                    );
                     // An explosion's death animation: near (IW4 `ANIM_DAMAGE_EXPLOSION_NEAR_DIST_SQ`) or light.
                     if !self.fighters[v].life.alive() {
                         self.fighters[v].death.kind =
@@ -1744,7 +2111,16 @@ impl Arena {
             }
             let dir: [f32; 3] = core::array::from_fn(|k| feet[k] - origin[k]);
             let from = attacker.unwrap_or(v);
-            self.hurt(from, v, d, damage::hitloc::NONE, dir, now, out);
+            self.hurt(
+                from,
+                v,
+                d,
+                damage::hitloc::NONE,
+                dir,
+                now,
+                out,
+                Means::Explosive,
+            );
             if !self.fighters[v].life.alive() {
                 let near = dist2(feet, origin) < anim_iw4::ANIM_DAMAGE_EXPLOSION_NEAR_DIST_SQ;
                 self.fighters[v].death.kind = if near { 2 } else { 1 };
@@ -1840,6 +2216,8 @@ impl Arena {
                 dir,
                 now,
                 out,
+                // A grenade or rocket striking a body (`MOD_IMPACT`).
+                Means::Other,
             );
         }
         let gr = &mut self.grenades[i];
@@ -1918,7 +2296,7 @@ impl Arena {
         let y = g.yaw.to_radians();
         let fwd = [libm::cosf(y), libm::sinf(y), 0.0];
         let cos = libm::cosf(r.claymore_cone_deg.to_radians());
-        let tripped = self.fighters.iter().enumerate().any(|(v, f)| {
+        let tripped = self.fighters.iter().enumerate().find(|&(v, f)| {
             if !self.enemies(g.owner, v) || !f.life.alive() || (v == 0 && !self.human_present) {
                 return false;
             }
@@ -1948,8 +2326,14 @@ impl Arena {
             );
             t.fraction >= 1.0 && t.startsolid == 0
         });
-        if tripped {
-            let at = now.wrapping_add(r.claymore_grace_ms);
+        if let Some((_, by)) = tripped {
+            // Scrambler Pro (`specialty_delaymine`): the claymore waits longer for you.
+            let wait = if by.perks.delay_mine {
+                self.life_rules.delay_mine_ms
+            } else {
+                r.claymore_grace_ms
+            };
+            let at = now.wrapping_add(wait);
             let c = &mut self.grenades[i];
             c.trip_at_ms = Some(at);
             c.detonate_at(at);
@@ -1994,6 +2378,7 @@ impl Arena {
             g.velocity,
             now,
             out,
+            Means::Knife,
         );
     }
 
@@ -2113,12 +2498,14 @@ impl Arena {
             && !n.done
             && (now.wrapping_sub(n.detonate_ms.wrapping_add(self.rules.nuke_death_ms)) as i32) >= 0
         {
-            for (v, f) in self.fighters.iter_mut().enumerate() {
+            for v in 0..self.fighters.len() {
+                let f = &mut self.fighters[v];
                 if f.life.alive() && f.life.damage(f.life.max_health * 1000, now) {
                     out.push(Event::Kill {
                         attacker: n.owner,
                         victim: v,
                     });
+                    self.after_death(n.owner, v, now);
                 }
             }
             self.nuke = Some(Nuke { done: true, ..n });
@@ -2183,6 +2570,15 @@ impl Arena {
             } else {
                 gait::RUN
             };
+            // Ninja Pro: silent steps (MW2 plays faint `qstep_` aliases; IW4L `build_quiet_owned`): neither heard by
+            // the bots nor played for the others; you still hear your own.
+            let quiet = f.player.ps.perks[0] & playerstate_iw4::PERK_QUIETER != 0;
+            if quiet && i != 0 {
+                continue;
+            }
+            if !quiet {
+                f.last_step_heard_ms = Some(self.clock_ms);
+            }
             let o = f.player.ps.origin;
             let t = clip.trace(
                 [o[0], o[1], o[2] + 1.0],
@@ -2240,6 +2636,7 @@ impl Arena {
     fn contacts(&self, clip: &MapClip<'_>, me: usize, now: u32) -> Vec<Contact> {
         let f = &self.fighters[me];
         let jammed = self.radar_blocked(me, now);
+        let jam = self.radar_jam(me, now);
         let eye = f.player.eye();
         let (_, yaw) = f.player.view();
         self.fighters
@@ -2263,16 +2660,22 @@ impl Arena {
                         t.fraction >= 1.0
                     }
                     && !self.smoke.blocks(eye, aim, now);
-                // Under its UAV a bot knows where everyone is (as the radar shows them).
+                // Under its UAV a bot knows where everyone is (as the radar shows them): not Cold-Blooded enemies,
+                // nor anyone while a Scrambler's static fills its radar.
                 let uav = f
                     .uav_until
                     .is_some_and(|u| (u.wrapping_sub(now) as i32) > 0)
-                    && !jammed;
+                    && !jammed
+                    && jam <= BOT_JAM_LIMIT
+                    && self.on_radar(i);
+                // Gunfire is heard (silenced shots aren't), and footsteps nearby (Ninja Pro's aren't).
+                let near = |r: f32| dist2(feet, f.player.ps.origin) < r * r;
                 let heard = uav
                     || o.last_fire_ms.is_some_and(|t| {
-                        now.wrapping_sub(t) < 1500
-                            && dist2(feet, f.player.ps.origin) < HEARING * HEARING
-                    });
+                        !o.fire_silenced && now.wrapping_sub(t) < 1500 && near(HEARING)
+                    })
+                    || o.last_step_heard_ms
+                        .is_some_and(|t| now.wrapping_sub(t) < STEP_HEARD_MS && near(STEP_HEARING));
                 Contact {
                     id: i,
                     aim,
@@ -2295,21 +2698,32 @@ impl Arena {
         spawns: &[([f32; 3], f32)],
         now: u32,
         _frame_msec: i32,
-        mut regun: impl FnMut(usize) -> Option<Gun>,
+        mut regun: impl FnMut(usize, Option<&wpk::classes::Loadout>) -> Option<Gun>,
         out: &mut Vec<Event>,
     ) {
         // At most one new route a frame across all bots (A* is the costly part of a bot's turn).
         if let Some(n) = nav.as_deref_mut() {
             n.routes_left = 1;
         }
+        self.clock_ms = now;
         self.bot_cost = BotCost::default();
         let clock = self.clock;
         let us = || clock.map_or(0, |c| c());
         for i in 1..self.fighters.len() {
             if !self.fighters[i].life.alive() {
                 if self.fighters[i].life.ready_to_respawn(now) {
-                    let g = regun(i);
+                    // A copied class (Copycat) for this life only, else the bot's own.
+                    let copied = self.fighters[i].copied.take();
+                    let g = regun(i, copied.as_ref().map(|c| &c.0));
                     self.respawn(clip, spawns, i, g);
+                    let rules = self.rules;
+                    let f = &mut self.fighters[i];
+                    let perks = match copied {
+                        Some((_, p)) => p,
+                        None => f.class.as_ref().map(|c| c.1.clone()).unwrap_or_default(),
+                    };
+                    f.set_perks(perks, &rules);
+                    self.spawned(i, now);
                 }
                 continue;
             }
@@ -2379,10 +2793,19 @@ impl Arena {
                 act.melee = false;
                 act.frag = false;
             }
+            // Down in last stand: no grenades without its Pro perk (`DisableOffhandWeapons`), no melee.
+            if f.last_stand.is_some_and(|l| !l.final_stand) {
+                act.melee = false;
+                act.frag &= f.perks.last_stand_offhand;
+            }
             f.prev_origin = f.player.ps.origin;
             f.last_step_ms = now;
             let w = f.gun.as_ref().map(Gun::move_context).unwrap_or_default();
-            // MW2's move speed for the primary's class (`_weapons.gsc`; bots carry no perks).
+            // The class's perk bits (a spawn resets the player state) and MW2's move speed for the primary's class
+            // with Lightweight (`_weapons.gsc`, `_perkfunctions.gsc`).
+            f.player.ps.perks = f.perks.bits;
+            f.player.ps.e_flags =
+                (f.player.ps.e_flags & !playerstate_iw4::eflags::RADAR_JAM) | f.perks.e_flags();
             f.player.ps.move_speed_scale_multiplier = self.rules.move_speed(
                 f.gun.as_ref().and_then(|g| {
                     crate::perks::speed_class(
@@ -2390,7 +2813,7 @@ impl Arena {
                         g.name().starts_with("riotshield"),
                     )
                 }),
-                false,
+                f.perks.lightweight,
             );
             let mut steer = act.steer;
             steer.fire = act.fire;
@@ -2398,12 +2821,23 @@ impl Arena {
             let fall = f.player.steer(clip, &steer, &w, msec);
             let t2 = us();
             self.bot_cost.move_us += t2.wrapping_sub(t1);
-            if fall > 0 && f.life.damage(fall, now) {
-                out.push(Event::Kill {
-                    attacker: i,
-                    victim: i,
-                });
+            if fall > 0 {
+                // A fall can send a Last Stand bot down too (`MOD_FALLING`).
+                self.hurt(
+                    i,
+                    i,
+                    fall,
+                    damage::hitloc::NONE,
+                    [0.0, 0.0, -1.0],
+                    now,
+                    out,
+                    Means::Falling,
+                );
+                if !self.fighters[i].life.alive() {
+                    continue;
+                }
             }
+            let f = &mut self.fighters[i];
             let Some(g) = f.gun.as_mut() else {
                 continue;
             };
@@ -2453,6 +2887,7 @@ impl Arena {
             };
             if matches!(ev, Some(WeaponTickEvent::ShotAccepted { .. })) {
                 f.last_fire_ms = Some(now);
+                f.fire_silenced = crate::perks::silenced(g.name());
                 out.push(Event::BotFired {
                     bot: i,
                     path: shot.as_ref().map(|s| (s.start, s.pen_end)),
@@ -3464,6 +3899,177 @@ mod tests {
         assert!(!a.has_c4(0) && a.grenades.is_empty());
     }
 
+    fn perked(names: &[&str], deathstreak: Option<(Deathstreak, u32)>) -> PerkSet {
+        let mut p = PerkSet {
+            names: names
+                .iter()
+                .map(|n| alloc::string::String::from(*n))
+                .collect(),
+            deathstreak,
+            ..PerkSet::default()
+        };
+        for n in names {
+            let b = crate::perks::bits(n);
+            p.bits[0] |= b[0];
+            p.bits[1] |= b[1];
+        }
+        p.last_stand = p.has("specialty_pistoldeath");
+        p.cold_blooded = p.has("specialty_coldblooded");
+        p.scrambler = p.has("specialty_localjammer");
+        p.hardline = p.has("specialty_hardline");
+        p.bomb_squad = p.has("specialty_detectexplosive");
+        p
+    }
+
+    #[test]
+    fn perks_and_deathstreaks_change_the_fight() {
+        let clip = boxes(&[([-4000.0, -4000.0, -64.0], [4000.0, 4000.0, 0.0])]);
+        let mc = MapClip::new(&clip);
+        let spawns = [([0.0, 0.0, 0.0], 0.0), ([300.0, 0.0, 0.0], 180.0)];
+        let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+        let mut a = Arena::new(&mc, &spawns, 2, human, Rules::default(), |_| Some(rifle()));
+        let mut ev = Vec::new();
+        #[allow(clippy::too_many_arguments)]
+        fn hit(
+            a: &mut Arena,
+            from: usize,
+            to: usize,
+            d: i32,
+            loc: u8,
+            means: Means,
+            now: u32,
+            ev: &mut Vec<Event>,
+        ) {
+            a.hurt(from, to, d, loc, [1.0, 0.0, 0.0], now, ev, means);
+        }
+        // Last Stand: a killing body shot puts bot 1 down at 1 health, crawling; it bleeds out after 10 s, the kill
+        // credited to whoever put it down.
+        a.set_class(1, None, perked(&["specialty_pistoldeath"], None));
+        a.spawned(1, 0);
+        hit(
+            &mut a,
+            0,
+            1,
+            500,
+            damage::hitloc::TORSO_UPPER,
+            Means::Bullet,
+            1000,
+            &mut ev,
+        );
+        let f = &a.fighters[1];
+        assert!(f.life.alive() && f.life.health == 1 && f.last_stand.is_some());
+        assert!(crate::perks::in_last_stand(&f.player.ps));
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            Event::LastStand {
+                victim: 1,
+                final_stand: false
+            }
+        )));
+        a.update_last_stand(1000 + 9_000, false, &mut ev);
+        assert!(a.fighters[1].life.alive());
+        a.update_last_stand(1000 + 10_000, false, &mut ev);
+        assert!(!a.fighters[1].life.alive());
+        assert_eq!((a.fighters[0].kills, a.fighters[1].deaths_in_row), (1, 1));
+        // A headshot or an explosion kills outright.
+        a.fighters[1].life.respawn();
+        a.spawned(1, 20_000);
+        hit(
+            &mut a,
+            0,
+            1,
+            500,
+            damage::hitloc::HEAD,
+            Means::Bullet,
+            20_000,
+            &mut ev,
+        );
+        assert!(!a.fighters[1].life.alive() && a.fighters[1].last_stand.is_none());
+        // Painkiller after its deaths in a row: a third of the damage for 10 s.
+        a.fighters[2].life.respawn();
+        a.set_class(2, None, perked(&[], Some((Deathstreak::Painkiller, 3))));
+        a.fighters[2].deaths_in_row = 3;
+        a.spawned(2, 30_000);
+        assert_eq!(a.fighters[2].deathstreak, Some(Deathstreak::Painkiller));
+        hit(
+            &mut a,
+            0,
+            2,
+            90,
+            damage::hitloc::NONE,
+            Means::Bullet,
+            30_100,
+            &mut ev,
+        );
+        assert_eq!(a.fighters[2].life.health, 70);
+        hit(
+            &mut a,
+            0,
+            2,
+            30,
+            damage::hitloc::NONE,
+            Means::Bullet,
+            40_100,
+            &mut ev,
+        );
+        assert_eq!(a.fighters[2].life.health, 40, "worn off after 10 s");
+        // Final Stand: down, then back up at full health after 20 s.
+        a.fighters[2].life.respawn();
+        a.set_class(2, None, perked(&[], Some((Deathstreak::FinalStand, 4))));
+        a.fighters[2].deaths_in_row = 4;
+        a.spawned(2, 50_000);
+        hit(
+            &mut a,
+            0,
+            2,
+            500,
+            damage::hitloc::TORSO_UPPER,
+            Means::Bullet,
+            50_000,
+            &mut ev,
+        );
+        assert!(a.fighters[2].last_stand.is_some_and(|l| l.final_stand));
+        a.update_last_stand(70_000, false, &mut ev);
+        let f = &a.fighters[2];
+        assert!(f.life.alive() && f.life.health == f.life.max_health && f.last_stand.is_none());
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, Event::Revived { fighter: 2 }))
+        );
+        // Copycat: a bot killed by the human takes the human's class for its next life.
+        let mine = perked(&["specialty_coldblooded"], None);
+        a.set_class(0, Some(wpk::classes::Loadout::default()), mine);
+        a.fighters[1].life.respawn();
+        a.set_class(1, None, perked(&[], Some((Deathstreak::Copycat, 4))));
+        a.fighters[1].deaths_in_row = 4;
+        a.spawned(1, 60_000);
+        hit(
+            &mut a,
+            0,
+            1,
+            500,
+            damage::hitloc::NONE,
+            Means::Bullet,
+            60_000,
+            &mut ev,
+        );
+        let copied = a.fighters[1].copied.as_ref().map(|c| &c.1);
+        assert!(copied.is_some_and(|p| p.cold_blooded && p.deathstreak.is_some()));
+        // Cold-Blooded keeps the human off the bots' UAV; Scrambler jams nearby enemies' radar.
+        a.fighters[0].player.ps.perks = a.fighters[0].perks.bits;
+        assert!(!a.on_radar(0) && a.on_radar(2));
+        a.fighters[1].life.respawn();
+        a.set_class(1, None, perked(&["specialty_localjammer"], None));
+        a.fighters[1].player.ps.origin = [200.0, 0.0, 0.0];
+        a.fighters[0].player.ps.origin = [0.0, 0.0, 0.0];
+        assert_eq!(a.radar_jam(0, 70_000), 1.0);
+        a.fighters[1].player.ps.origin = [700.0, 0.0, 0.0];
+        let j = a.radar_jam(0, 70_000);
+        assert!(j > 0.0 && j < 0.5, "{j}");
+        a.fighters[1].player.ps.origin = [900.0, 0.0, 0.0];
+        assert_eq!(a.radar_jam(0, 70_000), 0.0);
+    }
+
     #[test]
     fn team_deathmatch_teams_scores_and_friendly_fire() {
         let clip = boxes(&[([-4000.0, -4000.0, -64.0], [4000.0, 4000.0, 0.0])]);
@@ -3493,6 +4099,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             1000,
             &mut ev,
+            Means::Bullet,
         );
         assert_eq!(a.fighters[2].life.health, a.fighters[2].life.max_health);
         // Killing an enemy scores for the team.
@@ -3504,6 +4111,7 @@ mod tests {
             [1.0, 0.0, 0.0],
             1000,
             &mut ev,
+            Means::Bullet,
         );
         assert!(!a.fighters[1].life.alive());
         assert_eq!(
@@ -3667,7 +4275,7 @@ mod tests {
                 &spawns,
                 1000 + f * 16,
                 16,
-                |_| Some(rifle()),
+                |_, _| Some(rifle()),
                 &mut ev,
             );
         }
@@ -3723,7 +4331,7 @@ mod tests {
                 &spawns,
                 1000 + f * 16,
                 16,
-                |_| Some(rifle()),
+                |_, _| Some(rifle()),
                 &mut ev,
             );
             for (i, x) in a.fighters.iter().enumerate() {

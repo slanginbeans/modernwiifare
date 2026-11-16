@@ -26,6 +26,7 @@ pub mod destructible;
 pub mod fx;
 pub mod held;
 pub mod light;
+pub mod life_rules;
 pub mod nav;
 pub mod player_anim;
 pub mod quant;
@@ -161,6 +162,9 @@ pub mod tag {
     pub const UI: Tag = *b"UIPK";
     /// Match rules from the user's game-type scripts ([`crate::rules::Rules`], in `common.wpk`).
     pub const RULES: Tag = *b"RULE";
+    /// Perk, deathstreak, last stand and respawn rules from the user's scripts
+    /// ([`crate::life_rules::LifeRules`], in `common.wpk`).
+    pub const LIFE_RULES: Tag = *b"LIFE";
     /// Weapons (`weapon::WeaponRecord`): combat numbers of every weapon (in `common.wpk`).
     pub const WEAPONS: Tag = *b"WEAP";
     /// World visibility (`vis::Vis`): cell BSP, cells, portals.

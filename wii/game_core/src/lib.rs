@@ -40,6 +40,8 @@ pub mod hud;
 pub mod hud_fx;
 pub mod hud_mw2;
 pub mod item;
+pub mod killcam;
+pub mod killcam_hud;
 pub mod life;
 pub mod light;
 pub mod loadout;

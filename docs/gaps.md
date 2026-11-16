@@ -48,11 +48,12 @@ bullets stop, blasts are hidden; not yet the shield model's own collision, ricoc
 character); weapon drops and pickups, Scavenger (`sim` item); ~~underbarrel grenade launcher / shotgun~~ done (D-pad
 left; not yet their own first-person animations) and ~~akimbo~~ done (two hands, shared reserve; not yet the left
 gun's first-person model, both magazines on the HUD, a dual-wield flag read from the data); hit boxes turned with the body and bullets through players (`sim`
-bullet_collision, `fire_extended`); glass (`entity_iw4::glass`); killcam (`killcam_iw4` timing; we need a pose ring);
+bullet_collision, `fire_extended`); glass (`entity_iw4::glass`); ~~killcam~~ done (`killcam_iw4` timing over our pose ring);
 killstreak primitives (sentry turrets, Predator `remote_missile`, helicopters, care package marker; the flow is
-hand-written from MW2's scripts); perks and deathstreaks with no effect yet (Cold-Blooded, Scrambler, Ninja,
-Hardline, One Man Army, Last Stand, Copycat, Painkiller, Martyrdom, Final Stand); silenced weapons off the radar;
-bot upgrades from IW4L `bots` (memory confidence, weapon switching, low-health recover, varied loadouts, perks).
+hand-written from MW2's scripts); ~~perks and deathstreaks~~ done (Cold-Blooded, Scrambler, Ninja Pro, Hardline,
+One Man Army, Last Stand, Bomb Squad, Copycat, Painkiller, Martyrdom, Final Stand; silenced weapons off the radar;
+bots carry their class's perks); bot upgrades from IW4L `bots` (memory confidence, weapon switching, low-health
+recover, varied loadouts).
 Since done (hit detection and world objects, IW4L's code as the reference, a trace against MW2 still to do): hit
 boxes turned with the body and per-bone boxes from the character models, bullets through players, glass, weapon
 drops and pickups with the Y-hold swap, Scavenger bags (`docs/runtime.md`, "Bots and damage").
@@ -101,7 +102,7 @@ scripted Dolphin runs, the PC menu preview.
    deaths: done. Spawns follow MW2's free-for-all weighting (`_spawnlogic.gsc`: distance to everyone, enemies in
    sight, the nearest enemy, the last spawn used): done. Still to do: the playlist's overrides (the stock script
    limit is 1000 points).
-9. ~~Crouch as MW2's console toggle; prone~~ done (tap / hold, IW4L's stance button). Footsteps done. Not yet: Ninja's quieter steps, bots hearing steps.
+9. ~~Crouch as MW2's console toggle; prone~~ done (tap / hold, IW4L's stance button). Footsteps done; bots hear steps (600 units, ours), Ninja Pro's are silent. Not yet: MW2's faint `qstep_` aliases.
 13. **Team deathmatch**: done (teams, team score, friendly fire off, team spawns, Game Setup with the scripts'
     limits). The stock script limits are low (500 points, 5 kills); MW2's retail playlists aren't readable from
     the install (`mp_playlists_dlc2`'s playlist is empty), so Game Setup offers longer limits. Domination: done (the map's flags from ``OBJS``; ``_gameobjects.gsc``'s proximity capture, ``min(players, 4)`` times real time, paused while contested; ``dom.gsc``'s limits, capture points, use time and score tick; bots head for flags they don't hold; HUD flag status). Not in Domination yet: MW2's flag-weighted spawns (TDM spawns are used), flag models, defend / assault points. Not yet: the other
@@ -115,15 +116,18 @@ scripted Dolphin runs, the PC menu preview.
 11. **Minimap and killstreaks**: the HUD minimap (map pack `MINI`: MW2's `setupMiniMap` frame, the script's
     `compassmaxrange`; turned with the view; firing pings), kill streaks with your class's streak costs, the UAV
     (radar sweep and ping fade from IW4L's compass, duration from `_uav.gsc`), bots' UAVs. EMP and the nuke: done. Counter-UAV: done (``_uav.gsc``: as long as a UAV, jams the enemies' radar: your minimap dims and shows nothing but you; bots under it lose their UAV's knowledge). Not yet: the other
-    streaks (care package, predator, sentry, harrier, airstrike, helicopters, AC-130), bots calling Counter-UAVs / EMPs / nukes,
-    Cold-Blooded / Scrambler on the radar, the minimap's fading edge and scan-line pass order.
+    streaks (care package, predator, sentry, harrier, airstrike, helicopters, AC-130), EMP's HUD blackout, bots calling Counter-UAVs / EMPs / nukes,
+    the minimap's fading edge and scan-line pass order (Cold-Blooded and Scrambler on the radar: done).
 10. **Perks** (`game_core::perks`): a class's three perks and their Pro perks (perkTable's upgrade column;
     everything unlocked) become IW4's `ps.perks` bits that IW4L's movement and weapon code read (Marathon,
-    Sleight of Hand, Steady Aim and their Pros, Commando's flag, ...); move speed by the primary's class and
+    Sleight of Hand, Steady Aim and their Pros, Commando's flag, Cold-Blooded's, Ninja Pro's, Last Stand's ...); move speed by the primary's class and
     Lightweight's scaler come from the user's `_weapons.gsc` / `_perkfunctions.gsc` (`RULE`); Stopping Power and Danger Close add `_perks.gsc`'s
-    `perk_bulletDamage` / `perk_explosiveDamage` percent to bullet / explosive damage. Scavenger bags: done (`game_core::item`). Not yet: Hardline and the killstreak perks, Cold-Blooded /
-    Scrambler / Ninja against radar and sound, Last Stand, One Man Army, deathstreaks (the bits are set; nothing
-    reads them).
+    `perk_bulletDamage` / `perk_explosiveDamage` percent to bullet / explosive damage. Done (`docs/runtime.md`, Life and match; numbers from
+    the user's scripts in `LIFE`): Cold-Blooded and Scrambler on the radar, Ninja Pro's steps, Hardline and its Pro,
+    One Man Army (the match waits on its menu), Last Stand and Final Stand, Bomb Squad, Scrambler Pro's claymore delay,
+    the deathstreaks, bots' class perks, the killcam and the final killcam (pose ring at most 436 KB of MEM2, with 7 bots).
+    Scavenger bags: done (`game_core::item`). Not yet: a Beretta for a class without a pistol in your Last Stand, sounds in the killcam, a feel
+    trace of all of these against MW2.
 
 **Destructible objects**: the main body of each (states, damage rules, effects, repeating effects, health drain,
 explosions with chain reactions, model swaps, collision boxes) is done (`game_core::destructible`, map pack `DST*`).

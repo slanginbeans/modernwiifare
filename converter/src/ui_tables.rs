@@ -184,6 +184,10 @@ pub fn catalog(
             continue;
         }
         let mut it = item(name, text(perks.cell(r, 2)), kind, 0);
+        // A deathstreak's deaths in a row (column 6, as `_class.gsc` `giveLoadout` reads it) in `attachments`.
+        if kind == slot::DEATHSTREAK {
+            it.attachments = perks.cell(r, 6).trim().parse::<u32>().unwrap_or(0);
+        }
         // The Pro perk (perkTable column 8, as `_class.gsc`'s `getPerkUpgrade` reads it).
         let up = perks.cell(r, 8);
         if !up.is_empty() && up != "specialty_null" {
