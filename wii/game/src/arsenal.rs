@@ -84,14 +84,16 @@ pub fn offhand_row(t: &WeaponTables<'_>, name: &str) -> Option<weapon_iw4::Offha
 }
 
 pub struct Arsenal {
-    pub guns: [Option<Gun>; 2],
+    /// 0 primary, 1 secondary, 2 and 3 their alternates (`altWeapon`: the underbarrel grenade launcher or shotgun).
+    pub guns: [Option<Gun>; 4],
+    /// The first-person files of the primary and secondary (an alternate shows its weapon's: [`Arsenal::view_slot`]).
     pub views: [Option<View>; 2],
-    /// 0 primary, 1 secondary.
+    /// The gun out (an index into `guns`).
     pub active: usize,
     /// The weapon asked for (IW4 `usercmd.weapon`) while the active one drops.
     pending: Option<usize>,
     /// Which weapons were out this life (the first raise is the long one).
-    used: [bool; 2],
+    used: [bool; 4],
     /// Base weapon names whose files are loaded.
     loaded: [heapless_name::Name; 2],
     mem2_mark: u32,
@@ -138,11 +140,11 @@ impl Arsenal {
     /// Call after the map is loaded: the weapon files go above what is loaded now.
     pub fn new() -> Arsenal {
         Arsenal {
-            guns: [None, None],
+            guns: [None, None, None, None],
             views: [None, None],
             active: 0,
             pending: None,
-            used: [true, false],
+            used: [true, false, false, false],
             loaded: [Name::default(); 2],
             mem2_mark: unsafe { ffi::mwf_mem2_mark() },
             tex_mark: unsafe { ffi::mwf_tex_mark() },
@@ -249,19 +251,32 @@ impl Arsenal {
         class: Option<&Loadout>,
     ) {
         let slots = slot_names(cat, class);
+        let build = |index: u32, rec: &wpk::weapon::WeaponRecord| {
+            let mut g = Gun::with_index(rec, index)?;
+            g.set_kick(wpk::records::get::<wpk::weapon::KickRecord>(
+                t.kicks,
+                index as usize,
+            ));
+            g.set_moves(wpk::records::get(t.moves, index as usize));
+            g.set_aim(wpk::records::get(t.aims, index as usize));
+            g.set_penetration(penetration(t, index));
+            Some(g)
+        };
         for (i, (_, names)) in slots.iter().enumerate() {
             self.guns[i] = names.iter().find_map(|n| {
                 let (index, rec) = wpk::weapon::find_indexed(t.weapons, n)?;
-                let mut g = Gun::with_index(&rec, index)?;
-                g.set_kick(wpk::records::get::<wpk::weapon::KickRecord>(
-                    t.kicks,
-                    index as usize,
-                ));
-                g.set_moves(wpk::records::get(t.moves, index as usize));
-                g.set_aim(wpk::records::get(t.aims, index as usize));
-                g.set_penetration(penetration(t, index));
-                Some(g)
+                build(index, &rec)
             });
+            // Its alternate (IW4 `altWeapon`, the converter's `alternate_weapon` index), with its own ammunition.
+            self.guns[i + 2] = self.guns[i]
+                .as_ref()
+                .map(Gun::alternate_weapon)
+                .filter(|&k| k != 0)
+                .and_then(|k| {
+                    let rec =
+                        wpk::records::get::<wpk::weapon::WeaponRecord>(t.weapons, k as usize)?;
+                    build(k, &rec)
+                });
         }
         // Grenades: the class's equipment (lethal) and special grenade (tactical), full.
         let lethal_name = match (cat, class) {
@@ -292,7 +307,7 @@ impl Arsenal {
         }
         self.active = if self.guns[0].is_some() { 0 } else { 1 };
         self.pending = None;
-        self.used = [self.active == 0, self.active == 1];
+        self.used = [self.active == 0, self.active == 1, false, false];
         let wanted = [slots[0].0, slots[1].0];
         if wanted != self.loaded {
             // Whatever the death screen didn't stream in loads now.
@@ -306,7 +321,8 @@ impl Arsenal {
     /// Ask for the other weapon (IW4L's change: this one drops, then that one raises; asking again while it drops
     /// takes the request back). False when there is no other weapon.
     pub fn switch(&mut self) -> bool {
-        let other = 1 - self.active;
+        // From an alternate too, the other weapon is the other slot's own (MW2: Y leaves the launcher).
+        let other = 1 - self.active % 2;
         if self.guns[other].is_none() {
             return false;
         }
@@ -317,34 +333,56 @@ impl Arsenal {
         true
     }
 
+    /// Ask for the active weapon's alternate, or back from it (MW2's `+actionslot 3`; IW4L's alternate switch:
+    /// `altDropTime`, then `altRaiseTime`). False when it has none.
+    pub fn alternate(&mut self) -> bool {
+        let to = self.active ^ 2;
+        if self.guns[to].is_none() {
+            return false;
+        }
+        self.pending = match self.pending {
+            Some(_) => None,
+            None => Some(to),
+        };
+        true
+    }
+
+    /// Which first-person file the active gun shows (an alternate is part of its weapon's model).
+    pub fn view_slot(&self) -> usize {
+        self.active % 2
+    }
+
     /// What the active gun's next step is asked to switch to.
     pub fn switch_target(&self) -> Option<SwitchTarget> {
         let o = self.pending?;
-        self.guns[o].as_ref().map(|g| g.as_target(!self.used[o]))
+        let g = self.guns[o].as_ref()?;
+        Some(if o == self.active ^ 2 {
+            g.as_alternate_target()
+        } else {
+            g.as_target(!self.used[o])
+        })
     }
 
-    /// After the active gun's step: when its drop finished, the other weapon takes the hand and raises.
+    /// After the active gun's step: when its drop finished, the weapon asked for takes the hand and raises.
     pub fn finish_switch(&mut self) {
         let a = self.active;
+        let Some(other) = self.pending else {
+            return;
+        };
         let Some(hand) = self.guns[a].as_mut().and_then(Gun::take_switch) else {
             return;
         };
-        let other = 1 - a;
         // The grenades go with the player to the other gun.
-        let (lo, hi) = self.guns.split_at_mut(1);
-        let (from, to) = if a == 0 {
-            (&lo[0], &mut hi[0])
-        } else {
-            (&hi[0], &mut lo[0])
-        };
-        if let (Some(f), Some(t)) = (from.as_ref(), to.as_mut()) {
+        let from = self.guns[a].take();
+        if let (Some(f), Some(t)) = (from.as_ref(), self.guns[other].as_mut()) {
             t.take_offhands(f);
         }
+        self.guns[a] = from;
         if let Some(g) = self.guns[other].as_mut() {
             g.adopt(&hand);
             self.active = other;
             self.used[other] = true;
-            if let Some(v) = self.views[other].as_mut() {
+            if let Some(v) = self.views[other % 2].as_mut() {
                 v.play_event_alias(wpk::sound::event::RAISE);
             }
         }

@@ -50,6 +50,17 @@ pub struct Shot {
     pub layer_count: u8,
 }
 
+/// A projectile the gun fired this frame (IW4L `fire_accepted_shot` for `FireWeaponKind::Missile` /
+/// `GrenadeLauncher`): the weapon, where it leaves (the eye), its direction inside the spread cone, and the view's
+/// right (the Javelin leaves a little to the right).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Launch {
+    pub weapon: u32,
+    pub origin: [f32; 3],
+    pub dir: [f32; 3],
+    pub right: [f32; 3],
+}
+
 /// IW4L `MAX_PENETRATE_STEPS`.
 pub const MAX_LAYERS: usize = 5;
 
@@ -96,6 +107,8 @@ pub struct GunInput {
     pub charge_state: (f32, i32, i32),
     pub pm_type: i32,
     pub in_air: bool,
+    /// The aim button held (an akimbo pair fires its left gun with it).
+    pub ads: bool,
 }
 
 /// The weapon being switched to, with the raise times IW4L's weapon change reads from it (`WeaponCmd`).
@@ -108,6 +121,11 @@ pub struct SwitchTarget {
     pub first_raise_ms: i32,
     /// A pistol comes out quick (IW4 `weapClass` 5).
     pub pistol: bool,
+    /// To or from the weapon's alternate (the underbarrel launcher or shotgun: IW4L `alternate_switch`, the
+    /// `altDropTime` / `altRaiseTime` pair instead of the usual drop and raise).
+    pub alternate: bool,
+    /// The raise time of an alternate switch (the incoming weapon's `altRaiseTime`).
+    pub alternate_raise_ms: i32,
 }
 
 /// What aim spread needs from the player each frame (IW4 `PM_UpdateAimDownSightFlag` / `BG_UpdateAimSpread` inputs).
@@ -163,6 +181,10 @@ pub struct Gun {
     gun_recoil: GunRecoilPlacementState,
     /// Multiplies each shot's camera and gun kick (1: IW4L's amplitudes; the debug menu's comparison sets 2).
     pub kick_scale: f32,
+    /// The projectile fired by the last step (launchers; [`Gun::take_launch`]).
+    launch: Option<Launch>,
+    /// The left hand of an akimbo pair (IW4 hand 1; `hand` is the right, hand 0).
+    left: Option<WeaponHandState>,
 }
 
 impl Gun {
@@ -177,11 +199,24 @@ impl Gun {
         if !facts.is_usable() {
             return None;
         }
+        // Akimbo: both hands raised, each with a magazine, the rest shared (IW4L `spawn_clip_stock` for two hands).
+        let mut hand = spawn_weapon_hand(index, &facts, true);
+        let left = facts.dual_wield.then(|| {
+            let (c0, c1, stock) = weapon_iw4::spawn_clip_stock(&facts, 1);
+            hand.clip = c0;
+            hand.stock = stock;
+            WeaponHandState {
+                clip: c1,
+                hand_index: 1,
+                ..hand
+            }
+        });
         Some(Gun {
             name: rec.name,
             index,
             offhand: weapon_iw4::OffhandCmd::default(),
-            hand: spawn_weapon_hand(index, &facts, true),
+            hand,
+            left,
             facts,
             server_time: 1000,
             old_buttons: 0,
@@ -206,7 +241,19 @@ impl Gun {
             kick_angles: [0.0; 3],
             gun_recoil: GunRecoilPlacementState::default(),
             kick_scale: 1.0,
+            launch: None,
         })
+    }
+
+    /// Whether this weapon fires projectiles instead of bullets (IW4 `WEAPTYPE_PROJECTILE`: rockets and grenade
+    /// launchers; IW4L `fire_weapon_kind`).
+    pub fn launches(&self) -> bool {
+        self.facts.weap_type == weapon_iw4::WEAPTYPE_PROJECTILE
+    }
+
+    /// The projectile the last step fired, once (launchers: the step returns no [`Shot`]).
+    pub fn take_launch(&mut self) -> Option<Launch> {
+        self.launch.take()
     }
 
     pub fn name(&self) -> &str {
@@ -224,6 +271,18 @@ impl Gun {
         self.hand = spawn_weapon_hand(self.hand.weapon, &self.facts, false);
         self.hand.clip = clip;
         self.hand.stock = stock;
+        self.match_left();
+    }
+
+    /// The left hand follows the right one's state (raise, switch), keeping its own magazine.
+    fn match_left(&mut self) {
+        if let Some(l) = self.left.as_mut() {
+            *l = WeaponHandState {
+                clip: l.clip,
+                hand_index: 1,
+                ..self.hand
+            };
+        }
     }
 
     /// The grenades this gun's hand can throw: `rows` (weapon, class, ammo, timings), the class the lethal button
@@ -292,7 +351,32 @@ impl Gun {
                 0
             },
             pistol: self.facts.weap_class == 5,
+            alternate: false,
+            alternate_raise_ms: self.facts.alternate_raise_time_ms,
         }
+    }
+
+    /// This weapon as the target of an alternate switch (from or to its underbarrel weapon).
+    pub fn as_alternate_target(&self) -> SwitchTarget {
+        SwitchTarget {
+            alternate: true,
+            ..self.as_target(false)
+        }
+    }
+
+    /// The weapon's alternate (`altWeapon`) as its index in the weapon list (0: none).
+    pub fn alternate_weapon(&self) -> u32 {
+        self.facts.alternate_weapon
+    }
+
+    /// Whether this is an akimbo pair (two hands, IW4L `weapon_hands` with `last_hand` 1).
+    pub fn akimbo(&self) -> bool {
+        self.left.is_some()
+    }
+
+    /// The left hand's rounds in its magazine (akimbo).
+    pub fn left_clip(&self) -> Option<i32> {
+        self.left.map(|h| h.clip)
     }
 
     /// After a step that finished dropping this weapon for another (IW4L's change sets the hand to the new
@@ -309,6 +393,7 @@ impl Gun {
         self.hand.weapon_time = 0;
         self.hand.clip = clip;
         self.hand.stock = stock;
+        self.match_left();
         self.kick_angles = [0.0; 3];
         Some(out)
     }
@@ -321,17 +406,17 @@ impl Gun {
         self.hand.weapon = self.index;
         self.hand.clip = clip;
         self.hand.stock = stock;
+        self.hand.hand_index = 0;
+        self.match_left();
         self.shots = 0;
     }
 
     /// Whether a switch would start now (IW4L `check_for_change_admits`: not mid-melee, reload interrupts, not
     /// while a shot is still cycling).
     pub fn can_switch(&self) -> bool {
-        weapon_iw4::check_for_change_admits(
-            self.hand.weaponstate,
-            self.hand.weapon_time,
-            self.hand.weapon_delay,
-        )
+        [Some(self.hand), self.left].iter().flatten().all(|h| {
+            weapon_iw4::check_for_change_admits(h.weaponstate, h.weapon_time, h.weapon_delay)
+        })
     }
 
     /// The weapon's combat numbers (damage, ranges, location multipliers ...).
@@ -343,12 +428,16 @@ impl Gun {
     pub fn refill_ammo(&mut self) {
         self.hand.clip = self.facts.clip_size.max(self.hand.clip);
         self.hand.stock = self.facts.max_ammo.max(self.hand.stock);
+        if let Some(l) = self.left.as_mut() {
+            l.clip = self.facts.clip_size.max(l.clip);
+            l.stock = self.hand.stock;
+        }
         for r in self.offhand.inventory.iter_mut().filter(|r| r.weapon != 0) {
             r.ammo = r.ammo.max(1);
         }
     }
 
-    /// Rounds in the magazine and in reserve.
+    /// Rounds in the (right hand's) magazine and in reserve.
     pub fn ammo(&self) -> (i32, i32) {
         (self.hand.clip, self.hand.stock)
     }
@@ -615,7 +704,18 @@ impl Gun {
         up: [f32; 3],
     ) -> (Option<WeaponTickEvent>, Option<Shot>) {
         let mut btn = 0;
-        if input.fire {
+        let akimbo = self.left.is_some();
+        if akimbo {
+            // Akimbo on a pad (IW4L `console::binds::gameplay_binding`): the fire trigger becomes `+speed_throw`
+            // (the right gun, hand 0) and the aim trigger `+attack` (the left gun, hand 1; IW4L
+            // `get_weapon_fire_button` with `last_weapon_hand` 1).
+            if input.fire {
+                btn |= weapon_iw4::BUTTON_THROW;
+            }
+            if input.ads {
+                btn |= buttons::ATTACK;
+            }
+        } else if input.fire {
             btn |= buttons::ATTACK;
         }
         if input.reload {
@@ -646,6 +746,12 @@ impl Gun {
             switch_raise_time_ms: target.raise_ms,
             switch_quick_raise_time_ms: target.quick_raise_ms,
             switch_first_raise_time_ms: target.first_raise_ms,
+            alternate_switch: target.alternate,
+            switch_alternate_raise_time_ms: target.alternate_raise_ms,
+            last_weapon_hand: i32::from(akimbo),
+            // The ADS fraction ([`Gun::update_spread`] took it from the player): ADS-only weapons (the Javelin) fire
+            // only aimed in (IW4L `ads_fire_only`).
+            f_weapon_pos_frac: self.ads_frac,
             pm_flags: input.pm_flags,
             perks0: input.perks[0],
             perks1: input.perks[1],
@@ -667,21 +773,63 @@ impl Gun {
         };
         self.old_buttons = btn;
         self.advance_recoil(msec as f32 / 1000.0);
-        // IW4L's hand driver (as `advance_weapon_command`): stun, melee start, then the hand's own step.
-        let event = weapon_hands(
-            core::slice::from_mut(&mut self.hand),
-            &self.facts,
-            &mut cmd,
-            0,
-        )[0]
-        .map(|(_, e)| e);
+        // IW4L's hand driver (as `advance_weapon_command`): stun, melee start, then each hand's own step (both of an
+        // akimbo pair; they share the reserve).
+        let events = match self.left {
+            Some(left) => {
+                let mut hands = [self.hand, left];
+                let e = weapon_hands(&mut hands, &self.facts, &mut cmd, 1);
+                (self.hand, self.left) = (hands[0], Some(hands[1]));
+                e
+            }
+            None => weapon_hands(
+                core::slice::from_mut(&mut self.hand),
+                &self.facts,
+                &mut cmd,
+                0,
+            ),
+        };
         self.swung = cmd.melee_started.is_some();
         self.offhand = cmd.offhand;
         self.pm_flags_out = Some(cmd.pm_flags);
         self.charge_out = Some(cmd.melee_charge);
         self.extra_pellets.clear();
-        let shot = match event {
+        let [right_event, left_event] = events.map(|e| e.map(|(_, e)| e));
+        // The left gun's shot: its bullets join this frame's extra pellets.
+        if let Some(WeaponTickEvent::ShotAccepted { ammo_used }) = left_event
+            && let Some(s) = self.fire(clip, ammo_used, eye, dir, right, up)
+        {
+            self.extra_pellets.insert(0, s);
+        }
+        let event = right_event.or(left_event);
+        let shot = match right_event {
             Some(WeaponTickEvent::ShotAccepted { ammo_used }) => {
+                self.fire(clip, ammo_used, eye, dir, right, up)
+            }
+            _ => None,
+        };
+        // Only the left gun fired: its first bullet is the frame's shot.
+        let shot = match shot {
+            None if !self.extra_pellets.is_empty() => Some(self.extra_pellets.remove(0)),
+            s => s,
+        };
+        (event, shot)
+    }
+
+    /// A shot of `ammo_used` rounds from `eye` along `dir`: its pellets traced (the first returned, the rest in
+    /// the extra pellets), or a projectile handed over ([`Gun::take_launch`]); then recoil and the spread's widening.
+    #[allow(clippy::too_many_arguments)]
+    fn fire(
+        &mut self,
+        clip: &MapClip<'_>,
+        ammo_used: i32,
+        eye: [f32; 3],
+        dir: [f32; 3],
+        right: [f32; 3],
+        up: [f32; 3],
+    ) -> Option<Shot> {
+        {
+            {
                 self.shots += 1;
                 // Each pellet in a random direction in the cone (angle and radius uniform, so hits gather towards the
                 // centre); shotguns fire several (IW4L `pellet_count`, times the barrels for double-barrel fire), then
@@ -693,6 +841,28 @@ impl Gun {
                 };
                 let pellets = (self.facts.pellet_count() * barrels).clamp(1, MAX_PELLETS as i32);
                 let t = libm::tanf(self.spread_degrees.to_radians());
+                if self.launches() {
+                    // One projectile in the cone (IW4L `spread_direction_on_plane`: the same uniform radius and
+                    // angle on a plane ahead), no bullet.
+                    let a = self.random() * core::f32::consts::TAU;
+                    let r = self.random() * t;
+                    let (x, y) = (libm::cosf(a) * r, libm::sinf(a) * r);
+                    let d: [f32; 3] = core::array::from_fn(|k| dir[k] + right[k] * x + up[k] * y);
+                    let len = libm::sqrtf(d.iter().map(|v| v * v).sum::<f32>()).max(1e-6);
+                    self.launch = Some(Launch {
+                        weapon: self.hand.weapon,
+                        origin: eye,
+                        dir: d.map(|v| v / len),
+                        right,
+                    });
+                    self.seed_recoil();
+                    add_aim_spread_fire(
+                        &mut self.spread.aim_spread_scale,
+                        self.ads_frac,
+                        self.facts.hip_spread_fire_add,
+                    );
+                    return None;
+                }
                 let mut first = None;
                 for _ in 0..pellets {
                     let a = self.random() * core::f32::consts::TAU;
@@ -716,9 +886,7 @@ impl Gun {
                 );
                 Some(shot)
             }
-            _ => None,
-        };
-        (event, shot)
+        }
     }
 
     fn trace_bullet(&self, clip: &MapClip<'_>, eye: [f32; 3], dir: [f32; 3]) -> Shot {
@@ -954,6 +1122,180 @@ mod tests {
             "first raise 700 ms, fired at {first}"
         );
         assert_eq!(r.ammo().0, 30, "the rifle kept its magazine");
+    }
+
+    /// A projectile weapon (IW4 `WEAPTYPE_PROJECTILE`) fires a projectile, not a bullet: no [`Shot`], one
+    /// [`Launch`] along the view.
+    #[test]
+    fn a_launcher_hands_over_a_projectile() {
+        let clip = wall();
+        let mc = MapClip::new(&clip);
+        let mut rec = rifle();
+        rec.combat.weap_type = weapon_iw4::WEAPTYPE_PROJECTILE;
+        rec.combat.weap_class = 11;
+        rec.combat.clip_size = 1;
+        let mut g = Gun::with_index(&rec, 6).unwrap();
+        let (eye, x) = ([0.0, 0.0, 60.0], [1.0, 0.0, 0.0]);
+        for _ in 0..40 {
+            g.update(&mc, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        let fire = GunInput {
+            fire: true,
+            ..GunInput::default()
+        };
+        let mut launches = 0;
+        for _ in 0..20 {
+            let (e, s) = g.update(&mc, 16, &fire, eye, x, Y, Z);
+            assert!(s.is_none(), "no bullet");
+            if matches!(e, Some(WeaponTickEvent::ShotAccepted { .. })) {
+                let l = g.take_launch().expect("a projectile");
+                assert_eq!((l.weapon, l.origin), (6, eye));
+                assert!(l.dir[0] > 0.99);
+                launches += 1;
+            }
+        }
+        assert_eq!(launches, 1, "one round in the magazine");
+        assert!(g.take_launch().is_none());
+        // An ADS-only launcher (the Javelin's `adsFireOnly`): from the hip the shot waits the time left to aim in
+        // (IW4L `ads_fire_only_delay_ms`: 800 ms at the Javelin's rate), aimed in it leaves at once.
+        rec.combat.ads_fire_only = true;
+        rec.combat.aim_down_sight = true;
+        rec.combat.ads_in_rate = 0.00125;
+        let mut g = Gun::with_index(&rec, 6).unwrap();
+        let mut ps = PlayerState::ZERO;
+        ps.view_height_current = 60.0;
+        let fired = |g: &mut Gun, ps: &PlayerState| {
+            let s = SpreadInput {
+                ps,
+                cmd_angles: [0; 3],
+                old_cmd_angles: [0; 3],
+                forwardmove: 0,
+                rightmove: 0,
+            };
+            for _ in 0..40 {
+                g.update_spread(16, &s);
+                g.update(&mc, 16, &fire, eye, x, Y, Z);
+                if g.take_launch().is_some() {
+                    return true;
+                }
+            }
+            false
+        };
+        for _ in 0..40 {
+            g.update(&mc, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        assert!(!fired(&mut g, &ps), "not within 640 ms from the hip");
+        let mut g = Gun::with_index(&rec, 6).unwrap();
+        for _ in 0..40 {
+            g.update(&mc, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        ps.f_weapon_pos_frac = 1.0;
+        assert!(fired(&mut g, &ps), "aimed in");
+    }
+
+    /// Akimbo (IW4L `weapon_hands` over two hands, `last_weapon_hand` 1): the fire trigger fires the right gun, the
+    /// aim trigger the left, each from its own magazine; the reserve is shared.
+    #[test]
+    fn akimbo_fires_each_hand_from_its_own_magazine() {
+        let clip = wall();
+        let mc = MapClip::new(&clip);
+        let mut rec = rifle();
+        rec.combat.dual_wield = true;
+        rec.combat.clip_size = 15;
+        rec.combat.start_ammo = 90;
+        rec.combat.fire_type = 1;
+        let mut g = Gun::with_index(&rec, 3).unwrap();
+        assert!(g.akimbo());
+        assert_eq!((g.ammo(), g.left_clip()), ((15, 60), Some(15)));
+        let (eye, x) = ([0.0, 0.0, 60.0], [1.0, 0.0, 0.0]);
+        for _ in 0..40 {
+            g.update(&mc, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        let right = GunInput {
+            fire: true,
+            ..GunInput::default()
+        };
+        let (_, s) = g.update(&mc, 16, &right, eye, x, Y, Z);
+        assert!(s.is_some());
+        assert_eq!((g.ammo().0, g.left_clip()), (14, Some(15)), "the right gun");
+        for _ in 0..10 {
+            g.update(&mc, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        let left = GunInput {
+            ads: true,
+            ..GunInput::default()
+        };
+        let (_, s) = g.update(&mc, 16, &left, eye, x, Y, Z);
+        assert!(s.is_some());
+        assert_eq!((g.ammo().0, g.left_clip()), (14, Some(14)), "the left gun");
+        for _ in 0..10 {
+            g.update(&mc, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        // Both at once: two bullets this frame.
+        let both = GunInput {
+            fire: true,
+            ads: true,
+            ..GunInput::default()
+        };
+        let (_, s) = g.update(&mc, 16, &both, eye, x, Y, Z);
+        assert!(s.is_some() && g.extra_pellets().len() == 1);
+        assert_eq!((g.ammo().0, g.left_clip()), (13, Some(13)));
+    }
+
+    /// The alternate switch (IW4L `weapon_check_for_change` with `alternate_switch`): the weapon drops in its
+    /// `altDropTime`, then the alternate raises in its `altRaiseTime`, not the usual drop and raise.
+    #[test]
+    fn the_alternate_switch_uses_the_alt_drop_and_raise_times() {
+        let clip = Clip::default();
+        let mc = MapClip::new(&clip);
+        let mut base = rifle();
+        base.combat.alternate_drop_time_ms = 150;
+        let mut gl = rifle();
+        gl.combat.alternate_raise_time_ms = 250;
+        gl.combat.weap_type = weapon_iw4::WEAPTYPE_PROJECTILE;
+        gl.combat.weap_class = crate::grenade::WEAPCLASS_GRENADE;
+        let mut r = Gun::with_index(&base, 3).unwrap();
+        let mut a = Gun::with_index(&gl, 4).unwrap();
+        let (eye, x) = ([0.0, 0.0, 60.0], [1.0, 0.0, 0.0]);
+        for _ in 0..60 {
+            r.update(&mc, 16, &GunInput::default(), eye, x, Y, Z);
+        }
+        let want = GunInput {
+            switch_to: Some(a.as_alternate_target()),
+            ..GunInput::default()
+        };
+        let mut t = 0;
+        let mut started = false;
+        let hand = loop {
+            let (e, _) = r.update(&mc, 16, &want, eye, x, Y, Z);
+            started |= e == Some(WeaponTickEvent::AlternateStarted);
+            t += 16;
+            if let Some(h) = r.take_switch() {
+                break h;
+            }
+            assert!(t < 2000);
+        };
+        assert!(started, "an alternate switch");
+        assert!((140..=180).contains(&t), "alt drop 150 ms (drop 300): {t}");
+        assert_eq!(
+            hand.weaponstate,
+            weapon_iw4::WeaponState::RaisingAltswitch as i32
+        );
+        a.adopt(&hand);
+        let fire = GunInput {
+            fire: true,
+            ..GunInput::default()
+        };
+        let mut at = None;
+        for k in 0..100 {
+            a.update(&mc, 16, &fire, eye, x, Y, Z);
+            if a.take_launch().is_some() {
+                at = Some((k + 1) * 16);
+                break;
+            }
+        }
+        let at = at.expect("the launcher fired");
+        assert!((240..=290).contains(&at), "alt raise 250 ms: {at}");
     }
 
     /// Sleight of Hand (IW4 `PERK_FASTRELOAD` in `ps.perks`) halves the reload, through IW4L's weapon step.

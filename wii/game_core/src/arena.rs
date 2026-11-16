@@ -71,6 +71,8 @@ pub struct Fighter {
     last_step_ms: u32,
     /// The bob cycle last seen (a wrap is a footstep), None until seen.
     last_bob: Option<u8>,
+    /// A riot shield in the hands or on the back ([`crate::shield`]).
+    pub shield: crate::shield::Carry,
 }
 
 impl Fighter {
@@ -101,6 +103,7 @@ impl Fighter {
             act: Act::default(),
             last_step_ms: 0,
             last_bob: None,
+            shield: crate::shield::Carry::None,
         }
     }
 
@@ -301,6 +304,8 @@ pub struct Arena {
     pub grenades: Vec<crate::grenade::Grenade>,
     /// The thrown weapons' numbers by weapon index (for grenades the bots throw).
     pub equips: &'static [u8],
+    /// Launched projectiles' flight and impact by weapon index (`WMSL`; empty with an older pack).
+    pub missiles: &'static [u8],
     /// Smoke's sight-blocking elements by weapon (`WSMK`).
     pub blockers: &'static [u8],
     /// The smoke in the air.
@@ -476,6 +481,7 @@ impl Arena {
             bot_uav_kills: 0,
             grenades: Vec::new(),
             equips: &[],
+            missiles: &[],
             blockers: &[],
             smoke: crate::smoke::Smoke::default(),
             dom: None,
@@ -707,6 +713,18 @@ impl Arena {
             {
                 best = Some((t, i, loc));
             }
+            // A riot shield in the way first (IW4L `segment_is_shield`).
+            if let Some(t) = crate::shield::segment_hit(
+                f.shield,
+                f.player.ps.origin,
+                f.player.view().1,
+                f.player.hull_height(),
+                shot.start,
+                shot.pen_end,
+            ) && best.is_none_or(|b| t < b.0)
+            {
+                best = Some((t, i, crate::shield::HITLOC));
+            }
         }
         // Where it struck: the first wall, and the player when one was hit before (or behind) it.
         let length = libm::sqrtf(dist2(shot.start, shot.pen_end));
@@ -752,6 +770,17 @@ impl Arena {
                 flesh: false,
                 impact_type: facts.impact_type,
             });
+        }
+        // The shield stops it: the riot shield's surface, no damage (IW4L: hit location `shield`).
+        if let Some((t, _, crate::shield::HITLOC)) = best {
+            out.push(Event::Impact {
+                origin: core::array::from_fn(|k| shot.start[k] + dir_n[k] * t * length),
+                normal: dir_n.map(|v| -v),
+                surface: crate::shield::SURFACE,
+                flesh: false,
+                impact_type: facts.impact_type,
+            });
+            return;
         }
         if let Some((t, _, _)) = best {
             out.push(Event::Impact {
@@ -909,7 +938,22 @@ impl Arena {
             if self.grenades[i].charge() == Some(crate::grenade::Charge::Claymore) {
                 self.claymore_watch(clip, i, now, out);
             }
-            let due = self.grenades[i].step(clip, dt, now);
+            let due = if self.grenades[i].flight.is_some() {
+                // A launched projectile (IW4L `think_projectile`): the world, then the players along the step.
+                let owner = self.grenades[i].owner;
+                let feet = self
+                    .fighters
+                    .get(owner)
+                    .map_or([0.0; 3], |f| f.player.ps.origin);
+                let due = self.grenades[i].fly(clip, dt, now, feet);
+                if self.grenades[i].expired(now) {
+                    self.grenades.swap_remove(i);
+                    continue;
+                }
+                self.missile_hits(i, now, out) || due
+            } else {
+                self.grenades[i].step(clip, dt, now)
+            };
             let g = &self.grenades[i];
             if g.bounced {
                 out.push(Event::GrenadeBounce {
@@ -940,6 +984,19 @@ impl Arena {
                 continue;
             }
             let g = self.grenades.swap_remove(i);
+            // A dud: it strikes the surface and is gone, no blast (IW4L `ProjectileHitGeometry::Dud`).
+            if let Some(crate::grenade::Contact::Dud { normal, surface }) =
+                g.flight.and_then(|f| f.contact)
+            {
+                out.push(Event::Impact {
+                    origin: g.origin,
+                    normal,
+                    surface,
+                    flesh: false,
+                    impact_type: 0,
+                });
+                continue;
+            }
             if crate::grenade::effect(&g.facts) == crate::grenade::Effect::Smoke {
                 let w = g.weapon;
                 let recs: Vec<wpk::weapon::BlockerRecord> =
@@ -1023,11 +1080,12 @@ impl Arena {
                     continue;
                 }
                 let (_, yaw) = f.player.view();
+                let (feet, height, shield) = (f.player.ps.origin, f.player.hull_height(), f.shield);
                 let d = crate::grenade::blast_damage(
                     &g.facts,
                     g.origin,
-                    f.player.ps.origin,
-                    f.player.hull_height(),
+                    feet,
+                    height,
                     f.player.ps.view_height_current,
                     yaw,
                     g.cone(),
@@ -1039,7 +1097,10 @@ impl Arena {
                             [0.0; 3],
                             gamemode_iw4::G_CAN_DAMAGE_CONTENTS_MASK,
                         );
-                        t.fraction >= 1.0 && t.startsolid == 0
+                        // A riot shield hides what it covers from the blast.
+                        t.fraction >= 1.0
+                            && t.startsolid == 0
+                            && !crate::shield::blocks(shield, feet, yaw, height, a, b)
                     },
                 );
                 // Danger Close: the thrower's extra explosive damage.
@@ -1192,6 +1253,7 @@ impl Arena {
             let (_, yaw) = f.player.view();
             let r = yaw.to_radians();
             let right = [libm::sinf(r), -libm::cosf(r), 0.0];
+            let shield = f.shield;
             let vis = gamemode_iw4::can_damage_player_vis_scale(
                 feet,
                 f.player.ps.view_height_current,
@@ -1205,7 +1267,9 @@ impl Arena {
                         [0.0; 3],
                         gamemode_iw4::G_CAN_DAMAGE_CONTENTS_MASK,
                     );
-                    t.fraction >= 1.0 && t.startsolid == 0
+                    t.fraction >= 1.0
+                        && t.startsolid == 0
+                        && !crate::shield::blocks(shield, feet, yaw, height, a, b)
                 },
             );
             let d = gamemode_iw4::radius_damage_amount(max, min, range, dist, vis);
@@ -1220,6 +1284,115 @@ impl Arena {
                 self.fighters[v].death.kind = if near { 2 } else { 1 };
             }
         }
+    }
+
+    /// Put a projectile fired by fighter `owner` in play (IW4L `fire_accepted_shot`: a rocket or a grenade
+    /// launcher's round, by the weapon's class), moving at `owner_vel`, steering to `target` when locked. False when
+    /// the weapon launches nothing (no `WEQP` / `WMSL` row or no projectile speed: IW4L `missile_launch_facts`).
+    pub fn launch(
+        &mut self,
+        owner: usize,
+        l: &crate::gun::Launch,
+        weap_class: i32,
+        owner_vel: [f32; 3],
+        target: Option<[f32; 3]>,
+        now: u32,
+    ) -> bool {
+        let Some(e) = wpk::records::get::<wpk::weapon::EquipRecord>(self.equips, l.weapon as usize)
+            .filter(|e| e.projectile_speed > 0)
+        else {
+            return false;
+        };
+        // An older pack without `WMSL`: rockets explode on impact (MW2's launchers all do).
+        let m = wpk::records::get::<wpk::weapon::MissileRecord>(self.missiles, l.weapon as usize)
+            .unwrap_or(wpk::weapon::MissileRecord {
+                impact_explode: true,
+                ..wpk::weapon::MissileRecord::default()
+            });
+        self.grenades.push(crate::grenade::Grenade::launch(
+            owner, l.weapon, weap_class, e, m, l.origin, l.dir, l.right, owner_vel, target, now,
+        ));
+        true
+    }
+
+    /// A launched projectile (grenade `i`) against the players along its last step (IW4L's projectile trace hits
+    /// players' boxes, never its owner's): the first body or riot shield it meets. A body takes the weapon's impact
+    /// damage (IW4L `direct_hits`); then it explodes there when armed, else it is a dud. True when it struck.
+    fn missile_hits(&mut self, i: usize, now: u32, out: &mut Vec<Event>) -> bool {
+        let g = self.grenades[i];
+        let Some(fl) = g.flight else {
+            return false;
+        };
+        if g.resting {
+            return false;
+        }
+        let mut best: Option<(f32, usize, bool)> = None;
+        for (v, f) in self.fighters.iter().enumerate() {
+            if v == g.owner || !f.life.alive() || (v == 0 && !self.human_present) {
+                continue;
+            }
+            let o = f.player.ps.origin;
+            let h = f.player.hull_height();
+            let body = crate::grenade::segment_box(
+                g.from,
+                g.origin,
+                [o[0] - 15.0, o[1] - 15.0, o[2]],
+                [o[0] + 15.0, o[1] + 15.0, o[2] + h],
+            );
+            let shield =
+                crate::shield::segment_hit(f.shield, o, f.player.view().1, h, g.from, g.origin);
+            let hit = match (body, shield) {
+                (b, Some(s)) if b.is_none_or(|b| s <= b) => Some((s, true)),
+                (Some(b), _) => Some((b, false)),
+                _ => None,
+            };
+            if let Some((t, on_shield)) = hit
+                && best.is_none_or(|b| t < b.0)
+            {
+                best = Some((t, v, on_shield));
+            }
+        }
+        let Some((t, victim, on_shield)) = best else {
+            return false;
+        };
+        let at: [f32; 3] = core::array::from_fn(|k| g.from[k] + (g.origin[k] - g.from[k]) * t);
+        let dir: [f32; 3] = core::array::from_fn(|k| g.origin[k] - g.from[k]);
+        let step = libm::sqrtf(dir.iter().map(|x| x * x).sum());
+        let n: [f32; 3] = if step > 1e-6 {
+            dir.map(|x| -x / step)
+        } else {
+            [0.0, 0.0, 1.0]
+        };
+        let travel = fl.travel - step * (1.0 - t);
+        let armed = crate::grenade::Flight { travel, ..fl }.armed(g.facts.projectile_activate_dist);
+        if !on_shield && g.facts.impact_damage > 0 {
+            self.hurt(
+                g.owner,
+                victim,
+                g.facts.impact_damage,
+                damage::hitloc::NONE,
+                dir,
+                now,
+                out,
+            );
+        }
+        let gr = &mut self.grenades[i];
+        // Off the body or the shield a little, toward where it came from.
+        gr.origin = core::array::from_fn(|k| at[k] + n[k] * 2.0);
+        let f = gr.flight.as_mut().expect("flight");
+        f.travel = travel;
+        f.contact = Some(if armed && fl.record.impact_explode {
+            crate::grenade::Contact::Explode {
+                normal: n,
+                surface: if on_shield { crate::shield::SURFACE } else { 0 },
+            }
+        } else {
+            crate::grenade::Contact::Dud {
+                normal: n,
+                surface: if on_shield { crate::shield::SURFACE } else { 0 },
+            }
+        });
+        true
     }
 
     /// Put a thrown grenade in play. A C4 or claymore over the owner's limit of that kind blows the oldest one
@@ -1806,10 +1979,19 @@ impl Arena {
                 cam.up(),
             );
             g.sync_player(&mut f.player.ps);
+            // A bot with a riot shield holds it in front (bots carry one weapon).
+            f.shield = if crate::shield::is_shield(g.name(), g.facts().weap_type) {
+                crate::shield::Carry::Front
+            } else {
+                crate::shield::Carry::None
+            };
             if matches!(ev, Some(WeaponTickEvent::ShotAccepted { .. })) {
                 f.last_fire_ms = Some(now);
                 out.push(Event::BotFired { bot: i });
             }
+            let launched = g
+                .take_launch()
+                .map(|l| (l, g.facts().weap_class, f.player.ps.velocity));
             if let Some(WeaponTickEvent::OffhandUsed {
                 weapon,
                 remaining_fuse_ms,
@@ -1846,6 +2028,9 @@ impl Arena {
             }
             if let Some((eye, axes, melee_damage)) = swing {
                 self.melee(clip, i, eye, axes, melee_damage, now, out);
+            }
+            if let Some((l, class, vel)) = launched {
+                self.launch(i, &l, class, vel, None, now);
             }
             self.bot_cost.gun_us += us().wrapping_sub(t2);
         }
@@ -2261,6 +2446,165 @@ mod tests {
         );
         assert_eq!(a.fighters[0].kills, 1);
         assert!(a.grenades.is_empty());
+    }
+
+    /// An arena with the human at the origin facing +x and one bot 1500 ahead facing back, its tables holding one
+    /// launcher (weapon 0: `e`, `m`).
+    fn launcher_arena(
+        e: wpk::weapon::EquipRecord,
+        m: wpk::weapon::MissileRecord,
+    ) -> (wpk::clip::Clip, Arena) {
+        let clip = boxes(&[([-4000.0, -4000.0, -64.0], [4000.0, 4000.0, 0.0])]);
+        let a = {
+            let mc = MapClip::new(&clip);
+            let spawns = [([0.0, 0.0, 0.0], 0.0), ([1500.0, 0.0, 0.0], 180.0)];
+            let human = Player::spawn(&mc, [0.0, 0.0, 0.0], 0.0);
+            let mut a = Arena::new(&mc, &spawns, 1, human, Rules::default(), |_| Some(rifle()));
+            a.equips = wpk::records::encode(&[e]).leak();
+            a.missiles = wpk::records::encode(&[m]).leak();
+            a
+        };
+        (clip, a)
+    }
+
+    fn rpg() -> (wpk::weapon::EquipRecord, wpk::weapon::MissileRecord) {
+        (
+            wpk::weapon::EquipRecord {
+                projectile_speed: 2000,
+                explosion_radius: 256,
+                explosion_inner_damage: 150,
+                explosion_outer_damage: 30,
+                impact_damage: 40,
+                ..wpk::weapon::EquipRecord::default()
+            },
+            wpk::weapon::MissileRecord {
+                impact_explode: true,
+                ..wpk::weapon::MissileRecord::default()
+            },
+        )
+    }
+
+    fn fire_at_bot(a: &mut Arena, mc: &MapClip<'_>) -> Vec<Event> {
+        let bot = a.fighters[1].player.ps.origin;
+        let l = crate::gun::Launch {
+            weapon: 0,
+            origin: [0.0, bot[1], bot[2] + 40.0],
+            dir: [1.0, 0.0, 0.0],
+            right: [0.0, -1.0, 0.0],
+        };
+        assert!(a.launch(0, &l, 11, [0.0; 3], None, 1000));
+        let mut ev = Vec::new();
+        for t in 0..120 {
+            a.update_grenades(mc, 0.016, 1000 + t * 16, &mut ev);
+        }
+        ev
+    }
+
+    /// A rocket into a bot (IW4L `think_projectile`): the direct hit's impact damage, then the blast at the body.
+    #[test]
+    fn a_rocket_into_a_bot_hits_it_and_blows_it_up() {
+        let (e, m) = rpg();
+        let (clip, mut a) = launcher_arena(e, m);
+        let mc = MapClip::new(&clip);
+        let ev = fire_at_bot(&mut a, &mc);
+        let hits: Vec<i32> = ev
+            .iter()
+            .filter_map(|e| match e {
+                Event::Hit {
+                    victim: 1, damage, ..
+                } => Some(*damage),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hits.first(), Some(&40), "the impact first: {hits:?}");
+        let boom = ev.iter().find_map(|e| match e {
+            Event::Explosion { origin, .. } => Some(*origin),
+            _ => None,
+        });
+        let o = boom.expect("it exploded");
+        assert!((o[0] - (1500.0 - 15.0)).abs() < 4.0, "at the body: {o:?}");
+        assert!(!a.fighters[1].life.alive(), "and the bot died");
+        assert_eq!(a.fighters[0].kills, 1);
+        assert!(a.grenades.is_empty());
+    }
+
+    /// Inside its arming distance a rocket is a dud: the impact hurts, no blast.
+    #[test]
+    fn an_unarmed_rocket_only_hurts_by_its_impact() {
+        let (mut e, m) = rpg();
+        e.projectile_activate_dist = 5000;
+        let (clip, mut a) = launcher_arena(e, m);
+        let mc = MapClip::new(&clip);
+        let ev = fire_at_bot(&mut a, &mc);
+        assert!(
+            !ev.iter().any(|e| matches!(e, Event::Explosion { .. })),
+            "{ev:?}"
+        );
+        assert!(a.fighters[1].life.alive());
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            Event::Hit {
+                victim: 1,
+                damage: 40,
+                ..
+            }
+        )));
+    }
+
+    /// The riot shield (IW4L `segment_is_shield`): a bullet from the front stops on it with the shield's surface
+    /// and no damage, one from behind hurts; a rocket from the front explodes on it and its blast can't see the
+    /// carrier behind it.
+    #[test]
+    fn a_riot_shield_stops_bullets_and_blasts_from_the_front() {
+        let (e, m) = rpg();
+        let (clip, mut a) = launcher_arena(e, m);
+        let mc = MapClip::new(&clip);
+        a.fighters[1].shield = crate::shield::Carry::Front;
+        let bot = a.fighters[1].player.ps.origin;
+        let facts = *rifle().facts();
+        let shot = |from: f32, to: f32| {
+            let (start, end) = ([from, bot[1], 40.0], [to, bot[1], 40.0]);
+            Shot {
+                start,
+                end,
+                hit: false,
+                normal: [0.0; 3],
+                surface: 0,
+                pen_end: end,
+                layers: [(0.0, 0.0); crate::gun::MAX_LAYERS],
+                layer_count: 0,
+            }
+        };
+        let mut ev = Vec::new();
+        // The bot faces -x: from the human's side is its front.
+        a.bullet(0, &shot(0.0, 3000.0), &facts, 1000, &mut ev);
+        assert!(!ev.iter().any(|e| matches!(e, Event::Hit { .. })), "{ev:?}");
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            Event::Impact {
+                surface: crate::shield::SURFACE,
+                flesh: false,
+                ..
+            }
+        )));
+        ev.clear();
+        a.bullet(0, &shot(3000.0, 0.0), &facts, 1000, &mut ev);
+        assert!(
+            ev.iter().any(|e| matches!(e, Event::Hit { victim: 1, .. })),
+            "from behind: {ev:?}"
+        );
+        // Healed, then a rocket from the front.
+        let (clip2, mut b) = launcher_arena(e, m);
+        let mc2 = MapClip::new(&clip2);
+        b.fighters[1].shield = crate::shield::Carry::Front;
+        let ev = fire_at_bot(&mut b, &mc2);
+        assert!(ev.iter().any(|e| matches!(e, Event::Explosion { .. })));
+        assert!(
+            !ev.iter().any(|e| matches!(e, Event::Hit { victim: 1, .. })),
+            "{ev:?}"
+        );
+        assert!(b.fighters[1].life.alive());
+        let _ = mc;
     }
 
     #[test]

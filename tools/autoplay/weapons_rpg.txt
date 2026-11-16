@@ -1,0 +1,56 @@
+# Launchers (game_core::autoplay syntax; tools/dolphin-test.ps1 -Script tools/autoplay/weapons_rpg.txt): the debug
+# menu's primary weapon set to the RPG, a bot brought in front and a rocket fired at it. The match log records the
+# launch ("launch weapon=... locked=..."), the direct hit, the kill and the explosion.
+wait 90
+# DEBUG: reset, then bots don't attack, frozen, god mode, infinite ammo; primary = RPG (catalog weapon 26).
+times 3 press DOWN
+press A
+wait 10
+times 18 press DOWN
+press A
+times 18 press UP
+press A
+press DOWN
+press A
+press DOWN
+press A
+press DOWN
+press A
+press DOWN
+press DOWN
+times 27 press A
+wait 5
+shot 01_debug_rpg
+press B
+wait 10
+# Private match, start, the first class (its primary replaced by the RPG).
+times 3 press UP
+press A
+wait 10
+press A
+wait 700
+shot 02_class
+press A
+wait 120
+shot 03_rpg_hud
+# A bot 150 units ahead.
+press START
+wait 10
+times 3 press DOWN
+press A
+wait 10
+times 21 press DOWN
+press A
+wait 30
+shot 04_bot_in_front
+log fire the rpg
+hold R
+wait 2
+release R
+wait 4
+shot 05_rpg_away
+wait 4
+shot 06_rpg_boom
+wait 120
+shot 07_after
+quit

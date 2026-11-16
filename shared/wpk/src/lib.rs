@@ -130,6 +130,8 @@ pub mod tag {
     pub const MENU_SOUNDS: Tag = *b"UISN";
     /// Bullet penetration per weapon (`weapon::PenRecord`, parallel to `WEAP`).
     pub const WEAPON_PEN: Tag = *b"WPEN";
+    /// Launched projectiles' flight and impact (`weapon::MissileRecord`, parallel to `WEAP`).
+    pub const WEAPON_MISSILE: Tag = *b"WMSL";
     /// The penetration depth table (`info/bullet_penetration_mp`): 4 types × 31 surfaces, f32.
     pub const PEN_TABLE: Tag = *b"PENT";
     /// Sound alias lists ([`crate::sound::AliasRecord`]).

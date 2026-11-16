@@ -3,7 +3,8 @@
 //!
 //! The mapping follows IW4L `crates/asset_game/src/weapon_catalog/capture_iw4.rs` (geometry → body facts) and
 //! `combat.rs` (`captured_input`), Apache-2.0, rev `acc57a5`, field for field. Not carried yet: variable scope zoom,
-//! the melee-charge animation flag, alternate weapons and dual wield (IW4 MP base weapons don't need them to fire).
+//! the melee-charge animation flag. The alternate weapon's index and the akimbo flag are set after the weapon list is
+//! sorted (`main.rs`; [`is_akimbo`]).
 
 use fastfile_iw4::WeaponGeometry;
 use weapon_iw4::{CapturedCombatInput, EmptyReloadPolicy, LOCATION_DAMAGE_IDENTITY, ScopeZoom};
@@ -143,6 +144,23 @@ pub fn equip(g: &WeaponGeometry) -> wpk::weapon::EquipRecord {
     }
 }
 
+/// A launched projectile's flight and impact (zero for guns).
+pub fn missile(g: &WeaponGeometry) -> wpk::weapon::MissileRecord {
+    wpk::weapon::MissileRecord {
+        impact_explode: g.proj_impact_explode,
+        guidance: g.missile_guidance,
+        ignition_delay_ms: g.ignition_delay_ms,
+        require_lock: g.require_lock_to_fire,
+        stick_to_players: g.stick_to_players,
+    }
+}
+
+/// Whether a weapon file is an akimbo pair (MW2's `<weapon>_akimbo[_<attachment>]_mp` files). IW4's loaded weapon
+/// data carries no dual-wield flag that IW4L reads (its IW4 capture sets `dual_wield: false`), so the name decides.
+pub fn is_akimbo(name: &str) -> bool {
+    name.contains("_akimbo")
+}
+
 /// ADS zoom and aim-assist ranges.
 pub fn aims(g: &WeaponGeometry) -> wpk::weapon::AimRecord {
     wpk::weapon::AimRecord {
@@ -226,7 +244,15 @@ pub fn captured(g: &WeaponGeometry) -> CapturedCombatInput {
         inventory_type: g.inventory_type,
         impact_type: g.impact_type,
         shots_per_fire: g.shots_per_fire,
-        burst_cooldown_ms: 0,
+        // IW4L `ResolvedCombat` (`weapon_catalog/combat.rs`): burst weapons take the host rules' cooldown
+        // (`WeaponHostRules`, 200 ms); without it IW4L refuses their facts (`BurstCooldown`: the FAMAS, the M16).
+        burst_cooldown_ms: if weapon_iw4::FireType::from_i32(g.fire_type)
+            .is_ok_and(|t| t.is_burst())
+        {
+            weapon_iw4::BURST_COOLDOWN_DEFAULT_MS
+        } else {
+            0
+        },
         bolt_action: g.bolt_action,
         rechamber_time_ms: g.rechamber_time_ms,
         rechamber_bolt_time_ms: g.rechamber_bolt_time_ms,
