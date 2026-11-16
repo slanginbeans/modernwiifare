@@ -465,6 +465,12 @@ pub struct Arena {
     pub martyrdom: Option<u32>,
     /// The time of the last [`Arena::update_bots`] (footsteps are stamped with it).
     clock_ms: u32,
+    /// The killstreaks in play (`crate::killstreaks`).
+    pub streaks: crate::killstreaks::Streaks,
+    /// Each bot's other gun (its class's secondary), swapped in by IW4L's reload-or-switch choice; and which bots
+    /// respawned without theirs yet (the game shell arms them: [`Arena::arm_holster`]).
+    pub holsters: Vec<Option<Gun>>,
+    pub holster_due: Vec<bool>,
 }
 
 /// IW4 surface type glass (`SURF_TYPE_GLASS`) and impact type small bullet, for the break effect's impacts.
@@ -691,6 +697,9 @@ impl Arena {
             life_rules: wpk::life_rules::LifeRules::default(),
             martyrdom: None,
             clock_ms: 0,
+            streaks: crate::killstreaks::Streaks::default(),
+            holsters: Vec::new(),
+            holster_due: Vec::new(),
         };
         a.fighters.push(Fighter::new(human, gun(0), None, &rules));
         for i in 1..=bots {
@@ -702,6 +711,9 @@ impl Arena {
                 &rules,
             ));
         }
+        // Bots' other guns are handed out by the game shell ([`Arena::arm_holster`]).
+        a.holsters.resize_with(bots + 1, || None);
+        a.holster_due = (0..=bots).map(|i| i > 0).collect();
         a
     }
 
@@ -783,6 +795,23 @@ impl Arena {
         if let Some(b) = f.brain.as_mut() {
             b.respawned();
         }
+        // A new life: the other gun is handed out again.
+        if self.holsters.len() <= i {
+            self.holsters.resize_with(i + 1, || None);
+            self.holster_due.resize(i + 1, false);
+        }
+        self.holsters[i] = None;
+        self.holster_due[i] = true;
+    }
+
+    /// Give bot `i` its other gun for this life.
+    pub fn arm_holster(&mut self, i: usize, gun: Option<Gun>) {
+        if self.holsters.len() <= i {
+            self.holsters.resize_with(i + 1, || None);
+            self.holster_due.resize(i + 1, false);
+        }
+        self.holsters[i] = gun;
+        self.holster_due[i] = false;
     }
 
     /// Give fighter `i` its class and the class's perks (bots: MW2's default classes; the human: on every spawn and
@@ -1044,6 +1073,22 @@ impl Arena {
         now: u32,
         out: &mut Vec<Event>,
     ) {
+        // A killstreak helicopter in the bullet's way before the wall takes it (`crate::killstreaks::air`).
+        if !self.streaks.helis.is_empty() {
+            let heli_damage = facts.damage as f32 * self.fighters[from].bullet_scale;
+            let hostile: Vec<bool> = (0..self.fighters.len())
+                .map(|i| self.enemies(from, i))
+                .collect();
+            if crate::killstreaks::air::bullet_hits_heli(
+                &mut self.streaks,
+                &hostile,
+                shot.start,
+                shot.end,
+                heli_damage,
+            ) {
+                return;
+            }
+        }
         // Everyone the bullet's path crosses, nearest first.
         let mut along: Vec<(damage::Span, usize)> = Vec::new();
         for i in 0..self.fighters.len() {
@@ -1541,7 +1586,7 @@ impl Arena {
     /// `victim` takes `d` from `from` at hit location `loc` along `dir`: the damage timer, the events, and the kill's
     /// points.
     #[allow(clippy::too_many_arguments)]
-    fn hurt(
+    pub(crate) fn hurt(
         &mut self,
         from: usize,
         victim: usize,
@@ -1640,14 +1685,29 @@ impl Arena {
                     self.team_score[team] += limits.kill_score;
                 }
                 let k = &mut self.fighters[from];
-                // Hardline: a kill sooner.
-                let cost = crate::perks::streak_cost(
-                    uav_kills.min(255) as u8,
-                    k.perks.hardline,
-                    lr.hardline_modifier,
-                );
-                if k.brain.is_some() && uav_kills > 0 && k.streak == cost {
-                    k.uav_until = Some(now.wrapping_add(rules.uav_time_ms));
+                // A bot's killstreaks (`crate::killstreaks`): its set, or the UAV alone without one; Hardline makes
+                // each a kill sooner.
+                if k.brain.is_some() {
+                    let streak = k.streak;
+                    let modifier = if k.perks.hardline {
+                        lr.hardline_modifier
+                    } else {
+                        0
+                    };
+                    let uav_cost = crate::perks::streak_cost(
+                        uav_kills.min(255) as u8,
+                        modifier != 0,
+                        modifier,
+                    );
+                    self.streaks.fit(from + 1);
+                    if self.streaks.sets[from].iter().all(Option::is_none) {
+                        if uav_kills > 0 && streak == uav_cost {
+                            self.fighters[from].uav_until =
+                                Some(now.wrapping_add(rules.uav_time_ms));
+                        }
+                    } else {
+                        self.streaks.on_kill(from, streak, modifier);
+                    }
                 }
             }
         }
@@ -2053,7 +2113,7 @@ impl Arena {
     /// An object's explosion on the players (IW4 `RadiusDamage`): `max` at `origin` down to `min` at `range`, by how
     /// much of each player the blast sees; from `attacker` (none: the object, so a death is the victim's own).
     #[allow(clippy::too_many_arguments)]
-    fn blast_players(
+    pub(crate) fn blast_players(
         &mut self,
         clip: &MapClip<'_>,
         origin: [f32; 3],
@@ -2753,6 +2813,20 @@ impl Arena {
                     let f = &self.fighters[i];
                     d.goal_for(f.team, f.player.ps.origin)
                 });
+                // Health out of 100, and the guns for IW4L's reload-or-switch choice.
+                let me = {
+                    let f = &self.fighters[i];
+                    let other = self.holsters.get(i).and_then(Option::as_ref);
+                    let held = f.gun.as_ref();
+                    bot::SelfState {
+                        health: f.life.health * 100 / f.life.max_health.max(1),
+                        stock: held.map_or(0, |g| g.ammo().1),
+                        reload_ms: held.map_or(2000, |g| g.facts().reload_empty_time_ms),
+                        switch_ms: other.filter(|g| g.ammo().0 > 0).map(|g| {
+                            held.map_or(0, |h| h.facts().drop_time_ms) + g.facts().raise_time_ms
+                        }),
+                    }
+                };
                 let f = &mut self.fighters[i];
                 let senses = Senses {
                     now_ms: now,
@@ -2763,9 +2837,24 @@ impl Arena {
                     enemies: &contacts,
                     clip: f.gun.as_ref().map_or(0, |g| g.ammo().0),
                     objective,
+                    me,
                 };
                 if let Some(brain) = f.brain.as_mut() {
                     f.act = brain.think(nav.as_deref_mut(), &senses);
+                }
+                // The switch: the other gun comes up (its raise plays out in the gun's own state machine).
+                if f.act.switch
+                    && let Some(h) = self.holsters.get_mut(i)
+                    && h.is_some()
+                {
+                    core::mem::swap(&mut f.gun, h);
+                    if let Some(g) = f.gun.as_mut() {
+                        // The grenades go with the bot, not the gun.
+                        if let Some(old) = h.as_ref() {
+                            g.take_offhands(old);
+                        }
+                        g.raise();
+                    }
                 }
             }
             // A melee swing lunges at the enemy in reach (IW4L's charge target).

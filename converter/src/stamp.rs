@@ -40,7 +40,11 @@ use std::path::{Path, PathBuf};
 /// 37: map preview pictures (`map:<map>` UI icons from `preview_<map>`) and their slots; MW2's menu sounds (`UISN`).
 /// 38: Create-a-Class in MW2's layout (the class page's popups: weapon type, weapon, attachment, perk, reset class;
 /// the killstreak page, the playercard popup), choosers' descriptions and Pro perks (strings, icons).
-pub const REVISION: u32 = 38;
+/// 39: the gap work merged: launchers' `WMSL` and alternate / akimbo weapons; penetration's rifle flag (`WPEN`) and
+///     the characters' bone hit boxes (`CHHB`); others' fire sounds (`WSNW`), misc sounds (`SNDM`), tracers (`FXTR`,
+///     `FXWT`), the light lattice (`LGRD`); HUD overlays and MW2's rumbles; perk and killcam rules (`LIFE`); killstreak
+///     rules (`KSRL`).
+pub const REVISION: u32 = 39;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

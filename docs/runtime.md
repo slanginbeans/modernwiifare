@@ -148,7 +148,7 @@ Debug menu (DEBUG on the main menu, and on the in-game menu during a match; A or
 - Match: bots don't attack, bots frozen, god mode (no damage, no fall or out-of-world deaths), infinite ammo (magazine, reserve and grenades every frame), all killstreaks (every reward at the start of each life), primary weapon (any catalog weapon instead of the class's, no attachments; at the next spawn).
 - Overlays (see-through boxes): hit boxes (head and neck red, body blue), bot goals (yellow posts where each bot is walking), objectives (Domination flag triggers, coloured by holder), bullet paths (your last six shots for 3 s, through walls).
 - Performance: perf overlay at match start, character models (off: the placeholder boxes), world models, sound.
-- In a match only: teleport to the next spawn or objective, bring a bot in front of you, kill all bots, UAV / Counter-UAV / EMP / nuke now, every killstreak reward, reset the match clock, write the log now. Actions are recorded in the match log (`debug` events).
+- In a match only: teleport to the next spawn or objective, bring a bot in front of you, kill all bots, UAV / Counter-UAV / EMP / nuke now, every killstreak reward, reset the match clock, write the log now, and GIVE one killstreak (care package to AC-130: on top of your list for D-pad left). Actions are recorded in the match log (`debug` events).
 
 Footsteps: each player's bob cycle wrapping is a step (IW4L), sounding `step_<gait>[_plr]_<surface>` (sprint, run, walk / crouch, prone; the surface under the feet; `_default` when a surface has none; `STEP` in `common.wpk`); yours as you hear them, others' where they are.
 
@@ -394,14 +394,22 @@ feed, and hits show MW2's hitmarker.
 - Memory: the per-bone boxes are 28 bytes a bone in the map pack (102 for `mp_terminal`'s two characters, 2.8 KiB; bones without a hit location, the attached head's own, are left out),
   and up to 64 posed boxes per fighter on the heap (about 4 KiB each); glass state is 8 bytes and a 24-byte box per
   piece; items 16 × 80 bytes. Together well under the round's 0.2 MB.
-- **Bots** play with the same IW4L movement and weapon code as you, their guns from MW2's five default classes. They
+- **Bots** play with the same IW4L movement and weapon code as you, each life with one of MW2's default classes at
+  random (its primary in hand, its secondary held back for IW4L's reload-or-switch choice below). They
   see 90° in front of them up to 5906 units with a clear line (IW4L's bot sensor), hear gunfire within 2000 units,
   step every 50 ms and decide every 100 ms like IW4's server bots, react after about a third of a second, turn at limited speed (IW4L's bot motor), fire inside an 8° cone with a small aim error that settles,
   strafe while fighting, chase what they saw or heard, and otherwise roam the map. They walk a graph the converter
   bakes from the map's collision (`NAVG` in the pack, flooded out from the spawn points on a 48-unit grid) with A*
-  routes, and jump when stuck. Not yet: mantling, ladders, doors, grenades, knifing, their weapon sounds, and other
-  players blocking movement (players pass through each other).
-- **Bodies**: MW2's character models (see "Player characters"); the shaded boxes, one per stand-in hit volume, only without
+  routes, and jump when stuck. From IW4L's `bots` crate (logic ported, `game_core::bot`): what they know of their
+  enemies is IW4L's contact memory (seen this think, last seen, forgotten after 4 s; a lost contact is a lead to go and
+  look at for 2 s), each contact's confidence fading once out of sight and heard ones at half (ours); each bot has
+  IW4L's aggression and self-preservation from its seed; wounded (at or under `20 + 20 x self-preservation` health)
+  and out of sight, or out of rounds in a fight, it backs off 192 units from the threat crouched (IW4L's Recover), and
+  crouches to fight under 60 health; with the magazine empty it switches to its loaded secondary when that is quicker
+  than a reload and an enemy is in sight, or when nothing is left to load (IW4L `weapon::choose`). They throw frags
+  and knife (`bot.rs`). Not yet: mantling, ladders, doors, their weapon sounds, IW4L's task scoring as a whole (Hunt /
+  Investigate / Fight / Recover / TouchObj: only the parts above). Their perks: see Perks below.
+- **Bodies**: MW2's character models (see "Player characters"); the shaded boxes, one per hit volume, only without
   characters in the pack or with them turned off in the debug menu.
 - **Destructible objects** (`game_core::destructible`, map pack `DST*`): MW2's cars, electric boxes, air conditioners,
   newspaper stands, copiers, fans and the like, placed as the map places them, with MW2's own models, health, effects
@@ -429,9 +437,52 @@ free-for-all weighting picks, with a fresh gun (no respawn delay: `scr_player_re
 damage; the bottom left shows the match clock (the time limit from your `dm.gsc`) and deaths. A free-flying player
 (D-pad up) is out of the match: the bots ignore it.
 The minimap (top left, MW2's `minimap_fullscreen` layout) turns with your view; enemies who fire show for 2 s.
-Killstreaks: kills in a row since your last death earn your class's streaks at their killstreakTable cost; the UAV
-(D-pad left) runs MW2's radar sweep for its script time (every enemy marked as the sweep passes). Bots call in a UAV
-at its cost too. The other streaks are earned but not in this build yet.
+Killstreaks: kills in a row since your last death earn your class's streaks at their killstreakTable cost; D-pad left
+calls the newest. The UAV runs MW2's radar sweep for its script time (every enemy marked as the sweep passes); the
+Counter-UAV, EMP and nuke are below. The rest is `game_core::killstreaks`, written natively from MW2's killstreak
+scripts' values (ADR 0007: the converter's `streak_rules.rs` reads `_airdrop`, `_remotemissile`, `_autosentry`,
+`_airstrike`, `_harrier`, `_helicopter` and `_ac130.gsc` into `KSRL`; stock values with an older pack) with IW4L's
+native pieces where it has them; every reward is owned by a fighter, so bots call the same ones:
+- **Care package / emergency airdrop**: the marker (`airdrop_marker_mp`, thrown with its own grenade numbers, going
+  off where it comes to rest) brings a Little Bird from 15 000 units out at a random heading, 850 above the marker,
+  fast for 2 s and then slow, braking onto a point 50 units short of it, where it drops the crate (about 7 s; MW2's
+  `doFlyBy`); the emergency airdrop's C-130 flies the thrower's line at 2000 units a second and drops four crates as it
+  passes over. Crates fall, crush whoever they land on (the owner's kill) and hold a reward rolled from MW2's crate odds
+  (`getRandomCrateType`) or ammo. Hold X by one to take it: half a second for its owner, 3 s for anyone else (enemies
+  too); unclaimed crates go after 90 s. A crate's reward joins your list for D-pad left; ammo refills both guns.
+- **Predator missile**: launched 14 000 up and 7000 behind you at a point 1500 ahead; the view rides it. The C-stick
+  steers (IW4L `remote_missile::steer`: 15 degrees a second of pitch, 20 of yaw, pitch kept between 1 and 87), it holds
+  3000 units a second and R once boosts it to 6000 (IW4L `advance`); it passes through sky brushes and blows up on what
+  it hits with `remotemissile_projectile_mp`'s radius and damage. Your body stays where it was.
+- **Sentry gun**: carried as a preview (green where IW4L's sentry placement solver lets it stand, red where not); R
+  sets it down. It runs IW4L's turret logic (nearest enemy in range, arcs and sight; 360 degrees a second turning, 2
+  degree on-target cone, 30 a second scanning) and MW2's fire: a 0.05 s spin-up, 20-120 round bursts at
+  `sentry_minigun_mp`'s rate with 0.15-0.35 s pauses, overheating after 8 s of fire until cool (a second a second), gone
+  after 90 s.
+- **Precision airstrike, Harrier strike, stealth bomber**: the target screen shows the whole minimap (north up): the
+  main stick moves the cursor, the C-stick turns the run's heading, A or R calls it, B gives the reward back. Precision
+  and Harrier send two planes 1.5-2.5 s apart at 7000 a second, each cluster bomb bursting into 12 traces pitched 55 to
+  5 degrees ahead (512 radius, 200 to 30 damage); the stealth bomber carpets the line through the target (a bomb every
+  0.1 s within 4500 units, each within 512 of its path, 896 radius, 300 to 50). The Harrier then hovers over the target
+  for 45 s firing 25-round bursts of `harrier_20mm_mp`.
+- **Attack helicopter, Pave Low**: in from the map's edge, circling the map's middle 1200 above it for 60 s (stand-in
+  path: the maps' helicopter nodes are not converted), the gun (`cobra_20mm_mp`, the Pave Low's `pavelow_minigun_mp`)
+  firing 40-round clips at the nearest enemy in 3500 units, starting 96 units off and converging 0.05 a shot, 0.5-2 s
+  between clips. Bullets wear them down through their armour (a third: `heli_armor_bulletdamage`); 1500 health, the
+  Pave Low twice that.
+- **Chopper Gunner, AC-130**: your view rides the helicopter (40 s) or the AC-130 (40 s, circling the map's middle once
+  every 70 s, 4000 out and 6000 up as a stand-in for its rig); the C-stick aims, R fires (`cobra_player_minigun_mp`;
+  the AC-130's 105, 40 and 25 mm with their 5, 3 and 1.5 s reloads, Y for the next gun). You are out of the fight
+  below meanwhile (bots ignore you).
+Views from the sky draw the whole map without fog or the portal walk (`World::skip_vis`). The world models are
+stand-in boxes (crates, the Little Bird, the C-130, planes, bombs, helicopters, the sentry); not converted yet: their
+models, sounds and effects beyond the weapons' explosions, the kill cams, the artillery shellshock, flares, shooting
+down the AC-130 or sentries, EMP's effect on killstreaks, MW2's HUD for each (the Predator's and AC-130's overlays).
+Bots hold a set of three (`BOT_SETS` in `wii/game/src/streaks.rs`, MW2's default UAV / care package / Predator first)
+at the killstreakTable costs and call each 1.5 s after earning it: the radar ones at once, markers thrown ahead of
+them (they take crates in reach), sentries set down, Predators flown onto the nearest enemy, strikes on it, the
+helicopters and AC-130 flown for them. Memory: the rules section is 352 bytes; the killstreaks in play are a few
+kilobytes at most (well under the 0.3 MB this work may add to MEM2).
 Killcam: every player's pose (position, view, animation inputs, weapon) is recorded each server frame (50 ms) into a
 ring in MEM2 (`wii/game/src/replay.rs`: 10 s, 200 frames of 272 bytes a player; the log's `killcam_ring bytes=`:
 327 KB with 5 bots in Dolphin, 436 KB with the most, 7), with the bullet impacts. After the
@@ -466,7 +517,7 @@ Perks beyond movement and damage (`game_core::perks`, applied in `game_core::are
   timer on the HUD), Martyrdom (a live frag dropped where you die), Final Stand (down as Last Stand with your
   weapons, back up at full health after 20 s, once a life).
 Bots carry their default class's perks and deathstreak (Lightweight's speed, Stopping Power ...).
-Not yet: Cold-Blooded against the killstreaks that target players (none yet), Ninja against heartbeat sensors,
+Not yet: Cold-Blooded against the killstreaks that target players (they don't check it yet), Ninja against heartbeat sensors,
 bots' One Man Army, a Beretta for a class without a pistol in your Last Stand, MW2's revive (Diehard mode).
 A feel trace against MW2 is still to do for all of these: the numbers are the scripts', the code IW4L's.
 

@@ -44,6 +44,12 @@ Also say per round: did it crash (the log then has no summary line), did sound p
 (switches the console off). Frames are pad reads: one a frame in the menus and the match, none while a map loads,
 so a script runs the same on every machine. Delete `autoplay.txt` afterwards, or the game plays it on every start.
 
+`tools/autoplay/ks_tour.txt` calls killstreaks from the debug menu's GIVE lines (care package, emergency airdrop with
+its crates' capture, Predator, sentry, precision airstrike); `tools/autoplay/ks_air.txt` the stealth bomber, attack
+helicopter, Chopper Gunner and AC-130 (split so the streaks' own kills don't end the match first);
+`tools/autoplay/ks_bots.txt` leaves a match to the bots for four minutes (their killstreaks show in the log as
+`killstreak bot=N used=...`). Both toggle debug settings, so delete `debug.dat` from the card before each run.
+
 `tools/autoplay/menu_tour.txt` walks every menu and the HUD: the lobby, Game Setup, the map, mode and rules pages,
 Create-a-Class (the class page, the weapon type, weapon, attachment and perk popups, Rename, Reset Class), the
 Playercard popup and the Killstreak Rewards page, a Team Deathmatch (the class menu as it starts), the START menu

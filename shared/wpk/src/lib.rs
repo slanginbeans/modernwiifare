@@ -25,14 +25,15 @@ pub mod clip;
 pub mod destructible;
 pub mod fx;
 pub mod held;
-pub mod light;
 pub mod life_rules;
+pub mod light;
 pub mod nav;
 pub mod player_anim;
 pub mod quant;
 pub mod records;
 pub mod rules;
 pub mod sound;
+pub mod streaks;
 pub mod strips;
 pub mod ui;
 pub mod view;
@@ -165,6 +166,8 @@ pub mod tag {
     /// Perk, deathstreak, last stand and respawn rules from the user's scripts
     /// ([`crate::life_rules::LifeRules`], in `common.wpk`).
     pub const LIFE_RULES: Tag = *b"LIFE";
+    /// Killstreak rules from the user's killstreak scripts ([`crate::streaks::StreakRules`], in `common.wpk`).
+    pub const STREAK_RULES: Tag = *b"KSRL";
     /// Weapons (`weapon::WeaponRecord`): combat numbers of every weapon (in `common.wpk`).
     pub const WEAPONS: Tag = *b"WEAP";
     /// World visibility (`vis::Vis`): cell BSP, cells, portals.

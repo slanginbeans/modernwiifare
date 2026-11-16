@@ -21,6 +21,7 @@ mod objects;
 mod replay;
 mod rt;
 mod sound;
+mod streaks;
 mod ui;
 mod view;
 
@@ -1156,15 +1157,43 @@ fn run_map(
             dm
         }
     };
-    // Bot i carries MW2's default class i (Grenadier, First Recon ...): its primary (else the fallback) and perks.
+    // Each life a bot takes one of MW2's default classes at random (Grenadier, First Recon ...): its primary in hand
+    // (else the fallback), its secondary in the holster (`Arena::arm_holster`), its perks, and its pistol for Last
+    // Stand. The first life takes class i. A copied class (Copycat) replaces the roll for that life.
+    let bot_class: Vec<core::cell::Cell<usize>> = (0..=bots)
+        .map(|i| core::cell::Cell::new(i.saturating_sub(1)))
+        .collect();
+    let rolled: Vec<core::cell::Cell<bool>> =
+        (0..=bots).map(|_| core::cell::Cell::new(false)).collect();
+    let first_life: Vec<core::cell::Cell<bool>> =
+        (0..=bots).map(|_| core::cell::Cell::new(true)).collect();
+    let class_rng = core::cell::Cell::new(ffi::ms() | 1);
     let bot_loadout = |i: usize| -> Option<wpk::classes::Loadout> {
         let c = loadouts.catalog?;
-        c.defaults
-            .get((i + c.defaults.len().max(1) - 1) % c.defaults.len().max(1))
-            .cloned()
+        let n = c.defaults.len().max(1);
+        c.defaults.get(bot_class.get(i)?.get() % n).cloned()
     };
-    // The weapon of a class slot's names (with attachments first), `fallback` without them.
-    let class_weapon = |l: Option<&wpk::classes::Loadout>, secondary: bool, fallback: &str| {
+    // A new class for bot i's next life.
+    let roll_class = |i: usize| {
+        if let (Some(b), Some(r)) = (bot_class.get(i), rolled.get(i)) {
+            r.set(true);
+            if first_life.get(i).is_some_and(|f| f.replace(false)) {
+                return;
+            }
+            let mut x = class_rng.get();
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            class_rng.set(x);
+            b.set((x >> 8) as usize);
+        }
+    };
+    // The weapon of a class slot's names (with attachments first), `fallback` without them. `pistol` (Last Stand's
+    // pistol is the class's sidearm, else `beretta_mp`, `_damage.gsc`) takes the secondary only when it is one.
+    let class_weapon = |l: Option<&wpk::classes::Loadout>,
+                        secondary: bool,
+                        pistol: bool,
+                        fallback: Option<&str>| {
         loadouts
             .catalog
             .zip(l)
@@ -1175,15 +1204,18 @@ fn run_map(
                     (l.primary, l.primary_attachments)
                 };
                 let item = c.weapons.get(usize::from(w))?;
-                // Last Stand's pistol is the class's sidearm, else `beretta_mp` (`_damage.gsc`).
-                if secondary && item.kind != wpk::classes::group::PISTOL {
+                if pistol && item.kind != wpk::classes::group::PISTOL {
                     return None;
                 }
                 let mut n = c.weapon_names(w, att);
                 n.push(alloc::format!("{}_mp", item.name));
                 Some(n)
             })
-            .unwrap_or_else(|| alloc::vec![alloc::string::String::from(fallback)])
+            .unwrap_or_else(|| {
+                fallback
+                    .map(|f| alloc::vec![alloc::string::String::from(f)])
+                    .unwrap_or_default()
+            })
     };
     // A gun of the first of `names` the pack has, with MW2's frag when `frag`.
     let make_gun = |names: &[alloc::string::String], frag: bool| -> Option<Gun> {
@@ -1209,10 +1241,37 @@ fn run_map(
             Some(g)
         })
     };
-    // A copied class (Copycat) replaces the bot's own for that life.
     let bot_gun = |i: usize, copied: Option<&wpk::classes::Loadout>| -> Option<Gun> {
+        if copied.is_none() {
+            roll_class(i);
+        }
         let own = bot_loadout(i);
-        make_gun(&class_weapon(copied.or(own.as_ref()), false, "m4_mp"), true)
+        make_gun(
+            &class_weapon(copied.or(own.as_ref()), false, false, Some("m4_mp")),
+            true,
+        )
+    };
+    // Bot i's rolled class onto the arena (its perks, Last Stand pistol and holstered secondary) when it took a
+    // new one; otherwise (a copied class) only the holster from its own class.
+    let fit_class = |a: &mut Arena, i: usize, now: u32| {
+        let l = bot_loadout(i);
+        a.arm_holster(
+            i,
+            make_gun(&class_weapon(l.as_ref(), true, false, None), false),
+        );
+        if !rolled.get(i).is_some_and(|r| r.replace(false)) {
+            return;
+        }
+        let perks = match (loadouts.catalog, l.as_ref()) {
+            (Some(c), Some(l)) => game_core::perks::of_loadout(c, l),
+            _ => game_core::perks::PerkSet::default(),
+        };
+        a.fighters[i].sidearm = make_gun(
+            &class_weapon(l.as_ref(), true, true, Some("beretta_mp")),
+            false,
+        );
+        a.set_class(i, l, perks);
+        a.spawned(i, now);
     };
     let mut arena = match (&clip, &player) {
         (Some(c), Some(p)) if !spawn_list.is_empty() => {
@@ -1227,14 +1286,7 @@ fn run_map(
         a.life_rules = life_rules;
         a.martyrdom = wpk::weapon::find_indexed(weapons, "frag_grenade_mp").map(|(i, _)| i);
         for i in 1..a.fighters.len() {
-            let l = bot_loadout(i);
-            let perks = match (loadouts.catalog, l.as_ref()) {
-                (Some(c), Some(l)) => game_core::perks::of_loadout(c, l),
-                _ => game_core::perks::PerkSet::default(),
-            };
-            a.fighters[i].sidearm = make_gun(&class_weapon(l.as_ref(), true, "beretta_mp"), false);
-            a.set_class(i, l, perks);
-            a.spawned(i, ffi::ms());
+            fit_class(a, i, ffi::ms());
         }
     }
     if let Some(a) = arena.as_mut() {
@@ -1259,16 +1311,26 @@ fn run_map(
                 format_args!("pieces={} panes={panes}", a.glass.len()),
             );
         }
+        streaks::setup(
+            a,
+            common,
+            weapons,
+            equips,
+            &spawn_list,
+            world.minimap.as_ref().map(|m| &m.0),
+        );
         // Time the bots (telemetry `bai` / `bmv` / `bgun`) and the hit volume tests (`hitvol`).
         a.clock = Some(clock_us);
     }
-    // Bots call in a UAV at its killstreakTable cost.
+    // Bots call in a UAV at its killstreakTable cost; each bot also has a set of three killstreaks
+    // (`streaks::bot_sets`), MW2's default set first.
     if let (Some(a), Some(c)) = (arena.as_mut(), loadouts.catalog) {
         a.bot_uav_kills = c
             .killstreaks
             .iter()
             .find(|k| k.name == "uav")
             .map_or(0, |k| u32::from(k.kind));
+        streaks::bot_sets(a, &c.killstreaks);
     }
     let mut events: Vec<Event> = Vec::with_capacity(32);
     let mut feed: [(Option<(usize, usize)>, u32); 4] = [(None, 0); 4];
@@ -1378,6 +1440,8 @@ fn run_map(
         Vec::new()
     };
     let mut reward_note: Option<(&'static str, u32)> = None;
+    // The killstreaks past the radar ones (`streaks.rs`).
+    let mut ks = streaks::Shell::default();
     // The HUD's score popup: your score last frame, the points just scored and when.
     let mut last_score = 0u32;
     let mut popup: Option<(u32, u32)> = None;
@@ -1634,6 +1698,11 @@ fn run_map(
                             }
                         }
                         (Some(Action::RefillRewards), _) => rewards = all_rewards(),
+                        (Some(Action::Give(i)), _) => {
+                            if let Some(n) = wpk::streaks::NAMES.get(usize::from(i)) {
+                                rewards.push(alloc::string::String::from(*n));
+                            }
+                        }
                         (Some(Action::ResetClock), _) => {
                             clock = MatchClock::with_limit(now, setup.1.time_limit_ms);
                         }
@@ -1810,6 +1879,11 @@ fn run_map(
                     done: false,
                 });
                 reward_note = Some(("TACTICAL NUKE INCOMING", now));
+            } else if let Some(a) = arena.as_mut()
+                && let Some(c) = clip.as_ref()
+                && let Some(p) = player.as_ref()
+                && ks.call(a, c, &r, p.eye(), cam.forward(), p.ps.velocity, now)
+            {
             } else {
                 reward_note = Some(("THAT KILLSTREAK IS NOT IN THIS BUILD YET", now));
             }
@@ -1862,7 +1936,17 @@ fn run_map(
             _ => None,
         };
         let x_held = ctl.held(act::USE);
-        let reload_held = x_held && knife_near.is_none();
+        // A crate in reach: X held takes it (`_airdrop.gsc` capture) instead of reloading.
+        let crate_near = match (arena.as_mut(), player.as_ref()) {
+            (Some(a), Some(p)) if life.alive() && !flying && streaks::remote(a).is_none() => {
+                ks.capture(a, p.ps.origin, x_held && knife_near.is_none(), now)
+            }
+            _ => {
+                ks.capture = None;
+                false
+            }
+        };
+        let reload_held = x_held && knife_near.is_none() && !crate_near;
         // C4: X pressed, let go within 0.5 s, pressed again within 0.5 s detonates it.
         match (x_held, x_down_ms) {
             (true, None) => {
@@ -1957,7 +2041,49 @@ fn run_map(
             (Some(p), Some(c)) if !flying && life.alive() => {
                 // Fixed 60 Hz for the player, like IW4 at 60 fps (usercmds of 16 / 17 ms): the fire rate and
                 // movement don't depend on the frame rate. A slow frame runs several steps.
-                for _ in 0..player_ticks {
+                // Fire went down this frame (the trigger has no press of its own).
+                let fire_down = ks.fire_pressed(ctl.held(act::FIRE));
+                // Carrying a sentry: fire sets it down (where it may stand) instead of shooting.
+                let carrying = arena.as_ref().is_some_and(|a| a.carries_sentry(0));
+                if carrying
+                    && fire_down
+                    && let Some(a) = arena.as_mut()
+                    && a.place_sentry(0, now)
+                {
+                    devlog::event(now, "sentry", format_args!("placed"));
+                }
+                // Flying a remote killstreak: the body stands still and the sticks fly it.
+                let remote =
+                    ks.busy() || arena.as_ref().is_some_and(|a| streaks::remote(a).is_some());
+                // The air strikes' target screen.
+                if ks.busy()
+                    && let Some(a) = arena.as_mut()
+                    && let Some(name) = ks.target_input(
+                        a,
+                        c,
+                        world.minimap.as_ref().map(|m| &m.0),
+                        ctl.stick_l,
+                        ctl.stick_r,
+                        ctl.pressed(act::JUMP) || fire_down,
+                        ctl.pressed(act::STANCE),
+                        dt,
+                        now,
+                    )
+                {
+                    rewards.push(alloc::string::String::from(name));
+                }
+                if let Some(a) = arena.as_mut()
+                    && remote
+                {
+                    streaks::steer(
+                        a,
+                        ctl.stick_r,
+                        ctl.held(act::FIRE),
+                        ctl.pressed(act::SWITCH),
+                        dt,
+                    );
+                }
+                for _ in 0..if remote { 0 } else { player_ticks } {
                     if !life.alive() {
                         break;
                     }
@@ -2043,7 +2169,7 @@ fn run_map(
                             ),
                             sprint: ctl.held(act::SPRINT),
                             ads: ads_held,
-                            fire: ctl.held(act::FIRE),
+                            fire: ctl.held(act::FIRE) && !carrying,
                             reload: reload_held,
                             // Z / left stick click (MW2's `+breath_sprint`): steadies a scope while aimed.
                             breath: ctl.held(act::BREATH),
@@ -2254,7 +2380,7 @@ fn run_map(
                             &GunInput {
                                 // One Man Army's change takes the weapon (`_disableWeapon`); last stand the
                                 // melee and, without its Pro perk, the grenades (`DisableOffhandWeapons`).
-                                fire: ctl.held(act::FIRE) && lock_ok && oma.is_none(),
+                                fire: ctl.held(act::FIRE) && lock_ok && oma.is_none() && !carrying,
                                 // Akimbo fires its left gun with the aim trigger.
                                 ads: ads_held,
                                 reload: reload_held && oma.is_none(),
@@ -2604,7 +2730,8 @@ fn run_map(
         }
         let _ = lap(&mut mark);
         if let (Some(a), Some(c)) = (arena.as_mut(), clip.as_ref()) {
-            a.human_present = !flying && player.is_some();
+            // Up in a Chopper Gunner or AC-130 you are out of the fight below.
+            a.human_present = !flying && player.is_some() && !streaks::in_vehicle(a);
             a.fighters[0].life = life;
             a.update_bots(
                 c,
@@ -2615,12 +2742,28 @@ fn run_map(
                 bot_gun,
                 &mut events,
             );
+            for i in 1..a.fighters.len() {
+                if a.holster_due.get(i).copied().unwrap_or(false) {
+                    fit_class(a, i, now);
+                }
+            }
             a.regen(now);
             a.update_grenades(c, dt, now, &mut events);
             a.update_objects(c, now, &mut events);
             a.update_glass(c, now, &mut events);
             a.update_items(c, now, &mut events);
             a.update_objectives(dt * 1000.0, now, &mut events);
+            a.update_killstreaks(c, dt, now, &mut events);
+            ks.after_update(
+                a,
+                &mut rewards,
+                || {
+                    for g in arsenal.guns.iter_mut().flatten() {
+                        g.refill_ammo();
+                    }
+                },
+                now,
+            );
             a.footsteps(c, &mut events);
             // Last stand's bleed-out, Final Stand's revive; holding X gives up (`lastStandAllowSuicide`).
             a.update_last_stand(now, ctl.held(act::USE), &mut events);
@@ -3021,6 +3164,18 @@ fn run_map(
         {
             cam = kc;
         }
+        // A remote killstreak's view (the Predator's).
+        let remote_cam = arena
+            .as_ref()
+            .and_then(streaks::remote)
+            .filter(|_| watching.is_none());
+        if let Some(c) = remote_cam {
+            cam = Camera { aspect, ..c };
+            // Seen from the sky: the whole far plane, no map fog.
+            world.draw_distance = 0.0;
+            world.map_fog = false;
+        }
+        world.skip_vis = remote_cam.is_some();
         let stats = world.draw(gfx, &cam, scratch);
         // Destructible objects, as part of the world.
         if let (Some(p), Some(a)) = (props.as_ref(), arena.as_ref()) {
@@ -3268,6 +3423,7 @@ fn run_map(
                     }
                 }
             }
+            streaks::stand_ins(a, &mut boxes, &mut box_colours);
             unsafe {
                 ffi::mwf_draw_boxes(
                     &cam.view(),
@@ -3315,6 +3471,7 @@ fn run_map(
         if !flying
             && life.alive()
             && !scoped
+            && remote_cam.is_none()
             && let (Some(v), Some(g), Some(p)) = (
                 arsenal.views[arsenal.view_slot()].as_mut(),
                 arsenal.guns[arsenal.active].as_ref(),
@@ -3749,6 +3906,11 @@ fn run_map(
                 hud::text(&mut hud_rects, 200, 360, 2, text);
                 gfx.hud_rects(&hud_rects, 0xffd040e0);
             }
+            if let Some(a) = arena.as_ref() {
+                ks.draw_targeting(gfx, &mut hud_rects, a, world.minimap.as_ref());
+                streaks::draw_remote_hud(gfx, &mut hud_rects, a, now);
+            }
+            ks.draw_hud(gfx, &mut hud_rects, now);
             if let Some(r) = rewards.last().filter(|_| !mw2) {
                 let mut line = Str::default();
                 line.push_str("D-PAD LEFT: ");

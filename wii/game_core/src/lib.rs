@@ -42,6 +42,7 @@ pub mod hud_mw2;
 pub mod item;
 pub mod killcam;
 pub mod killcam_hud;
+pub mod killstreaks;
 pub mod life;
 pub mod light;
 pub mod loadout;

@@ -390,9 +390,15 @@ pub enum Action {
     RefillRewards,
     ResetClock,
     WriteLog,
+    /// Give one killstreak reward (`wpk::streaks::NAMES` index), on top of the list.
+    Give(u8),
 }
 
-pub const ACTIONS: [Action; 11] = [
+/// The rewards [`Action::Give`] offers: the care package through the AC-130.
+pub const GIVE_FIRST: u8 = 2;
+pub const GIVE_LAST: u8 = 12;
+
+pub const ACTIONS: [Action; 22] = [
     Action::TeleportSpawn,
     Action::TeleportObjective,
     Action::BotInFront,
@@ -404,6 +410,17 @@ pub const ACTIONS: [Action; 11] = [
     Action::RefillRewards,
     Action::ResetClock,
     Action::WriteLog,
+    Action::Give(2),
+    Action::Give(3),
+    Action::Give(4),
+    Action::Give(5),
+    Action::Give(6),
+    Action::Give(7),
+    Action::Give(8),
+    Action::Give(9),
+    Action::Give(10),
+    Action::Give(11),
+    Action::Give(12),
 ];
 
 impl Action {
@@ -420,6 +437,20 @@ impl Action {
             Action::RefillRewards => "GIVE ALL KILLSTREAKS",
             Action::ResetClock => "RESET MATCH CLOCK",
             Action::WriteLog => "WRITE THE LOG NOW",
+            Action::Give(i) => match i {
+                2 => "GIVE CARE PACKAGE",
+                3 => "GIVE SENTRY GUN",
+                4 => "GIVE PREDATOR MISSILE",
+                5 => "GIVE PRECISION AIRSTRIKE",
+                6 => "GIVE HARRIER STRIKE",
+                7 => "GIVE ATTACK HELICOPTER",
+                8 => "GIVE EMERGENCY AIRDROP",
+                9 => "GIVE STEALTH BOMBER",
+                10 => "GIVE PAVE LOW",
+                11 => "GIVE CHOPPER GUNNER",
+                12 => "GIVE AC-130",
+                _ => "GIVE KILLSTREAK",
+            },
         }
     }
 }

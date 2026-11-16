@@ -1,0 +1,142 @@
+# The killstreaks tour (game_core::autoplay syntax): care package (called, captured), emergency airdrop, Predator,
+# sentry, precision airstrike (the air ones: ks_air.txt); bots passive, god mode, rewards from the debug menu's GIVE lines. Look in the match
+# log for `killstreak used=`, `crate_landed`, `crate reward=` / `crate ammo`, `sentry placed` and `strike`.
+wait 90
+press A
+wait 10
+# START GAME (free-for-all on the first map).
+press A
+wait 700
+press A
+wait 60
+shot ks01_spawn
+# Debug: bots don't attack, god mode, then GIVE CARE PACKAGE (line 30: 19 settings, then the actions).
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+press A
+press DOWN
+press DOWN
+press A
+times 28 press DOWN
+wait 5
+shot ks02_debug_give
+press A
+wait 20
+# Look down at your feet, then call it in (D-pad left): the marker lands by you.
+cstick 0 -127
+wait 60
+cstick 0 0
+wait 5
+press LEFT
+wait 30
+shot ks03_marker
+# Look up and around for the Little Bird.
+cstick 0 100
+wait 25
+cstick 0 0
+times 6 wait 60
+shot ks04_inbound
+times 4 wait 60
+shot ks05_dropping
+cstick 0 -127
+wait 60
+cstick 0 0
+times 3 wait 60
+shot ks06_crate
+# Hold X by the crate (the owner's half second).
+hold X
+wait 20
+shot ks07_capturing
+wait 40
+release X
+wait 10
+shot ks08_captured
+log care package done
+# The emergency airdrop the same way (debug GIVE EMERGENCY AIRDROP, line 36).
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 36 press DOWN
+press A
+wait 20
+press LEFT
+times 15 wait 60
+shot ks09_c130
+times 10 wait 60
+shot ks10_crates
+# Hold X by the C-130's crates (3 s for anyone's but your own: these are yours, half a second).
+hold X
+wait 40
+shot ks10b_capturing
+wait 200
+release X
+wait 10
+shot ks10c_captured
+# The Predator (GIVE PREDATOR MISSILE, line 32): its view, nose down, then the boost.
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 32 press DOWN
+press A
+wait 20
+press LEFT
+wait 40
+shot ks11_predator_view
+cstick 0 -90
+wait 60
+cstick 0 0
+shot ks12_predator_steered
+press R
+wait 20
+shot ks13_predator_boost
+times 4 wait 60
+shot ks14_after_predator
+# The sentry (GIVE SENTRY GUN, line 31): carried, then placed with R.
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 31 press DOWN
+press A
+wait 20
+press LEFT
+wait 30
+shot ks15_sentry_carried
+press R
+wait 30
+shot ks16_sentry_placed
+times 5 wait 60
+shot ks17_sentry_later
+# The precision airstrike (line 33): the target screen, the cursor north, A calls it.
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 33 press DOWN
+press A
+wait 20
+press LEFT
+wait 20
+shot ks18_target_screen
+stick 0 80
+wait 30
+stick 0 0
+wait 5
+shot ks19_target_moved
+press A
+times 5 wait 60
+shot ks20_strike
+times 3 wait 60
+shot ks21_strike_after
+log killstreak tour done
+wait 30
+quit
