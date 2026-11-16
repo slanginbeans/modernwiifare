@@ -639,23 +639,34 @@ impl crate::records::Record for BlockerRecord {
 }
 
 /// A weapon's bullet penetration (`WPEN`, parallel to `WEAP`): IW4 `penetrateType` (0 none, 1 small, 2 medium,
-/// 3 large) and `penetrateMultiplier`.
+/// 3 large), `penetrateMultiplier` and `bRifleBullet` (the bullet goes on through a player at half damage, IW4L
+/// `fire_extended`; stored in bit 31 of the type word, so older packs read as no).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PenRecord {
     pub kind: i32,
     pub multiplier: f32,
+    pub rifle_bullet: bool,
 }
+
+const RIFLE_BULLET_BIT: u32 = 1 << 31;
 
 impl crate::records::Record for PenRecord {
     const LEN: usize = 8;
     fn write(&self, o: &mut Vec<u8>) {
-        o.u32(self.kind as u32);
+        let rifle = if self.rifle_bullet {
+            RIFLE_BULLET_BIT
+        } else {
+            0
+        };
+        o.u32((self.kind as u32 & !RIFLE_BULLET_BIT) | rifle);
         o.f32(self.multiplier);
     }
     fn read(b: &[u8]) -> Self {
+        let w = be::u32(b, 0);
         PenRecord {
-            kind: be::u32(b, 0) as i32,
+            kind: (w & !RIFLE_BULLET_BIT) as i32,
             multiplier: be::f32(b, 4),
+            rifle_bullet: w & RIFLE_BULLET_BIT != 0,
         }
     }
 }

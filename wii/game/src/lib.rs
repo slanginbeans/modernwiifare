@@ -1103,7 +1103,10 @@ fn run_map(
         }
         a.equips = equips;
         a.blockers = blockers;
-        // Time the bots (telemetry `bai` / `bmv` / `bgun`).
+        // Bullets through players: each weapon's penetration and the flesh depths.
+        a.shots.weapon_pens = pens;
+        a.shots.pen_table = pen_table;
+        // Time the bots (telemetry `bai` / `bmv` / `bgun`) and the hit volume tests (`hitvol`).
         a.clock = Some(clock_us);
     }
     // Bots call in a UAV at its killstreakTable cost.
@@ -1427,6 +1430,17 @@ fn run_map(
             last = ffi::ms();
             frame_start = ffi::us();
             continue;
+        }
+        // The arena keeps no gun for you: your weapon and ammunition, for bullets and drops.
+        if let Some(a) = arena.as_mut() {
+            a.shots.human_weapon = arsenal.gun().map(|g| {
+                let (clip, stock) = g.ammo();
+                arena::HeldWeapon {
+                    weapon: g.weapon_index(),
+                    clip,
+                    stock,
+                }
+            });
         }
         // Y: the other weapon (MW2's console layout).
         if ctl.pressed(act::SWITCH) && !flying && life.alive() && arsenal.switch() {
@@ -2152,6 +2166,14 @@ fn run_map(
             }
             ch.draw(gfx, &cam.view(), &poses, now);
         }
+        // The drawn bodies' bone hit boxes, for your shots.
+        if let (Some(ch), Some(a), true) = (characters.as_ref(), arena.as_mut(), debug.characters) {
+            for p in &poses {
+                if let Some(hb) = ch.hit_boxes(p.slot, now) {
+                    a.set_pose_hit(p.slot, now, hb.iter().copied());
+                }
+            }
+        }
         // Bots: placeholder bodies, one shaded box per hit volume, until the character models are converted.
         if let Some(a) = arena.as_ref() {
             boxes.clear();
@@ -2193,10 +2215,13 @@ fn run_map(
                 .filter(|(_, f)| f.life.alive() && (characters.is_none() || !debug.characters))
             {
                 let ally = !a.enemies(0, i);
-                for h in game_core::damage::boxes(f.draw_origin(now), f.player.hull_height()) {
-                    boxes.push([
-                        h.mins[0], h.mins[1], h.mins[2], h.maxs[0], h.maxs[1], h.maxs[2],
-                    ]);
+                for h in game_core::damage::boxes(
+                    f.draw_origin(now),
+                    f.player.hull_height(),
+                    f.player.ps.viewangles[1],
+                ) {
+                    let (lo, hi) = h.aabb();
+                    boxes.push([lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]);
                     box_colours.push(match (ally, h.loc <= game_core::damage::hitloc::NECK) {
                         (true, true) => 0xb0c0d8ff,
                         (true, false) => 0x46607cff,
@@ -2224,10 +2249,21 @@ fn run_map(
                     .skip(1)
                     .filter(|(_, f)| f.life.alive())
                 {
-                    for h in game_core::damage::boxes(f.draw_origin(now), f.player.hull_height()) {
-                        boxes.push([
-                            h.mins[0], h.mins[1], h.mins[2], h.maxs[0], h.maxs[1], h.maxs[2],
-                        ]);
+                    // The drawn bones' boxes when your shots use them, else the stand-in column (each as the
+                    // world box around it).
+                    let column = game_core::damage::boxes(
+                        f.draw_origin(now),
+                        f.player.hull_height(),
+                        f.player.ps.viewangles[1],
+                    );
+                    let bones = f
+                        .pose_hit_ms
+                        .is_some_and(|t| now.wrapping_sub(t) <= arena::POSE_HIT_FRESH_MS);
+                    let list: &[game_core::damage::HitBox] =
+                        if bones { &f.pose_hit } else { &column };
+                    for h in list {
+                        let (lo, hi) = h.aabb();
+                        boxes.push([lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]);
                         box_colours.push(if h.loc <= game_core::damage::hitloc::NECK {
                             0xff404070
                         } else {
@@ -2594,6 +2630,21 @@ fn run_map(
         // Memory every 5 s is enough (mallinfo walks the heap).
         let (mem1_free, mem2_free) = if now / 5000 != last_mem_s {
             last_mem_s = now / 5000;
+            // What the hit volume tests cost over those 5 s (bodies past the broad test, of them on drawn bones,
+            // boxes tested, microseconds).
+            if let Some(a) = arena.as_ref() {
+                let c = a.shots.take_cost();
+                if c.bodies > 0 {
+                    devlog::event(
+                        now,
+                        "hitvol",
+                        format_args!(
+                            "bodies={} bones={} boxes={} us={}",
+                            c.bodies, c.bone_bodies, c.boxes, c.us
+                        ),
+                    );
+                }
+            }
             unsafe { (ffi::mwf_mem1_free_bytes(), ffi::mwf_mem2_free_bytes()) }
         } else {
             (0, 0)

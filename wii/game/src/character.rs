@@ -13,6 +13,7 @@ use game_core::character::{
     Body, Death, Held as HeldType, Motion, NO_BONE, PlayerAnims, Rig, Scratch, conditions,
     death_conditions, motion_events, movetype, strafing,
 };
+use game_core::damage::HitBox;
 use game_core::gfx::{DrawState, Gfx, Mtx34};
 use game_core::viewmodel as vmod;
 use wpk::anim_script::{Conditions, Script};
@@ -55,6 +56,8 @@ struct Team {
     rig: Rig,
     attributes: *const u8,
     draws: Vec<Draw>,
+    /// Its bones' hit boxes (`CHHB`; none with an older pack).
+    hitboxes: Vec<records::BoneHitRecord>,
 }
 
 /// What the animation saw of one player last frame.
@@ -116,6 +119,8 @@ pub struct Characters {
     scratch: Scratch,
     world: Vec<Mtx34>,
     skin: Vec<Mtx34>,
+    /// Per slot: when its body was last posed and its bones' hit boxes then (world space).
+    hits: Vec<(u32, Vec<HitBox>)>,
 }
 
 fn mem2(count: usize) -> Option<&'static mut [u8]> {
@@ -201,6 +206,10 @@ impl Characters {
     ) -> Option<Characters> {
         let pack = wpk::Pack::parse_prefix(map).ok()?;
         let teams = wpk::view::decode_characters(pack.section(wpk::tag::CHARACTERS)?.data);
+        let hitboxes: Vec<records::BoneHitRecord> = pack
+            .section(wpk::tag::CHARACTER_HITBOXES)
+            .map(|s| records::iter(s.data).collect())
+            .unwrap_or_default();
         let common = wpk::Pack::parse(common, false).ok()?;
         let held = Held::load(&common, gfx);
         let clips = Anims::parse(common.section(wpk::tag::PLAYER_ANIMS)?.data)?;
@@ -257,10 +266,16 @@ impl Characters {
                     },
                 });
             }
+            let team = out.len() as u8;
             out.push(Team {
                 attributes: attr.as_ptr(),
                 draws,
                 rig,
+                hitboxes: hitboxes
+                    .iter()
+                    .filter(|h| h.team == team && usize::from(h.bone) < vm.bones.len())
+                    .copied()
+                    .collect(),
                 vm,
             });
         }
@@ -274,6 +289,7 @@ impl Characters {
             scratch: Scratch::default(),
             world: Vec::new(),
             skin: Vec::new(),
+            hits: Vec::new(),
         })
     }
 
@@ -342,6 +358,14 @@ impl Characters {
         }
     }
 
+    /// Player `slot`'s bone hit boxes, when its body was posed at `now` (drawn this frame).
+    pub fn hit_boxes(&self, slot: usize, now: u32) -> Option<&[HitBox]> {
+        self.hits
+            .get(slot)
+            .filter(|(t, l)| *t == now && !l.is_empty())
+            .map(|(_, l)| l.as_slice())
+    }
+
     /// Where player `slot`'s muzzle was last drawn (world origin and forward), if it was.
     pub fn muzzle(&self, slot: usize) -> Option<([f32; 3], [f32; 3])> {
         self.seen.get(slot).and_then(|s| s.flash)
@@ -408,6 +432,19 @@ impl Characters {
                 libm::cosf(legs_yaw.to_radians()),
             );
             let model: Mtx34 = [[c, -s, 0.0, o[0]], [s, c, 0.0, o[1]], [0.0, 0.0, 1.0, o[2]]];
+            // The bones' hit boxes as drawn (IW4L poses its collision bones the same way).
+            if p.alive && !team.hitboxes.is_empty() {
+                while self.hits.len() <= p.slot {
+                    self.hits.push((0, Vec::new()));
+                }
+                let (when, list) = &mut self.hits[p.slot];
+                *when = now_ms;
+                list.clear();
+                list.extend(team.hitboxes.iter().filter_map(|h| {
+                    let bone = self.world.get(usize::from(h.bone))?;
+                    game_core::damage::bone_box(&model, bone, h)
+                }));
+            }
             unsafe {
                 ffi::mwf_flush(buf.as_ptr().cast(), (n * 12) as u32);
                 ffi::mwf_world_view();

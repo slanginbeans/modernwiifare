@@ -628,6 +628,7 @@ impl Links {
         self.weapon_pen.push(wpk::weapon::PenRecord {
             kind: w.penetrate_type,
             multiplier: w.penetrate_multiplier,
+            rifle_bullet: w.rifle_bullet,
         });
         // Its explosion effect's sight blockers (smoke).
         let mut blockers = Vec::new();

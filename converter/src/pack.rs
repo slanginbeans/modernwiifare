@@ -63,6 +63,8 @@ pub struct WorldData {
     vis: crate::visibility::WorldVis,
     /// The player characters, allies then axis (surfaces carry material indices until `build`), or why not.
     characters: Result<Vec<(wpk::view::ViewModel, Vec<String>)>, String>,
+    /// The characters' per-bone hit boxes (`CHHB`), both teams.
+    character_hitboxes: Vec<wpk::records::BoneHitRecord>,
     destructibles: crate::destructibles::Built,
 }
 
@@ -160,6 +162,13 @@ pub fn read_world(
         .into_iter()
         .map(|(body, head)| crate::viewmodel::build_character(s, links, body, head, CHARACTER_LOD))
         .collect();
+    let character_hitboxes = team_models(links)
+        .into_iter()
+        .enumerate()
+        .flat_map(|(t, (body, head))| {
+            crate::viewmodel::character_hitboxes(s, links, body, head, t as u8)
+        })
+        .collect();
     let destructibles = crate::destructibles::build(
         s,
         links,
@@ -178,6 +187,7 @@ pub fn read_world(
         models,
         vis,
         characters,
+        character_hitboxes,
         destructibles,
     })
 }
@@ -1390,6 +1400,14 @@ pub fn build(
             character_teams.len() as u32,
             wpk::view::encode_characters(&character_teams),
         );
+        if !world.character_hitboxes.is_empty() {
+            println!("character hit boxes: {}", world.character_hitboxes.len());
+            b.section(
+                wpk::tag::CHARACTER_HITBOXES,
+                world.character_hitboxes.len() as u32,
+                records::encode(&world.character_hitboxes),
+            );
+        }
     }
     let objs = objectives(&entities);
     b.section(

@@ -710,6 +710,57 @@ pub fn build_character(
     Ok((vm, names))
 }
 
+/// A character's hit boxes (`CHHB`, team `team`): every bone of `body` (then `head`, whose bones follow
+/// [`build_character`]'s order: after the body's) with IW4 bone bounds (`XBoneInfo`: midpoint, half size,
+/// radius² at 24; zero radius: none) and its `partClassification` hit location. As IW4L
+/// `asset_model/src/model_skel.rs` `capture_bone_collision` (Apache-2.0, rev `acc57a5`).
+pub fn character_hitboxes(
+    s: &ZoneStream<'_>,
+    links: &Links,
+    body: usize,
+    head: Option<usize>,
+    team: u8,
+) -> Vec<wpk::records::BoneHitRecord> {
+    let mut out = Vec::new();
+    let mut base = 0usize;
+    for m in core::iter::once(body).chain(head) {
+        let Some(g) = links.model_geometry.get(m) else {
+            break;
+        };
+        if let (Some(info), Some(classes)) = (g.bone_info, g.part_classification) {
+            for bone in 0..g.num_bones {
+                let row = info.at(bone * sz::XBONE_INFO);
+                let f = |o: usize| s.f32_at(row, o).ok();
+                let (Some(r2), Some(loc)) = (f(24), s.u8_at(classes, bone).ok()) else {
+                    continue;
+                };
+                let (Some(m0), Some(m1), Some(m2), Some(h0), Some(h1), Some(h2)) =
+                    (f(0), f(4), f(8), f(12), f(16), f(20))
+                else {
+                    continue;
+                };
+                let (mid, half) = ([m0, m1, m2], [h0, h1, h2]);
+                let ok = r2.is_finite()
+                    && r2 > 0.0
+                    && mid.iter().all(|v| v.is_finite())
+                    && half.iter().all(|v| v.is_finite() && *v >= 0.0);
+                let index = base + bone;
+                if ok && index < 256 {
+                    out.push(wpk::records::BoneHitRecord {
+                        team,
+                        bone: index as u8,
+                        loc,
+                        midpoint: mid,
+                        half_size: half,
+                    });
+                }
+            }
+        }
+        base += g.num_bones;
+    }
+    out
+}
+
 /// Most vertices a third-person weapon may have: the first LOD at or under it is used (else the last).
 const HELD_MAX_VERTICES: usize = 900;
 /// Third-person weapon textures are at most this many texels across (a gun is a few dozen pixels on screen).
