@@ -26,10 +26,31 @@ pub const TYPES: &str = "mp/playeranimtypes.txt";
 /// The rawfiles read.
 pub const SOURCES: [&str; 2] = [SCRIPT, TYPES];
 
-/// Movement types our players never have: climbing (no ladders), mantles (no mantle animations played),
-/// the dive and last-stand types (no such perks).
+/// Movement types our players never have: climbing (no ladders), the mantle tree's root (never a movement type:
+/// a mantle plays `MANTLE_UP_*` then `MANTLE_OVER_*`, `game_core::mantle_path::anim_move_type`), the dive and
+/// last-stand types (no such perks).
 fn movetype_possible(mt: usize) -> bool {
-    !matches!(mt, 18 | 19 | 21..=31 | 43..=50 | 51..=53)
+    !matches!(mt, 18 | 19 | 21 | 43..=50 | 51..=53)
+}
+
+/// Whether clip `clip` keeps its playback rate at 1 (IW4L `asset_anim::playeranim_parse::animation_properties`
+/// `stationary`): a legs or both command of a mantle movement type, or any command of the death or reload events.
+pub fn stationary(script: &Script, clip: u16) -> bool {
+    let moves = script.moves.iter().any(|(mt, items)| {
+        (22..32).contains(mt)
+            && items
+                .iter()
+                .flat_map(|i| &i.commands)
+                .any(|c| c.clip == clip && c.part != part::TORSO)
+    });
+    let events = script.events.iter().any(|(ev, items)| {
+        matches!(*ev, 1 | 10)
+            && items
+                .iter()
+                .flat_map(|i| &i.commands)
+                .any(|c| c.clip == clip)
+    });
+    moves || events
 }
 
 /// What the parse found.

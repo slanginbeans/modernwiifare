@@ -2968,9 +2968,16 @@ impl Arena {
                 cam.up(),
             );
             g.sync_player(&mut f.player.ps);
-            // A bot with a riot shield holds it in front (bots carry one weapon).
+            // A bot with a riot shield holds it in front; one holstered goes on its back.
+            let holstered = self
+                .holsters
+                .get(i)
+                .and_then(Option::as_ref)
+                .is_some_and(|h| crate::shield::is_shield(h.name(), h.facts().weap_type));
             f.shield = if crate::shield::is_shield(g.name(), g.facts().weap_type) {
                 crate::shield::Carry::Front
+            } else if holstered {
+                crate::shield::Carry::Back
             } else {
                 crate::shield::Carry::None
             };

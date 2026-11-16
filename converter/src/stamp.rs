@@ -44,7 +44,10 @@ use std::path::{Path, PathBuf};
 ///     the characters' bone hit boxes (`CHHB`); others' fire sounds (`WSNW`), misc sounds (`SNDM`), tracers (`FXTR`,
 ///     `FXWT`), the light lattice (`LGRD`); HUD overlays and MW2's rumbles; perk and killcam rules (`LIFE`); killstreak
 ///     rules (`KSRL`).
-pub const REVISION: u32 = 39;
+/// 40: guns, attachments and animations: attachment parts per variant (`VHID`, `GUNH`) and sight reticles; akimbo
+///     and alternate clip sets (`VSET`, companion files `views/<base>@<set>.wpk`); mantle clips (`MNTL`) and the
+///     player animations' move speeds (`PANS`).
+pub const REVISION: u32 = 40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {

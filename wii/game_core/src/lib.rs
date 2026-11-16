@@ -48,6 +48,7 @@ pub mod light;
 pub mod loadout;
 pub mod lock;
 pub mod look;
+pub mod mantle_path;
 pub mod marks;
 pub mod menu;
 pub mod minimap;

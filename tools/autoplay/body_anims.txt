@@ -1,0 +1,164 @@
+# Body and view animations (game_core::autoplay syntax), on mp_rust: a mantle along MW2's clip path, a jump's landing
+# dip (the view and the weapon), a flashbang on a bot brought in front (its shell shock torso animation), the bot
+# killed and its body left after it respawns, then BOTS: RIOT SHIELDS (half the bots hold the shield on the left arm,
+# half carry it on the back). Run with tools/dolphin-test.ps1 -Maps mp_rust -Script tools/autoplay/body_anims.txt
+# after deleting out\dolphin\sd\apps\mwf_game\debug.dat (the debug toggles below assume the defaults). The match log
+# gets body_anims (at load: mantle clips, the corpse pool, the shield tags), mantle_start / mantle_end (timer and the
+# third-person movement type), land_dip, grenade, kill, corpses.
+wait 90
+shot ba_00_main
+press A
+wait 10
+press A
+wait 700
+# The class menu: five custom classes, then MW2's defaults; First Recon (the 7th line) carries flashbangs.
+times 6 press DOWN
+wait 5
+shot ba_01_class
+press A
+wait 60
+# DEBUG: bots don't attack, bots frozen, god mode.
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+press A
+press DOWN
+press A
+press DOWN
+press A
+press B
+wait 20
+# The mantle: a crate face on mp_rust 33 units up (player::tests::mantles_on_the_real_map), MW2's mantle clip path.
+warp 1189 420 -239 90
+wait 30
+shot ba_02_at_ledge
+log mantle
+stick 0 120
+press A 4
+wait 3
+shot ba_03_mantle_a
+wait 5
+shot ba_04_mantle_b
+wait 5
+shot ba_05_mantle_c
+wait 30
+stick 0 0
+wait 20
+shot ba_06_on_ledge
+# Off the crate and back down: the landing dips the view and (a quarter as much) the weapon.
+log drop for the landing dip
+stick 0 120
+wait 25
+stick 0 0
+wait 30
+press A 4
+wait 26
+shot ba_07_land_0
+wait 4
+shot ba_08_land_dip
+wait 30
+shot ba_09_land_back
+# Down on open ground (the run spot of feel.txt), facing +x: a bot in front (row 21 of the debug page), then the
+# class's tactical (D-pad down) at it.
+warp 1189 300 -239 0
+wait 30
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 21 press DOWN
+press A
+log bot in front
+wait 60
+shot ba_10_bot_front
+log flashbang
+press DOWN
+wait 70
+shot ba_11_flash
+wait 20
+shot ba_12_bot_flashed
+wait 30
+shot ba_13_bot_flashed_later
+wait 200
+# Kill it; it respawns elsewhere and its body stays.
+# KILL ALL BOTS (row 22): the one in front falls where it stands.
+log kill the bots
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 22 press DOWN
+press A
+wait 30
+shot ba_14_bot_down
+# Back off and look down at where it fell.
+stick 0 -120
+wait 45
+stick 0 0
+cstick 0 -100
+wait 8
+cstick 0 0
+wait 60
+shot ba_15_death_pose
+wait 420
+log after the respawn
+shot ba_16_body_stays
+# Level the view again. BOTS: RIOT SHIELDS (row 42): the first bot holds the shield; a bot brought in front (150
+# units ahead on open ground, facing back at you), then seen from its left side.
+cstick 0 100
+wait 8
+cstick 0 0
+warp 1189 300 -239 0
+wait 30
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 42 press DOWN
+wait 5
+shot ba_17_debug_shields
+press A
+wait 60
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 21 press DOWN
+press A
+log shield in hand
+wait 60
+shot ba_18_shield_front
+warp 1339 150 -239 90
+wait 40
+shot ba_19_shield_left_side
+# RIOT SHIELDS again: the halves swap, the first bot now holds the M4 with the shield on its back. In front again,
+# then seen from behind.
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 42 press DOWN
+press A
+wait 60
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 21 press DOWN
+press A
+log shield on the back
+wait 60
+shot ba_20_shield_back_front
+warp 1339 450 -239 270
+wait 40
+shot ba_21_shield_on_back
+log done
+quit

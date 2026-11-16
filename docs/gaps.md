@@ -37,11 +37,20 @@ got no killstreak splash (the bot brought in front carried a riot shield). Fixed
 those scripts steady opponents, and BRING A BOT IN FRONT brings an enemy that turns to you (`docs/testing.md`). Now
 `last_stand` goes down in Last Stand, `hud_match` gets three kills and the splash, and `hud_match_rifle` gets the hit
 arrows, the blood and a kill.
+Guns, attachments and animations (merged 2026-11-16, converter `REVISION` 40, three branches): attachment parts per
+variant and sight reticles, akimbo's left gun and the underbarrel alternates' own clips, mantle paths, the weapon's
+landing dip, characters' playback rates, stun torso animations, the riot shield on the body, bodies that stay. Every
+pad script ran in Dolphin with no panic; `weapons_akimbo_alt` and `weapons_gl_reload` need their custom
+`classes.dat` (`docs/testing.md`) and then load their companion files and fire, reload and switch. MEM2 at load on
+`mp_terminal` is 861 KiB free (1,803 KiB before this round): too little for the weapon files, so `mp_terminal` shows no
+first-person gun (already so before this round); `mp_rust` has 18.3 MiB free, `mp_afghan` 7 MiB.
 
 Bugs: ~~**mantle** moves nothing~~ fixed (2026-11-15): pmove gets IW4L's `CreateAnimsMantleRootDelta`, so a mantle
 climbs over 400 / 600 ms (with the zero delta the player was put on the ledge at once and stood there for the mantle's
-length). Mantles trigger on our collision (mp_rust: 72 mantle brushes). Still straight lines: MW2's paths are the
-mantle clips' root tracks (IW4L `sim::mantle_xanim`), not converted; no mantle animation plays.
+length). Mantles trigger on our collision (mp_rust: 72 mantle brushes). ~~Still straight lines~~ done (2026-11-16): the mantle
+follows MW2's mantle clips' root tracks over their lengths (`MNTL`, `game_core::mantle_path`, as IW4L
+`sim::mantle_xanim`; the real clips end on IW4L's straight-line points but rise first and take 333-833 ms up, 133-466 ms
+over, against the flat 400 / 200), and characters play the script's `MANTLE_UP_*` / `MANTLE_OVER_*` clips.
 ~~Launchers fire hitscan bullets~~ fixed: projectiles from IW4L `fire_missile` / `think_projectile`, guidance
 (`steer`) and the Javelin's point lock from `_javelin.gsc` (`docs/runtime.md`, Launchers). Not yet: projectile models
 and smoke trails, the lock's HUD box and sounds, the Stinger's lock (it locks only onto killstreak aircraft, none here),
@@ -49,10 +58,10 @@ the lock script's numbers read from the user's script, glass punch-through, the 
 
 Gameplay, IW4L has code: ~~camera view bob / landing dip / hit view kick / idle sway and hold breath~~ done
 (2026-11-15, `game_core::view_kick` over `weapon_iw4::view_bob`; breath on the sprint button as MW2's console
-`+breath_sprint`; IW4L's values, a trace against MW2 still to do; not yet: the viewmodel's own landing dip,
-`viewweapon_land_origin_z`); ~~riot shield blocking~~ done (a box in front or on the back:
-bullets stop, blasts are hidden; not yet the shield model's own collision, ricochets, melee, the model on the
-character); weapon drops and pickups, Scavenger (`sim` item); ~~underbarrel grenade launcher / shotgun~~ done (D-pad
+`+breath_sprint`; IW4L's values, a trace against MW2 still to do; ~~the viewmodel's own landing dip~~ done
+2026-11-16, IW4L's `viewweapon_land_origin_z`); ~~riot shield blocking~~ done (a box in front or on the back:
+bullets stop, blasts are hidden; not yet the shield model's own collision, ricochets, melee; ~~the model on the
+character~~ done 2026-11-16, `tag_weapon_left` / `tag_shield_back`); weapon drops and pickups, Scavenger (`sim` item); ~~underbarrel grenade launcher / shotgun~~ done (D-pad
 left; their own first-person animations and sounds from the weapon file's companion) and ~~akimbo~~ done (two hands,
 shared reserve, the left gun drawn and animated by its own hand, both magazines on the HUD, the flag from IW4's
 `noDualWield`; not yet: a trace against MW2); ~~attachments on the gun~~ done (first person and in hands, `VHID` /
@@ -109,7 +118,7 @@ scripted Dolphin runs, the PC menu preview.
 5. ~~Health regeneration~~ done: MW2's `_healthoverlay.gsc` loop step by step (`life::Life::regen`), the numbers
    read from the user's scripts (`RULE`).
 6. ~~Bullet penetration~~ done: IW4L `fire_penetrate` through world walls (the user's `info/bullet_penetration_mp` depths by type and surface, each weapon's type and multiplier; thickness from a trace back from the far side; up to five walls; damage scaled by what is left). Through players: done (penetrating weapons lose thickness / flesh depth, non-penetrating rifle bullets go on at half, IW4L `fire_penetrate` / `fire_extended`). Glass panes: done (bullets go through intact panes and damage them). Not yet: impact marks on exits; a trace against MW2 for the collateral numbers.
-7. ~~Hit volumes~~ done: oriented boxes; your shots use the drawn character's bones (MW2's `XBoneInfo` and `partClassification`, `CHHB`), bots' shots and undrawn bodies a stand-in column turned with the view yaw (cost in the log's `hitvol`). Not yet: bones for bodies you don't see (bots shooting each other or you), the riot shield's box beyond the stand-in (`game_core::shield`), a trace against MW2. Character models: drawn (`CHAR`), animated by MW2's own player animation script (`PSCR`, `PANM`): legs and torso animations by movement type, weapon type and stance, firing, reloading, melee, grenade throws, jumps (backwards too), hard landings (falling faster than 200 units/s), going prone and getting up, the hit flinch and stumble (pmove's damage timer picks FLINCH / STUMBLE movement types, as IW4L's `footsteps_anim_move_type`) and death animations (by hit location, direction and explosive damage), cross-fades with IW4's blend times, the spine turned to the aim pitch and the torso's yaw (IW4's controller tags), legs that follow the view after 20 degrees. The weapon in their hands: done (each weapon's world model on `tag_weapon_right`, `GUNM`). Not yet: the riot shield model on the left arm and back (the shield blocks already, `game_core::shield`), per-class bodies (riot, sniper, ghillie) and random heads, ragdolls and bodies that stay after the respawn, shellshock and stun torso animations, playback rate from the move speed. Light-grid lighting: done (the light lattice at their middle, one colour each).
+7. ~~Hit volumes~~ done: oriented boxes; your shots use the drawn character's bones (MW2's `XBoneInfo` and `partClassification`, `CHHB`), bots' shots and undrawn bodies a stand-in column turned with the view yaw (cost in the log's `hitvol`). Not yet: bones for bodies you don't see (bots shooting each other or you), the riot shield's box beyond the stand-in (`game_core::shield`), a trace against MW2. Character models: drawn (`CHAR`), animated by MW2's own player animation script (`PSCR`, `PANM`): legs and torso animations by movement type, weapon type and stance, firing, reloading, melee, grenade throws, jumps (backwards too), hard landings (falling faster than 200 units/s), going prone and getting up, the hit flinch and stumble (pmove's damage timer picks FLINCH / STUMBLE movement types, as IW4L's `footsteps_anim_move_type`) and death animations (by hit location, direction and explosive damage), cross-fades with IW4's blend times, the spine turned to the aim pitch and the torso's yaw (IW4's controller tags), legs that follow the view after 20 degrees. The weapon in their hands: done (each weapon's world model on `tag_weapon_right`, `GUNM`). Done 2026-11-16: the riot shield model on the left arm and back, bodies that stay after the respawn (the death pose held, a pool of four, the oldest reused), the shell shock and stun torso animations, the playback rate from the move speed (IW4L's `client_anim_playback_rate`, the cycle's phase kept between moving clips), the mantle clips. Attachments on the held model: done (`GUNH`). Not yet: per-class bodies (riot, sniper, ghillie) and random heads, ragdolls, a trace of the rates and mantle paths against MW2. Light-grid lighting: done (the light lattice at their middle, one colour each).
 8. **FFA rules**: points (a kill, the headshot bonus), score and time limits from the user's `dm.gsc`, ties to fewer
    deaths: done. Spawns follow MW2's free-for-all weighting (`_spawnlogic.gsc`: distance to everyone, enemies in
    sight, the nearest enemy, the last spawn used): done. Still to do: the playlist's overrides (the stock script

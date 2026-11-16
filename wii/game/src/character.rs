@@ -34,6 +34,13 @@ const EV_FIRE: u8 = anim_iw4::ANIM_ET_FIREWEAPON;
 const EV_RELOAD: u8 = anim_iw4::ANIM_ET_RELOAD;
 const EV_MELEE: u8 = anim_iw4::ANIM_ET_MELEEATTACK;
 const EV_KNIFE: u8 = anim_iw4::ANIM_ET_KNIFE_MELEE;
+/// `SHELLSHOCK` and `STUNNED` (`anim_iw4::ANIM_ET_NAMES` 20 and 21): a flashbang's and a stun grenade's torso
+/// animation.
+const EV_SHELLSHOCK: u8 = 20;
+const EV_STUNNED: u8 = 21;
+
+/// Bodies kept after their players respawn (the death pose held, the oldest reused first).
+pub const CORPSES: usize = 4;
 
 /// IW4 weapon states (`weapon_iw4::WeaponState`) that start an animation event.
 const WS_RELOADING: i32 = 0x8;
@@ -72,6 +79,20 @@ struct Seen {
     motion: Motion,
     /// Where its muzzle was last drawn (world origin and forward).
     flash: Option<([f32; 3], [f32; 3])>,
+    /// The start of the shock whose animation played.
+    shock_ms: Option<u32>,
+    /// While dead: where the body lies (feet, legs yaw) and its team model, for the corpse at the respawn.
+    dead_at: Option<([f32; 3], f32, usize)>,
+}
+
+/// A body left after its player respawned: skinned once, in its death pose, into its own buffer.
+struct Corpse {
+    team: usize,
+    model: Mtx34,
+    buf: &'static mut [[f32; 3]],
+    tint: u32,
+    born_ms: u32,
+    used: bool,
 }
 
 /// The weapons in the players' hands (`common.wpk` `GUNM`): the models, each weapon record's model and the texture
@@ -135,6 +156,13 @@ pub struct Characters {
     skin: Vec<Mtx34>,
     /// Per slot: when its body was last posed and its bones' hit boxes then (world space).
     hits: Vec<(u32, Vec<HitBox>)>,
+    /// The riot shield's weapon record (its `GUNM` model goes on the back when carried as the other weapon).
+    shield_weapon: Option<u32>,
+    corpses: Vec<Corpse>,
+    /// Shell shock / stun torso animations played (for the log).
+    pub shock_anims: u32,
+    /// Corpse draws so far (for the log).
+    pub corpse_draws: u32,
 }
 
 fn mem2(count: usize) -> Option<&'static mut [u8]> {
@@ -165,6 +193,10 @@ pub struct Pose {
     pub weapon: Option<u32>,
     /// For jumps, landings and going prone.
     pub motion: Motion,
+    /// The shell shock under way: its start and whether it is a flashbang's (else a stun grenade's).
+    pub shock: Option<(u32, bool)>,
+    /// Where the riot shield is carried.
+    pub shield: game_core::shield::Carry,
 }
 
 impl Pose {
@@ -205,6 +237,11 @@ impl Pose {
             gun_state: f.gun.as_ref().map_or(0, |g| g.state()),
             weapon: f.gun.as_ref().map(|g| g.weapon_index()),
             motion: Motion::of(ps, forward),
+            shock: f
+                .shock
+                .filter(|s| s.remaining(now) > 0)
+                .map(|s| (s.start_ms, s.flash)),
+            shield: f.shield,
         }
     }
 }
@@ -231,6 +268,14 @@ impl Characters {
         let script = common
             .section(wpk::tag::PLAYER_ANIM_SCRIPT)
             .and_then(|s| Script::decode(s.data))?;
+        let speeds = common
+            .section(wpk::tag::PLAYER_ANIM_SPEEDS)
+            .map_or(&[][..], |s| s.data);
+        let shield_weapon = common.section(wpk::tag::WEAPONS).and_then(|s| {
+            records::iter::<wpk::weapon::WeaponRecord>(s.data)
+                .position(|w| game_core::shield::is_shield(w.name(), w.combat.weap_type))
+                .map(|i| i as u32)
+        });
         let anim_names = common
             .section(wpk::tag::PLAYER_ANIM_BONES)
             .and_then(|s| wpk::view::decode_names(s.data))
@@ -298,11 +343,34 @@ impl Characters {
                 vm,
             });
         }
+        // The corpse pool's buffers now, at load: MEM2 taken later in the match may sit above the weapon files'
+        // mark (`Arsenal::new`) and be handed out again when they stream.
+        let most = out.iter().map(|t| t.vm.verts.len()).max().unwrap_or(0);
+        let mut corpses = Vec::with_capacity(CORPSES);
+        for _ in 0..CORPSES {
+            let Some(b) = mem2(most * 12) else {
+                break;
+            };
+            corpses.push(Corpse {
+                team: 0,
+                model: [[0.0; 4]; 3],
+                buf: unsafe {
+                    core::slice::from_raw_parts_mut(b.as_mut_ptr().cast::<[f32; 3]>(), most)
+                },
+                tint: 0,
+                born_ms: 0,
+                used: false,
+            });
+        }
         (!out.is_empty()).then(|| Characters {
             lattice: None,
             teams: out,
             held,
-            anims: PlayerAnims { clips, script },
+            anims: PlayerAnims {
+                clips,
+                script,
+                speeds,
+            },
             seen: Vec::new(),
             buffers: Vec::new(),
             parity: 0,
@@ -310,7 +378,160 @@ impl Characters {
             world: Vec::new(),
             skin: Vec::new(),
             hits: Vec::new(),
+            shield_weapon,
+            corpses,
+            shock_anims: 0,
+            corpse_draws: 0,
         })
+    }
+
+    /// For the load log: the largest team model's vertex count, whether every team model has the riot shield's
+    /// tags (left hand, back), and whether the shield has a model.
+    pub fn summary(&self) -> (usize, bool, bool, bool) {
+        let verts = self
+            .teams
+            .iter()
+            .map(|t| t.vm.verts.len())
+            .max()
+            .unwrap_or(0);
+        let left = self.teams.iter().all(|t| t.rig.weapon_left != NO_BONE);
+        let back = self.teams.iter().all(|t| t.rig.shield_back != NO_BONE);
+        let shield = self
+            .shield_weapon
+            .zip(self.held.as_ref())
+            .is_some_and(|(w, h)| h.model(w).is_some());
+        (verts, left, back, shield)
+    }
+
+    /// Bodies lying after a respawn now.
+    pub fn corpse_count(&self) -> usize {
+        self.corpses.iter().filter(|c| c.used).count()
+    }
+
+    /// Leave player `slot`'s body where it died, in its death pose at `now` (the oldest body makes room).
+    fn leave_corpse(&mut self, slot: usize, now: u32) {
+        let Some((o, yaw, t)) = self.seen.get(slot).and_then(|s| s.dead_at) else {
+            return;
+        };
+        let t = t.min(self.teams.len() - 1);
+        let n = self.teams[t].vm.verts.len();
+        if self.corpses.is_empty() {
+            return;
+        }
+        let i = match self.corpses.iter().position(|c| !c.used) {
+            Some(i) => i,
+            None => (0..self.corpses.len())
+                .max_by_key(|&i| now.wrapping_sub(self.corpses[i].born_ms))
+                .unwrap_or(0),
+        };
+        let team = &self.teams[t];
+        self.seen[slot].body.pose(
+            &self.anims,
+            &team.rig,
+            &team.vm,
+            now,
+            0.0,
+            0.0,
+            false,
+            &mut self.scratch,
+            &mut self.world,
+        );
+        vmod::skin_matrices(&team.vm, &self.world, &mut self.skin);
+        let c = &mut self.corpses[i];
+        vmod::skin_into(&team.vm, &self.skin, &mut c.buf[..n]);
+        unsafe { ffi::mwf_flush(c.buf.as_ptr().cast(), (n * 12) as u32) };
+        let (s, co) = (libm::sinf(yaw.to_radians()), libm::cosf(yaw.to_radians()));
+        c.model = [
+            [co, -s, 0.0, o[0]],
+            [s, co, 0.0, o[1]],
+            [0.0, 0.0, 1.0, o[2]],
+        ];
+        c.team = t;
+        c.tint = game_core::light::tint_at(
+            self.lattice.as_ref(),
+            [o[0], o[1], o[2] + game_core::light::CHARACTER_LIGHT_HEIGHT],
+        );
+        c.born_ms = now;
+        c.used = true;
+        crate::devlog::event(
+            now,
+            "corpse",
+            format_args!(
+                "slot={slot} at={:.0},{:.0},{:.0} pool={i}",
+                o[0], o[1], o[2]
+            ),
+        );
+    }
+
+    /// The bodies left after respawns, seen through `view`.
+    fn draw_corpses(&mut self, gfx: &mut impl Gfx, view: &Mtx34) {
+        for c in self.corpses.iter().filter(|c| c.used) {
+            let o = [c.model[0][3], c.model[1][3], c.model[2][3]];
+            if vmod::apply(view, [o[0], o[1], o[2] + 16.0])[2] > 64.0 {
+                continue;
+            }
+            let team = &self.teams[c.team.min(self.teams.len() - 1)];
+            self.corpse_draws = self.corpse_draws.wrapping_add(1);
+            unsafe {
+                ffi::mwf_world_view();
+                ffi::mwf_view_arrays(c.buf.as_ptr().cast(), team.attributes);
+            }
+            gfx.pos_matrix(&vmod::mul(view, &c.model));
+            let mut last: Option<DrawState> = None;
+            for d in &team.draws {
+                let state = DrawState {
+                    tint: c.tint,
+                    ..d.state
+                };
+                if last != Some(state) {
+                    gfx.world_state(&state);
+                    last = Some(state);
+                }
+                gfx.call_dl(d.dl);
+            }
+        }
+    }
+
+    /// Draw `gun` (a `GUNM` model) at `at` (model to world) seen through `view`.
+    fn draw_gun(
+        &self,
+        gfx: &mut impl Gfx,
+        gun: &wpk::held::GunRef<'static>,
+        weapon: u32,
+        view: &Mtx34,
+        at: &Mtx34,
+        tint: u32,
+    ) {
+        let Some(held) = self.held.as_ref() else {
+            return;
+        };
+        unsafe {
+            ffi::mwf_world_view();
+            ffi::mwf_view_arrays(gun.positions.as_ptr(), gun.attributes.as_ptr());
+        }
+        gfx.pos_matrix(&vmod::mul(view, at));
+        let mut last: Option<DrawState> = None;
+        let hidden = held.hidden(weapon);
+        for i in (0..gun.draws()).filter(|&i| !hidden.contains(i)) {
+            let Some(d) = gun.draw(i) else { continue };
+            let state = DrawState {
+                tex: held
+                    .textures
+                    .get(usize::from(d.texture))
+                    .copied()
+                    .unwrap_or(-1),
+                lightmap: -1,
+                blend: d.blend,
+                alpha_ref: d.alpha_ref,
+                cull: 0,
+                tint,
+            };
+            if last != Some(state) {
+                gfx.world_state(&state);
+                last = Some(state);
+            }
+            gfx.call_dl(d.dl);
+        }
     }
 
     /// Run each player's animation script for this frame: its movement, and the events since the last frame.
@@ -336,6 +557,22 @@ impl Characters {
             s.body.event(anims, EV_DEATH, mt, &c, now, true);
         }
         s.alive = p.alive;
+        // The playback rate from how fast the player moves against its clips (IW4's client anim rate).
+        s.body.rates(anims, p.origin, now);
+        // A new flashbang or stun grenade shock plays its torso animation (a stun falls back to the shell shock's
+        // when the script has no stunned one).
+        let shock = p.shock.filter(|_| p.alive);
+        if let Some((start, flash)) = shock
+            && s.shock_ms != Some(start)
+        {
+            let played = (!flash
+                && s.body
+                    .event(anims, EV_STUNNED, mt, &p.conditions, now, false))
+                || s.body
+                    .event(anims, EV_SHELLSHOCK, mt, &p.conditions, now, false);
+            self.shock_anims += u32::from(played);
+        }
+        s.shock_ms = shock.map(|(start, _)| start);
         if p.alive {
             if p.last_fire_ms != s.last_fire_ms && p.last_fire_ms.is_some() {
                 s.body.event(anims, EV_FIRE, mt, &p.conditions, now, false);
@@ -374,6 +611,16 @@ impl Characters {
             s.body.turn(p.yaw, p.moving, now)
         } else {
             let (legs, _) = s.body.turn(p.yaw, false, now);
+            // Where the body lies: it may settle a little, but a jump is the arena placing the player for its
+            // respawn before it lives again.
+            let o = p.origin;
+            let near = |d: &([f32; 3], f32, usize)| {
+                let (dx, dy) = (o[0] - d.0[0], o[1] - d.0[1]);
+                dx * dx + dy * dy < 48.0 * 48.0
+            };
+            if s.dead_at.is_none_or(|d| near(&d)) {
+                s.dead_at = Some((o, legs, p.team));
+            }
             (legs, legs)
         }
     }
@@ -501,6 +748,18 @@ impl Characters {
     /// at `now_ms`.
     pub fn draw(&mut self, gfx: &mut impl Gfx, view: &Mtx34, players: &[Pose], now_ms: u32) {
         self.parity ^= 1;
+        for p in players {
+            // A respawn leaves the old body where it lay.
+            if p.alive
+                && self
+                    .seen
+                    .get(p.slot)
+                    .is_some_and(|s| !s.alive && s.dead_at.is_some())
+            {
+                self.leave_corpse(p.slot, now_ms);
+                self.seen[p.slot].dead_at = None;
+            }
+        }
         for (k, p) in players.iter().enumerate() {
             let (legs_yaw, torso_yaw) = self.animate(p, now_ms);
             // This player's buffer for this frame (two per drawn player, alternating).
@@ -591,45 +850,44 @@ impl Characters {
                 gfx.call_dl(d.dl);
             }
             // The weapon in the hand: its model's origin on `tag_weapon_right` (living players only: MW2 drops it).
-            let hand = team.rig.weapon;
-            if let (Some(held), Some(w), true) = (&self.held, p.weapon, p.alive && hand != NO_BONE)
-                && let Some(gun) = held.model(w)
+            // A riot shield in the hands goes on `tag_weapon_left` instead, and one carried as the other weapon on
+            // `tag_shield_back` (MW2's attach tags; `game_core::shield` blocks with the same carry).
+            let rig = &team.rig;
+            let front = p.shield == game_core::shield::Carry::Front && rig.weapon_left != NO_BONE;
+            let hand = if front { rig.weapon_left } else { rig.weapon };
+            let gun = self
+                .held
+                .as_ref()
+                .zip(p.weapon)
+                .and_then(|(h, w)| h.model(w));
+            if let (Some(gun), true) = (gun, p.alive && hand != NO_BONE)
                 && let Some(bone) = self.world.get(usize::from(hand))
             {
-                unsafe {
-                    ffi::mwf_world_view();
-                    ffi::mwf_view_arrays(gun.positions.as_ptr(), gun.attributes.as_ptr());
-                }
                 let gun_world = vmod::mul(&model, bone);
-                let [o, f] = gun.flash;
-                let dir = core::array::from_fn(|r| {
-                    gun_world[r][0] * f[0] + gun_world[r][1] * f[1] + gun_world[r][2] * f[2]
-                });
-                self.seen[p.slot].flash = Some((vmod::apply(&gun_world, o), dir));
-                gfx.pos_matrix(&vmod::mul(view, &gun_world));
-                let mut last: Option<DrawState> = None;
-                let hidden = held.hidden(w);
-                for i in (0..gun.draws()).filter(|&i| !hidden.contains(i)) {
-                    let Some(d) = gun.draw(i) else { continue };
-                    let state = DrawState {
-                        tex: held
-                            .textures
-                            .get(usize::from(d.texture))
-                            .copied()
-                            .unwrap_or(-1),
-                        lightmap: -1,
-                        blend: d.blend,
-                        alpha_ref: d.alpha_ref,
-                        cull: 0,
-                        tint,
-                    };
-                    if last != Some(state) {
-                        gfx.world_state(&state);
-                        last = Some(state);
-                    }
-                    gfx.call_dl(d.dl);
+                if !front {
+                    let [o, f] = gun.flash;
+                    let dir = core::array::from_fn(|r| {
+                        gun_world[r][0] * f[0] + gun_world[r][1] * f[1] + gun_world[r][2] * f[2]
+                    });
+                    self.seen[p.slot].flash = Some((vmod::apply(&gun_world, o), dir));
+                }
+                if let Some(w) = p.weapon {
+                    self.draw_gun(gfx, &gun, w, view, &gun_world, tint);
                 }
             }
+            let back = self
+                .shield_weapon
+                .zip(self.held.as_ref())
+                .and_then(|(w, h)| Some((w, h.model(w)?)));
+            if let (Some((shield_w, shield)), true) = (
+                back,
+                p.alive && p.shield == game_core::shield::Carry::Back && rig.shield_back != NO_BONE,
+            ) && let Some(bone) = self.world.get(usize::from(rig.shield_back))
+            {
+                let at = vmod::mul(&model, bone);
+                self.draw_gun(gfx, &shield, shield_w, view, &at, tint);
+            }
         }
+        self.draw_corpses(gfx, view);
     }
 }

@@ -1008,6 +1008,29 @@ fn run_map(
         p.lattice = lattice.clone();
     }
     let mut poses: Vec<character::Pose> = Vec::with_capacity(bots);
+    // MW2's mantle clips: every player's mantle follows their root tracks over their lengths (an older pack: IW4L's
+    // straight lines over 400 / 200 ms).
+    let mantle = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::MANTLE))
+        .and_then(|s| game_core::mantle_path::MantlePaths::parse(s.data));
+    let (mantle_clips, mantle_paths) = mantle.as_ref().map_or((0, 0), |m| m.counts());
+    // Once: common.wpk doesn't change between maps.
+    if let Some(m) = mantle.filter(|_| game_core::mantle_path::installed().is_none()) {
+        game_core::mantle_path::install(m);
+    }
+    let (body_verts, shield_left, shield_back, shield_model) = characters
+        .as_ref()
+        .map_or((0, false, false, false), |c| c.summary());
+    devlog::event(
+        ffi::ms(),
+        "body_anims",
+        format_args!(
+            "mantle_clips={mantle_clips} mantle_paths={mantle_paths} body_verts={body_verts} corpse_pool={} corpse_kb={} shield_left={shield_left} shield_back={shield_back} shield_model={shield_model}",
+            character::CORPSES,
+            character::CORPSES * body_verts * 12 / 1024,
+        ),
+    );
     devlog::event(
         ffi::ms(),
         "hitboxes",
@@ -1064,6 +1087,9 @@ fn run_map(
     let mut cam = spawn_camera(&world, spawn);
     // The view's feel on the eye (bob, landing dip, hit kick, scope sway: `game_core::view_kick`).
     let mut view_kick = game_core::view_kick::ViewKick::default();
+    // The held weapon's landing dip this frame (`ViewPose::weapon_land`), for the viewmodel draw.
+    let mut weapon_land = [0.0f32; 3];
+    let mut corpses_logged = (0usize, 0u32);
     let mut landings_logged = 0u32;
     let mut was_mantling = false;
     let mut was_holding_breath = false;
@@ -1172,6 +1198,11 @@ fn run_map(
     // of the match.
     let rifles_only = core::cell::Cell::new(false);
     let rifle = || alloc::vec![alloc::string::String::from("m4_mp")];
+    // BOTS: RIOT SHIELDS (`Action::BotShields`): odd bots hold the shield (an M4 holstered), even bots the M4 (the
+    // shield on the back); each press after the first swaps the two.
+    let shields = core::cell::Cell::new(0u8);
+    let shield = || alloc::vec![alloc::string::String::from("riotshield_mp")];
+    let shield_in_hand = |i: usize| (i % 2 == 1) == (shields.get() == 1);
     let bot_loadout = |i: usize| -> Option<wpk::classes::Loadout> {
         let c = loadouts.catalog?;
         let n = c.defaults.len().max(1);
@@ -1249,6 +1280,9 @@ fn run_map(
         if copied.is_none() {
             roll_class(i);
         }
+        if shields.get() != 0 {
+            return make_gun(&if shield_in_hand(i) { shield() } else { rifle() }, false);
+        }
         if rifles_only.get() {
             return make_gun(&rifle(), false);
         }
@@ -1262,7 +1296,9 @@ fn run_map(
     // new one; otherwise (a copied class) only the holster from its own class.
     let fit_class = |a: &mut Arena, i: usize, now: u32| {
         let l = bot_loadout(i);
-        let holster = if rifles_only.get() {
+        let holster = if shields.get() != 0 {
+            make_gun(&if shield_in_hand(i) { rifle() } else { shield() }, false)
+        } else if rifles_only.get() {
             None
         } else {
             make_gun(&class_weapon(l.as_ref(), true, false, None), false)
@@ -1733,6 +1769,26 @@ fn run_map(
                             clock = MatchClock::with_limit(now, setup.1.time_limit_ms);
                         }
                         (Some(Action::WriteLog), _) => devlog::flush(now),
+                        (Some(Action::BotShields), _) => {
+                            shields.set(if shields.get() == 1 { 2 } else { 1 });
+                            if let Some(a) = arena.as_mut() {
+                                for i in 1..a.fighters.len() {
+                                    let (hand, back) = if shield_in_hand(i) {
+                                        (shield(), rifle())
+                                    } else {
+                                        (rifle(), shield())
+                                    };
+                                    a.fighters[i].gun = make_gun(&hand, false);
+                                    a.arm_holster(i, make_gun(&back, false));
+                                    // Now, for frozen bots too (their gun tick sets it otherwise).
+                                    a.fighters[i].shield = if shield_in_hand(i) {
+                                        game_core::shield::Carry::Front
+                                    } else {
+                                        game_core::shield::Carry::Back
+                                    };
+                                }
+                            }
+                        }
                         (Some(Action::BotRifles), _) => {
                             rifles_only.set(true);
                             if let Some(a) = arena.as_mut() {
@@ -2295,6 +2351,7 @@ fn run_map(
                     cam.pitch += view_pose.angles[0];
                     cam.yaw += view_pose.angles[1];
                     cam.roll = view_pose.angles[2];
+                    weapon_land = view_pose.weapon_land;
                     // A warp or spawn resets the count: only a new landing logs.
                     if view_kick.landings != landings_logged {
                         let landed = view_kick.landings > landings_logged;
@@ -2339,11 +2396,13 @@ fn run_map(
                                 "mantle_end"
                             },
                             format_args!(
-                                "at={:.1},{:.1},{:.1} anim={}",
+                                "at={:.1},{:.1},{:.1} anim={} timer={} mt={}",
                                 p.ps.origin[0],
                                 p.ps.origin[1],
                                 p.ps.origin[2],
-                                p.ps.mantle_trans_index
+                                p.ps.mantle_trans_index,
+                                p.ps.mantle_timer,
+                                game_core::mantle_path::anim_move_type(&p.ps).unwrap_or(0)
                             ),
                         );
                     }
@@ -3536,6 +3595,7 @@ fn run_map(
                     p.ps.leanf,
                 ),
             );
+            v.weapon_land = weapon_land;
             v.draw(gfx, g, &p.ps, &fpv, dt, now);
             v.play_notes();
             // The first-person muzzle flash: MW2's view flash effect; without effects, a placeholder glow for
@@ -4141,6 +4201,20 @@ fn run_map(
                         ),
                     );
                 }
+            }
+            // Bodies left after respawns, and shell shock torso animations played.
+            if let Some(c) = characters.as_ref()
+                && (c.corpse_count(), c.shock_anims) != corpses_logged
+            {
+                corpses_logged = (c.corpse_count(), c.shock_anims);
+                devlog::event(
+                    now,
+                    "body_events",
+                    format_args!(
+                        "corpses={} shock_anims={} corpse_draws={}",
+                        corpses_logged.0, corpses_logged.1, c.corpse_draws
+                    ),
+                );
             }
             unsafe { (ffi::mwf_mem1_free_bytes(), ffi::mwf_mem2_free_bytes()) }
         } else {

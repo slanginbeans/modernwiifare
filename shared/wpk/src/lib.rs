@@ -27,6 +27,7 @@ pub mod fx;
 pub mod held;
 pub mod life_rules;
 pub mod light;
+pub mod mantle;
 pub mod nav;
 pub mod parts;
 pub mod player_anim;
@@ -89,6 +90,10 @@ pub mod tag {
     pub const PLAYER_ANIM_BONES: Tag = *b"PANB";
     /// MW2 player animation script (`anim_script`).
     pub const PLAYER_ANIM_SCRIPT: Tag = *b"PSCR";
+    /// The mantle clips' lengths and root paths ([`crate::mantle`]).
+    pub const MANTLE: Tag = *b"MNTL";
+    /// Each `PANM` clip's move speed (f32 units/s; 0: played at rate 1), for the characters' playback rate.
+    pub const PLAYER_ANIM_SPEEDS: Tag = *b"PANS";
     /// Third-person weapon models (`held`), each weapon's model, and their textures.
     pub const HELD_MODELS: Tag = *b"GUNM";
     pub const HELD_INDEX: Tag = *b"GUNI";
