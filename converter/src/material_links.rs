@@ -216,6 +216,19 @@ pub struct FxElemCapture {
     pub runners: Vec<String>,
 }
 
+/// A tracer as the zone has it (IW4L `TracerDefGeometry`): its material (index into `material_info`) and numbers.
+#[derive(Clone, Debug, Default)]
+pub struct TracerCapture {
+    pub material: Option<usize>,
+    pub draw_interval: u32,
+    pub speed: f32,
+    pub beam_length: f32,
+    pub beam_width: f32,
+    pub screw_radius: f32,
+    pub screw_dist: f32,
+    pub colors: [[f32; 4]; 5],
+}
+
 /// An effect's sound aliases and the effects it starts (runners, impact / death / emitted effects).
 #[derive(Default)]
 struct FxSounds {
@@ -352,6 +365,16 @@ pub struct Links {
     pub weapon_impact_types: Vec<i32>,
     /// Each weapon's effects: world muzzle flash, first-person flash, explosion (parallel to `weapons`).
     pub weapon_fx: Vec<[Option<String>; 3]>,
+    /// Each weapon's world sounds by `wpk::sound::world` slot (what other players hear).
+    pub weapon_world_fire: Vec<[Option<String>; wpk::sound::world::COUNT]>,
+    /// Each weapon's tracer (index into `tracers`).
+    pub weapon_tracers: Vec<Option<usize>>,
+    /// The zone's tracers (`capture_tracer`).
+    pub tracers: Vec<TracerCapture>,
+    /// Tracers by asset slot.
+    tracer_slots: HashMap<Ptr, usize>,
+    /// The tracer captured last, waiting for its slot.
+    last_tracer: Option<usize>,
     /// IW4's impact table (`FxImpactTable`): rows by impact type, effects by surface type then flesh.
     pub impact_table: Vec<[Option<String>; wpk::fx::IMPACT_COLUMNS]>,
     /// Each weapon's bullet penetration (parallel to `weapons`).
@@ -636,6 +659,16 @@ impl Links {
         }
         self.weapon_blockers
             .push(blockers.into_iter().map(|(b, _)| b).collect());
+        self.weapon_world_fire.push([
+            direct(w.fire_sound_name),
+            direct(w.fire_last_sound_name),
+            direct(w.melee_hit_sound_name),
+            direct(w.melee_miss_sound_name),
+        ]);
+        self.weapon_tracers.push(
+            w.tracer_slot
+                .and_then(|slot| self.tracer_slots.get(&slot).copied()),
+        );
         self.weapon_world_sounds.push([
             direct(w.proj_explosion_sound_name).or(effect_sound),
             bounce,
@@ -840,8 +873,35 @@ impl Links {
                     self.fx_slots.insert(slot, n);
                 }
             }
+            AssetType::Tracer => {
+                if let Some(t) = self.last_tracer.take() {
+                    if let Some(i) = insert_slot {
+                        self.tracer_slots.insert(i, t);
+                    }
+                    self.tracer_slots.insert(slot, t);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Hook for `AssetLinkSink::capture_tracer` (IW4L `load_tracer`): its numbers, and its material through the slot
+    /// the loader read it into.
+    pub fn tracer_captured(&mut self, g: &fastfile_iw4::TracerDefGeometry) {
+        let material = g
+            .material_slot
+            .and_then(|slot| self.materials.resolve(slot));
+        self.tracers.push(TracerCapture {
+            material,
+            draw_interval: g.draw_interval,
+            speed: g.speed,
+            beam_length: g.beam_length,
+            beam_width: g.beam_width,
+            screw_radius: g.screw_radius,
+            screw_dist: g.screw_dist,
+            colors: g.colors,
+        });
+        self.last_tracer = Some(self.tracers.len() - 1);
     }
 
     /// Hook for `AssetLinkSink::capture_fx`: the alias names of the effect's sound elements (IW4L
@@ -980,6 +1040,16 @@ impl Links {
         let field = p.at(s.layout(0xbc, 200));
         let slots: Vec<Ptr> = match view.visual_count {
             0 => Vec::new(),
+            // Decals: always an array of mark visuals (two materials each; the first is the mark's colour).
+            n if view.elem_type == sz::fx_elem::DECAL => match s.ptr_at(field, 0) {
+                Ok(fastfile_iw4::ZonePtr::Offset(a)) => {
+                    let a = s.resolve_alias(a);
+                    (0..usize::from(n))
+                        .map(|k| a.at(k * s.layout(sz::FX_ELEM_MARK_VISUALS, 16)))
+                        .collect()
+                }
+                _ => Vec::new(),
+            },
             1 => vec![field],
             n => match s.ptr_at(field, 0) {
                 Ok(fastfile_iw4::ZonePtr::Offset(a)) => {
@@ -1013,6 +1083,16 @@ impl Links {
             materials,
             runners,
         })
+    }
+
+    /// The first sound effect `name` plays (its own sound element's alias, else a child effect's, two levels down).
+    pub fn fx_own_sound(&self, name: &str) -> Option<String> {
+        self.fx_sound(name, 2)
+    }
+
+    /// Effect `name`'s looping life (IW4 `msecLoopingLife`), 0 when unknown.
+    pub fn fx_looping_life(&self, name: &str) -> i32 {
+        self.fx_defs.get(name).map_or(0, |f| f.looping_life_ms)
     }
 
     /// Effect `name`'s elements (lower case), if the zone had it.
@@ -1075,6 +1155,11 @@ impl Links {
                 }
             }
             AssetType::LoadedSound => self.sounds.alias_slot(slot, target),
+            AssetType::Tracer => {
+                if let Some(&t) = self.tracer_slots.get(&target) {
+                    self.tracer_slots.insert(slot, t);
+                }
+            }
             AssetType::Fx => {
                 if let Some(n) = self.fx_slots.get(&target).cloned() {
                     self.fx_slots.insert(slot, n);

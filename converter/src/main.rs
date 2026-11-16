@@ -620,6 +620,8 @@ fn run_pack(args: &[String]) -> ExitCode {
 /// The zone the weapon sounds are read from: MW2 MP's sound aliases and their loaded sounds live in
 /// `localized_common_mp` (`common_mp` only names them).
 const SOUND_ZONE: &str = "localized_common_mp";
+/// Other players' weapon sounds are resampled down to this rate (Hz).
+const WORLD_FIRE_RATE: u32 = 14_000;
 
 /// Zones with the Create-a-Class tables and their localized names.
 const CLASS_ZONES: [&str; 2] = ["code_post_gfx_mp", "localized_code_post_gfx_mp"];
@@ -1352,28 +1354,6 @@ fn run_common(args: &[String]) -> ExitCode {
         blockers.len() as u32,
         wpk::records::encode(&blockers),
     );
-    println!(
-        "world sounds: {} aliases, {} variants, {:.2} MiB",
-        world_bank.aliases.len(),
-        world_bank.variants.len(),
-        world_bank.data.len() as f64 / (1024.0 * 1024.0)
-    );
-    b.section(
-        wpk::tag::SOUND_ALIASES,
-        world_bank.aliases.len() as u32,
-        wpk::records::encode(&world_bank.aliases),
-    );
-    b.section(
-        wpk::tag::SOUND_VARIANTS,
-        world_bank.variants.len() as u32,
-        wpk::records::encode(&world_bank.variants),
-    );
-    let world_sounds = world_bank.report();
-    b.section(
-        wpk::tag::SOUND_DATA,
-        sounds::data_count(&world_bank),
-        std::mem::take(&mut world_bank.data),
-    );
     // Player animations by bone name.
     let ((panm, panb, missing_anims), parsed) = player_anims;
     let full_panm = wpk::player_anim::encode(&panm.clips);
@@ -1465,7 +1445,14 @@ fn run_common(args: &[String]) -> ExitCode {
         .collect();
     fx_roots.extend(impact_table.iter().flatten().flatten().cloned());
     let mut fx_tex = pack::Textures::default();
-    let baked_fx = fx::bake(links, &fx_roots, &index, &tex_dir, &mut fx_tex);
+    // Impact effects' sounds at 14 kHz too (short clicks and thuds).
+    let fx_rate_cap = world_bank.max_rate.replace(WORLD_FIRE_RATE);
+    let fx_before = world_bank.data.len();
+    let baked_fx = fx::bake(links, &fx_roots, &index, &tex_dir, &mut fx_tex, &mut |n| {
+        world_bank.add(&capture, n)
+    });
+    world_bank.max_rate = fx_rate_cap;
+    let fx_sound_bytes = world_bank.data.len() - fx_before;
     let fx_defs = baked_fx.encode();
     let mut fx_weapons: Vec<u8> = Vec::with_capacity(weapons.len() * 6);
     for w in &weapons {
@@ -1495,6 +1482,169 @@ fn run_common(args: &[String]) -> ExitCode {
         wpk::tag::FX_IMPACTS,
         wpk::fx::IMPACT_ROWS as u32,
         fx::impact_section(&baked_fx, &impact_table),
+    );
+    // Other players' gunfire and melee (each weapon's world sounds), resampled to 14 kHz: heard at a distance, they
+    // don't need more, and MEM2 is short. Only the weapons other players carry: the bots' (the default classes'
+    // primaries with their attachments, as the game arms them, and the base weapon as its fallback).
+    let world_rate_cap = world_bank.max_rate.replace(WORLD_FIRE_RATE);
+    // Their quiet tails cut too (`--trim-sounds` for these clips alone).
+    let world_trim = std::mem::replace(&mut world_bank.trim, true);
+    let bot_weapons: HashSet<String> = catalog
+        .defaults
+        .iter()
+        .flat_map(|l| {
+            let mut n = catalog.weapon_names(l.primary, l.primary_attachments);
+            if let Some(w) = catalog.weapons.get(usize::from(l.primary)) {
+                n.push(format!("{}_mp", w.name));
+            }
+            n
+        })
+        .collect();
+    let base_of_class = |name: &str| {
+        bases
+            .iter()
+            .any(|b| name == format!("{b}_mp") || name.starts_with(&format!("{b}_")))
+    };
+    let before = world_bank.data.len();
+    let before_fx = before - fx_sound_bytes;
+    let mut world_weapon: Vec<u8> =
+        Vec::with_capacity(weapons.len() * 2 * wpk::sound::world::COUNT);
+    for w in &weapons {
+        let names = links
+            .weapons
+            .iter()
+            .position(|n| n == w.name())
+            .filter(|_| bot_weapons.contains(w.name()))
+            .and_then(|i| links.weapon_world_fire.get(i));
+        for k in 0..wpk::sound::world::COUNT {
+            let a = names
+                .and_then(|n| n[k].as_deref())
+                .map_or(wpk::sound::NONE, |n| world_bank.add(&capture, n));
+            world_weapon.extend_from_slice(&a.to_be_bytes());
+        }
+    }
+    world_bank.max_rate = world_rate_cap;
+    world_bank.trim = world_trim;
+    // Match sounds: the hitmarker, the knife's melee hit and miss (each with its fallback).
+    let misc: Vec<u16> = wpk::sound::misc::ALIASES
+        .iter()
+        .map(|(n, fallback)| match world_bank.add(&capture, n) {
+            wpk::sound::NONE if !fallback.is_empty() => world_bank.add(&capture, fallback),
+            a => a,
+        })
+        .collect();
+    println!(
+        "weapon world sounds: {} weapons, {:.2} MiB; match sounds: {} of {}; effect sounds: {} of {} named ({:.2} MiB), impact marks: {}; this round's sounds in all: {:.2} MiB",
+        bot_weapons.len(),
+        (world_bank.data.len() - before) as f64 / (1024.0 * 1024.0),
+        misc.iter().filter(|&&a| a != wpk::sound::NONE).count(),
+        misc.len(),
+        baked_fx.sounds,
+        baked_fx.sounds_named,
+        fx_sound_bytes as f64 / (1024.0 * 1024.0),
+        baked_fx.marks,
+        (world_bank.data.len() - before_fx) as f64 / (1024.0 * 1024.0),
+    );
+    b.section(
+        wpk::tag::WEAPON_WORLD_SOUNDS,
+        weapons.len() as u32,
+        world_weapon,
+    );
+    let mut misc_bytes = Vec::with_capacity(misc.len() * 2);
+    for a in &misc {
+        misc_bytes.extend_from_slice(&a.to_be_bytes());
+    }
+    b.section(wpk::tag::MISC_SOUNDS, misc.len() as u32, misc_bytes);
+    // Tracers (IW4 `TracerDef`): each class weapon's, their textures in the effects' set.
+    let mut tracer_records: Vec<wpk::fx::TracerRecord> = Vec::new();
+    let mut tracer_index: HashMap<usize, u16> = HashMap::new();
+    let mut fx_tracers: Vec<u8> = Vec::with_capacity(weapons.len() * 2);
+    for w in &weapons {
+        let t = links
+            .weapons
+            .iter()
+            .position(|n| n == w.name())
+            .filter(|_| base_of_class(w.name()))
+            .and_then(|i| links.weapon_tracers.get(i).copied().flatten());
+        let idx = match t {
+            Some(t) => *tracer_index.entry(t).or_insert_with(|| {
+                let c = &links.tracers[t];
+                let (texture, blend) = c.material.map_or((wpk::records::NONE, 0), |m| {
+                    (
+                        links
+                            .colour_image(m)
+                            .and_then(|img| index.iter().find(|e| e.images.contains(&img)))
+                            .and_then(|e| {
+                                fx_tex
+                                    .add_file_capped(
+                                        &tex_dir,
+                                        &e.file,
+                                        wpk::records::Wrap::Clamp,
+                                        64,
+                                    )
+                                    .ok()
+                            })
+                            .unwrap_or(wpk::records::NONE),
+                        wpk::records::Blend::Additive as u8,
+                    )
+                });
+                tracer_records.push(wpk::fx::TracerRecord {
+                    texture,
+                    blend,
+                    draw_interval: c.draw_interval,
+                    speed: c.speed,
+                    beam_length: c.beam_length,
+                    beam_width: c.beam_width,
+                    screw_radius: c.screw_radius,
+                    screw_dist: c.screw_dist,
+                    colors: c.colors,
+                });
+                (tracer_records.len() - 1) as u16
+            }),
+            None => wpk::records::NONE,
+        };
+        fx_tracers.extend_from_slice(&idx.to_be_bytes());
+    }
+    println!(
+        "tracers: {} ({} captured), {} weapons have one",
+        tracer_records.len(),
+        links.tracers.len(),
+        fx_tracers
+            .chunks_exact(2)
+            .filter(|c| u16::from_be_bytes([c[0], c[1]]) != wpk::records::NONE)
+            .count()
+    );
+    b.section(
+        wpk::tag::FX_TRACERS,
+        tracer_records.len() as u32,
+        wpk::records::encode(&tracer_records),
+    );
+    b.section(
+        wpk::tag::FX_WEAPON_TRACERS,
+        weapons.len() as u32,
+        fx_tracers,
+    );
+    println!(
+        "world sounds: {} aliases, {} variants, {:.2} MiB",
+        world_bank.aliases.len(),
+        world_bank.variants.len(),
+        world_bank.data.len() as f64 / (1024.0 * 1024.0)
+    );
+    b.section(
+        wpk::tag::SOUND_ALIASES,
+        world_bank.aliases.len() as u32,
+        wpk::records::encode(&world_bank.aliases),
+    );
+    b.section(
+        wpk::tag::SOUND_VARIANTS,
+        world_bank.variants.len() as u32,
+        wpk::records::encode(&world_bank.variants),
+    );
+    let world_sounds = world_bank.report();
+    b.section(
+        wpk::tag::SOUND_DATA,
+        sounds::data_count(&world_bank),
+        std::mem::take(&mut world_bank.data),
     );
     b.section(
         wpk::tag::FX_TEXTURES,

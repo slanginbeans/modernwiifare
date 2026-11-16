@@ -4,7 +4,8 @@
 //! (`game_core::character`). Skinned on the CPU like the first-person model and drawn at each player's position,
 //! turned with the legs.
 //!
-//! Lighting is a flat ×1 for now (MW2 lights characters from the light grid).
+//! Lit by the map's light lattice at each character's middle (`game_core::light`, [`Characters::lattice`]), the
+//! weapon in the hand too.
 
 use alloc::vec::Vec;
 
@@ -104,6 +105,8 @@ impl Held {
 
 /// The drawn players.
 pub struct Characters {
+    /// The map's light lattice (none: unlit, ×1).
+    pub lattice: Option<wpk::light::LightLattice<'static>>,
     teams: Vec<Team>,
     held: Option<Held>,
     anims: PlayerAnims<'static>,
@@ -265,6 +268,7 @@ impl Characters {
             });
         }
         (!out.is_empty()).then(|| Characters {
+            lattice: None,
             teams: out,
             held,
             anims: PlayerAnims { clips, script },
@@ -414,11 +418,16 @@ impl Characters {
                 ffi::mwf_view_arrays(buf.as_ptr().cast(), team.attributes);
             }
             gfx.pos_matrix(&vmod::mul(view, &model));
+            let tint = game_core::light::tint_at(
+                self.lattice.as_ref(),
+                [o[0], o[1], o[2] + game_core::light::CHARACTER_LIGHT_HEIGHT],
+            );
             let mut last: Option<DrawState> = None;
             for d in &team.draws {
-                if last != Some(d.state) {
-                    gfx.world_state(&d.state);
-                    last = Some(d.state);
+                let state = DrawState { tint, ..d.state };
+                if last != Some(state) {
+                    gfx.world_state(&state);
+                    last = Some(state);
                 }
                 gfx.call_dl(d.dl);
             }
@@ -452,7 +461,7 @@ impl Characters {
                         blend: d.blend,
                         alpha_ref: d.alpha_ref,
                         cull: 0,
-                        tint: 0,
+                        tint,
                     };
                     if last != Some(state) {
                         gfx.world_state(&state);

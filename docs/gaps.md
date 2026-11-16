@@ -45,11 +45,15 @@ hand-written from MW2's scripts); perks and deathstreaks with no effect yet (Col
 Hardline, One Man Army, Last Stand, Copycat, Painkiller, Martyrdom, Final Stand); silenced weapons off the radar;
 bot upgrades from IW4L `bots` (memory confidence, weapon switching, low-health recover, varied loadouts, perks).
 
-Presentation, IW4L has code: other players' gunfire, `MP_hit_alert`, melee sounds; looping effect elements
-(`fx_iw4::looping_spawn_schedule`: lingering smoke, fire) and tracers (`fx_iw4::beam`); light-grid lighting for the
-viewmodel and characters (`lighting_iw4` atapoint, viewmodel origin); HUD: sniper scope overlay (`hud_iw4::iris`),
-MW2's crosshair (`hud_iw4::crosshair`), damage direction, blood / pain (`hud_iw4::blood`), overhead names, kill-feed
-weapon icons, EMP static; bullet marks (`marks_iw4`); rumble. Not on the Wii's GPU: shadow maps, depth of field,
+Presentation, IW4L has code: ~~other players' gunfire, `MP_hit_alert`, melee sounds;
+looping effect elements (lingering smoke, fire); tracers; light-grid lighting for the viewmodel, characters and
+destructible objects; bullet marks~~ done in this round (`docs/runtime.md`, Gun and First-person model; IW4L's code
+as the reference, host-tested against its values; a trace against MW2 is still to do for each). Memory: see "Audio,
+effects and lighting" below. Still to do there: bullet impact sounds (MW2's impact effects name none, IW4L has no other code for them), weapons other than the bots' default ones for others' gunfire, destructible objects' own sounds (their aliases live in the map
+zone), the bots' knife cues, IW4's per-texel model lighting and the sun's direction, marks on models and players,
+the tracer's screw wiggle, a fill-rate measurement of a full smoke cloud on hardware. HUD: sniper scope overlay
+(`hud_iw4::iris`), MW2's crosshair (`hud_iw4::crosshair`), damage direction, blood / pain (`hud_iw4::blood`),
+overhead names, kill-feed weapon icons, EMP static; rumble. Not on the Wii's GPU: shadow maps, depth of field,
 glow, colour grading, glass shatter.
 
 Network: IW4L has no LAN transport (internet relay over QUIC); its snapshot deltas (`PS_NETFIELDS`), acked
@@ -63,7 +67,7 @@ scripted Dolphin runs, the PC menu preview.
 ## Next, gameplay (ranked)
 1. ~~Viewmodel ADS pose~~ done with the full viewmodel anim tree (every slot, timer-fitted rates, ADS overlay,
    per-bone blend) and MW2's weapon placement (view sway, bob, idle sway, movement offsets). Still to confirm: the
-   stick range from the logs; the first-person lighting from the light grid.
+   stick range from the logs. The first-person lighting: done (the light lattice at IW4's viewmodel lighting origin).
 2. ~~Weapon switching through IW4L~~ done: the gun asks for the other weapon (`usercmd.weapon`), IW4L drops it,
    the other takes the hand and raises (first raise once a life); refused mid-melee, cancelled by asking again.
 3. **Melee**: done, lunge included. The melee button goes through IW4L's hand driver (`weapon_hands`:
@@ -75,7 +79,7 @@ scripted Dolphin runs, the PC menu preview.
 5. ~~Health regeneration~~ done: MW2's `_healthoverlay.gsc` loop step by step (`life::Life::regen`), the numbers
    read from the user's scripts (`RULE`).
 6. ~~Bullet penetration~~ done: IW4L `fire_penetrate` through world walls (the user's `info/bullet_penetration_mp` depths by type and surface, each weapon's type and multiplier; thickness from a trace back from the far side; up to five walls; damage scaled by what is left). Not yet: through players (collateral), glass panes, impact marks on exits.
-7. **Hit volumes**: turn the boxes with the body's yaw now; the character models' hit boxes later. Character models: drawn (`CHAR`), animated by MW2's own player animation script (`PSCR`, `PANM`): legs and torso animations by movement type, weapon type and stance, firing, reloading, melee, grenade throws, jumps (backwards too), hard landings (falling faster than 200 units/s), going prone and getting up, the hit flinch and stumble (pmove's damage timer picks FLINCH / STUMBLE movement types, as IW4L's `footsteps_anim_move_type`) and death animations (by hit location, direction and explosive damage), cross-fades with IW4's blend times, the spine turned to the aim pitch and the torso's yaw (IW4's controller tags), legs that follow the view after 20 degrees. The weapon in their hands: done (each weapon's world model on `tag_weapon_right`, `GUNM`). Not yet: the riot shield on the left arm and back, weapons dropped on death, attachments on the held model, per-class bodies (riot, sniper, ghillie) and random heads, ragdolls and bodies that stay after the respawn, shellshock and stun torso animations, playback rate from the move speed, light-grid lighting.
+7. **Hit volumes**: turn the boxes with the body's yaw now; the character models' hit boxes later. Character models: drawn (`CHAR`), animated by MW2's own player animation script (`PSCR`, `PANM`): legs and torso animations by movement type, weapon type and stance, firing, reloading, melee, grenade throws, jumps (backwards too), hard landings (falling faster than 200 units/s), going prone and getting up, the hit flinch and stumble (pmove's damage timer picks FLINCH / STUMBLE movement types, as IW4L's `footsteps_anim_move_type`) and death animations (by hit location, direction and explosive damage), cross-fades with IW4's blend times, the spine turned to the aim pitch and the torso's yaw (IW4's controller tags), legs that follow the view after 20 degrees. The weapon in their hands: done (each weapon's world model on `tag_weapon_right`, `GUNM`). Not yet: the riot shield on the left arm and back, weapons dropped on death, attachments on the held model, per-class bodies (riot, sniper, ghillie) and random heads, ragdolls and bodies that stay after the respawn, shellshock and stun torso animations, playback rate from the move speed. Light-grid lighting: done (the light lattice at their middle, one colour each).
 8. **FFA rules**: points (a kill, the headshot bonus), score and time limits from the user's `dm.gsc`, ties to fewer
    deaths: done. Spawns follow MW2's free-for-all weighting (`_spawnlogic.gsc`: distance to everyone, enemies in
    sight, the nearest enemy, the last spawn used): done. Still to do: the playlist's overrides (the stock script
@@ -88,8 +92,8 @@ scripted Dolphin runs, the PC menu preview.
     for the first spawn, team killstreaks shared by the team (the UAV is yours alone).
 12. **Grenades**: frag, semtex, the throwing knife (its hit, stick and pickup), claymore (trip and cone) and C4 (double-tap detonation) (lethal), flashbang, stun and smoke (tactical; the smoke's sight blocking) done (`game_core::grenade`, IW4L's throw /
     bounce / fuse / blast and flashbang amounts, the scripts' flash and stun durations, the shock files' white-out
-    and slowdown; bots throw frags). Not yet: shooting charges to set them off, the C4 detonator in hand, the claymore's trip sound, Bomb Squad / Scavenger interplay, tactical insertion, blast shield; smoke sprites and drift;
-    the shock's blur and tinnitus; the grenade models (explosion effects: done, MW2's own, one-shot elements); looping effect elements (lingering smoke, fire), impact marks; per-surface explosion sounds; the grenade
+    and slowdown; bots throw frags). Not yet: shooting charges to set them off, the C4 detonator in hand, the claymore's trip sound, Bomb Squad / Scavenger interplay, tactical insertion, blast shield; the sight-blocking particles' drift (the smoke's look: done, its effect's looping sprites);
+    the shock's blur and tinnitus; the grenade models (explosion effects: done, MW2's own, one-shot elements); per-surface explosion sounds; marks from explosions; the grenade
     danger indicator; Danger Close.
 11. **Minimap and killstreaks**: the HUD minimap (map pack `MINI`: MW2's `setupMiniMap` frame, the script's
     `compassmaxrange`; turned with the view; firing pings), kill streaks with your class's streak costs, the UAV
@@ -107,8 +111,20 @@ scripted Dolphin runs, the PC menu preview.
 **Destructible objects**: the main body of each (states, damage rules, effects, repeating effects, health drain,
 explosions with chain reactions, model swaps, collision boxes) is done (`game_core::destructible`, map pack `DST*`).
 Not yet: separate parts (tires, glass, doors), physics pieces, their sounds, destroy and idle animations, glass
-windows, light-grid lighting, grenades bouncing off them. Memory: about 1 MiB (Checkpoint) to 1.7 MiB (Invasion) of
+windows, grenades bouncing off them (light-grid lighting: done, the light lattice at each object's origin). Memory: about 1 MiB (Checkpoint) to 1.7 MiB (Invasion) of
 MEM2 per map; measure the frame cost of drawing 200 objects on hardware (`wld` section).
+
+## Audio, effects and lighting (this round)
+Done: other players' gunfire (each weapon's world fire sound, one voice per shooter), MW2's hit alert, your knife's
+melee cues, looping effect elements (the smoke grenade's cloud,
+fires), tracers, bullet marks clipped to their surface, the light lattice for the viewmodel, characters and objects.
+See `docs/runtime.md`. Memory (MEM2), mp_rust, measured against main's
+packs: `common.wpk` +635 KB (the bots' 11 weapons' world sounds at 14 kHz with tails cut 593 KB, the impact marks'
+decal textures at most 32 texels 26 KB, `WSNW` 9.5 KB, `FXWT` 2.4 KB, effect headers 2 KB, `FXTR` 1 KB), the map's
+light lattice 26 KB (6,534 points), the mark pool 9 KB: about 0.67 MB in all, within this round's 0.7 MB. The match
+log's `avfx` line at load reports the lattice, tracer and mark pool sizes; `avfx_counts` every 5 s what played.
+Checked in Dolphin (`tools/autoplay/av_fx.txt`, `av_fx_wall.txt`): others' gunfire, tracers, marks on a wall, the
+smoke's looping cloud, the knife's wall cue; not on a Wii, and the hit alert not in a scripted run (no scripted hit).
 
 ## Next, performance (ranked by expected milliseconds; measure with the logs first)
 1. **World vertex load** (~12-25 ms on big maps): draw distance with fog and model LOD scale are in (debug menu),

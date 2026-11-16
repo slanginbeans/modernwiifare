@@ -5,6 +5,10 @@
 //! Each play picks a variant by its probability weight and a volume and pitch in the alias's ranges, as IW4 does.
 //! Player-view sounds play at the listener; world sounds ([`Sounds::play_at`]) fade with distance between the alias's
 //! `distMin` and `distMax` (IW4's linear falloff) and pan left / right by where they are.
+//!
+//! ASND mixes 16 voices. A sound that repeats fast from one source (another player's full-auto fire) plays through
+//! a [`Voice`] slot: each new shot stops that source's previous one first (IW4 limits an alias's voices the same
+//! way), so a firefight holds at most one voice per shooter.
 
 /// The debug menu's sound switch: nothing plays while set.
 pub static MUTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -13,6 +17,10 @@ use wpk::records::{self, Record};
 use wpk::sound::{AliasRecord, NONE, VariantRecord};
 
 use crate::ffi;
+
+/// The voice a sound took (voice, start count), to stop it again only while it is still that sound.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Voice(Option<(i32, u32)>);
 
 pub struct Sounds<'a> {
     aliases: &'a [u8],
@@ -83,12 +91,34 @@ impl<'a> Sounds<'a> {
         self.play_with(alias, Some((at, listener, right)));
     }
 
-    fn play_with(&mut self, alias: u16, place: Option<([f32; 3], [f32; 3], [f32; 3])>) {
+    /// [`Sounds::play_at`] through `slot`: the slot's previous sound stops first (one voice per source).
+    pub fn play_at_in(
+        &mut self,
+        slot: &mut Voice,
+        alias: u16,
+        at: [f32; 3],
+        listener: [f32; 3],
+        right: [f32; 3],
+    ) {
         if alias == NONE {
             return;
         }
+        if let Some((v, clock)) = slot.0.take() {
+            unsafe { ffi::mwf_snd_stop_if(v, clock) };
+        }
+        let v = self.play_with(alias, Some((at, listener, right)));
+        if v >= 0 {
+            slot.0 = Some((v, unsafe { ffi::mwf_snd_voice_clock(v) }));
+        }
+    }
+
+    /// Start `alias`; the voice it took, or -1.
+    fn play_with(&mut self, alias: u16, place: Option<([f32; 3], [f32; 3], [f32; 3])>) -> i32 {
+        if alias == NONE {
+            return -1;
+        }
         let Some(a) = records::get::<AliasRecord>(self.aliases, usize::from(alias)) else {
-            return;
+            return -1;
         };
         let first = usize::from(a.first_variant);
         let n = usize::from(a.variant_count);
@@ -121,13 +151,13 @@ impl<'a> Sounds<'a> {
             r -= w;
         }
         let Some(v) = pick else {
-            return;
+            return -1;
         };
         let Some(clip) = self
             .data
             .get(v.data_off as usize..(v.data_off + v.data_len) as usize)
         else {
-            return;
+            return -1;
         };
         let vol = v.vol_min + (v.vol_max - v.vol_min) * self.random();
         let pitch = v.pitch_min + (v.pitch_max - v.pitch_min) * self.random();
@@ -144,7 +174,7 @@ impl<'a> Sounds<'a> {
                 1.0 - (dist - v.dist_min) / (v.dist_max - v.dist_min)
             };
             if gain <= 0.0 {
-                return;
+                return -1;
             }
             // Pan by how far to the side the sound is.
             let pan = if dist > 1.0 {
@@ -156,7 +186,7 @@ impl<'a> Sounds<'a> {
             right = vol * gain * (1.0 + pan.min(0.0) * 0.7);
         }
         if MUTED.load(core::sync::atomic::Ordering::Relaxed) {
-            return;
+            return -1;
         }
         let level = |x: f32| (x.clamp(0.0, 1.0) * 255.0) as u8;
         let rate = (v.rate as f32 * pitch.clamp(0.25, 4.0)) as u32;
@@ -173,6 +203,6 @@ impl<'a> Sounds<'a> {
                 level(left),
                 level(right),
             )
-        };
+        }
     }
 }

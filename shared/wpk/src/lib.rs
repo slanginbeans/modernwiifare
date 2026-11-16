@@ -25,6 +25,7 @@ pub mod clip;
 pub mod destructible;
 pub mod fx;
 pub mod held;
+pub mod light;
 pub mod nav;
 pub mod player_anim;
 pub mod quant;
@@ -93,6 +94,15 @@ pub mod tag {
     pub const FX_IMPACTS: Tag = *b"FXIM";
     pub const FX_TEXTURES: Tag = *b"FTEX";
     pub const FX_TEXTURE_DATA: Tag = *b"FTXD";
+    /// Tracers (`fx::TracerRecord`) and each weapon's tracer (u16 per `WEAP` record, NONE: none).
+    pub const FX_TRACERS: Tag = *b"FXTR";
+    pub const FX_WEAPON_TRACERS: Tag = *b"FXWT";
+    /// Each weapon's world sounds (`sound::WorldWeaponSounds`, u16 aliases per `WEAP` record, common world bank).
+    pub const WEAPON_WORLD_SOUNDS: Tag = *b"WSNW";
+    /// Match sounds by `sound::misc` slot (u16 aliases, common world bank).
+    pub const MISC_SOUNDS: Tag = *b"SNDM";
+    /// Map pack: the light grid sampled on a coarse lattice (`light::LightLattice`).
+    pub const LIGHT_LATTICE: Tag = *b"LGRD";
     /// Static model vertices (`WorldVertex`, model space, lightmap UV unused).
     pub const MODEL_VERTICES: Tag = *b"MVTX";
     /// Static model surfaces (`BatchRecord` over `MVTX`; display lists in `WDLS`).

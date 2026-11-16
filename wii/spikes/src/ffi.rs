@@ -76,6 +76,8 @@ unsafe extern "C" {
         quads: u32,
         world: i32,
     );
+    /// Decals on the world (bullet marks), like `mwf_sprites` in the world, depth-biased towards the eye.
+    pub fn mwf_decals(view: *const [[f32; 4]; 3], tex: i32, blend: u32, v: *const u8, quads: u32);
 
     pub fn mwf_net_init(ip: *mut u8, mask: *mut u8, gw: *mut u8) -> i32;
     pub fn mwf_udp_open(port: u16, broadcast_opt_result: *mut i32, bind_result: *mut i32) -> i32;

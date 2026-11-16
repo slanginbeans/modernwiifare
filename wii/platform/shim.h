@@ -215,6 +215,9 @@ void mwf_draw_boxes(const float view[3][4], const float (*b)[6], const uint32_t 
 typedef struct { float x, y, z; uint32_t rgba; float s, t; } mwf_sprite_vert;
 void mwf_sprites(const float view[3][4], int32_t tex, uint32_t blend, const mwf_sprite_vert *v, uint32_t quads,
                  int32_t world);
+/* Decals on the world (bullet marks): mwf_sprites' quads in the world, fogged, pulled a little towards the eye in
+   depth so they sit on the surface they lie on. */
+void mwf_decals(const float view[3][4], int32_t tex, uint32_t blend, const mwf_sprite_vert *v, uint32_t quads);
 
 /* ---- USB pads (shim_usbpad.c, game only) ---- */
 /* Once per frame: notices a pad being unplugged, looks for a newly plugged one about once a second. */
@@ -229,6 +232,9 @@ int32_t mwf_snd_play(const void *pcm, uint32_t bytes, uint32_t rate, uint8_t vol
 /* The same for a 4-bit DSP ADPCM clip (`wpk::adpcm`, 32-byte aligned): decoded a piece at a time while it plays. */
 int32_t mwf_snd_play_adpcm(const void *clip, uint32_t bytes, uint32_t rate, uint8_t vol_l, uint8_t vol_r);
 void mwf_snd_stop_all(void);
+/* When voice `voice` was last started (a count; 0: never), and stop it only if it is still that sound. */
+uint32_t mwf_snd_voice_clock(int32_t voice);
+void mwf_snd_stop_if(int32_t voice, uint32_t clock);
 /* Sounds started so far by taking over the voice playing longest, because all were busy. */
 uint32_t mwf_snd_steals(void);
 /* Implemented by the game (Rust, `wpk::adpcm::decode`): decode up to `max` samples of `clip` from sample `start`,

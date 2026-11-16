@@ -1,0 +1,61 @@
+# Audio, effects and lighting check (game_core::autoplay syntax): a Team Deathmatch on the first map with bots.
+# Fires at the floor and a wall (tracers, bullet marks, impact sounds), knifes the wall (melee miss cue), throws the
+# class's tactical (smoke: the lingering cloud from the effect's looping elements), then waits while the bots fight
+# (their gunfire, tracers; hit alerts when you hit them). The match log's `avfx` / `avfx_counts` lines count what
+# played (Dolphin runs without audio). Screenshots land in <app folder>/shots/.
+wait 90
+press A
+wait 10
+shot av_00_lobby
+press A
+wait 700
+press A
+wait 60
+shot av_01_spawn
+# Look down a little and fire a burst at the floor.
+cstick 0 -60
+wait 12
+cstick 0 0
+hold R
+wait 30
+shot av_02_firing
+wait 10
+release R
+wait 6
+shot av_03_marks
+# Level again and fire straight ahead.
+cstick 0 60
+wait 10
+cstick 0 0
+hold R
+wait 25
+shot av_04_tracer
+release R
+wait 20
+# Knife (D-pad right on the GameCube layout).
+press RIGHT
+wait 40
+log knife done
+# The tactical (D-pad down): a smoke grenade's cloud if the class carries one.
+press DOWN
+wait 120
+shot av_05_tactical
+wait 120
+shot av_06_tactical_later
+wait 240
+shot av_07_cloud_lingers
+# Turn round and wait for the bots.
+stick 0 0
+cstick 100 0
+wait 30
+cstick 0 0
+wait 300
+shot av_08_fight
+wait 300
+shot av_09_fight_later
+cstick -100 0
+wait 25
+cstick 0 0
+wait 300
+shot av_10_late
+quit

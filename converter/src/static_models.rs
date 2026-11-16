@@ -186,6 +186,70 @@ fn lod(
     Ok(out)
 }
 
+/// Points of the moving models' light lattice ([`light_lattice`]) at most, and its finest spacing (units).
+const LATTICE_MAX_POINTS: usize = 12_288;
+const LATTICE_STEP_XY: f32 = 96.0;
+const LATTICE_STEP_Z: f32 = 64.0;
+
+/// The map's light grid sampled on a regular lattice over `lo..hi` (the world's bounds) for the models that move
+/// (`wpk::light`): at each point IW4L's atapoint lookup (`sample_light_grid`, as static models), the colour a white
+/// model gets there, at half intensity (alpha 0 where the grid has nothing). The spacing grows until the lattice fits
+/// in [`LATTICE_MAX_POINTS`]. `None` without a light grid. Returns the section and (points, lit points).
+pub fn light_lattice(
+    s: &ZoneStream<'_>,
+    lo: [f32; 3],
+    hi: [f32; 3],
+) -> Option<(Vec<u8>, usize, usize)> {
+    let g = s.gfx_world()?;
+    let grid = OwnedLightGrid::from_stream(s, g.light_grid)?;
+    let view = grid.view();
+    let mut step = [LATTICE_STEP_XY, LATTICE_STEP_XY, LATTICE_STEP_Z];
+    let dims = |step: &[f32; 3]| -> [u16; 3] {
+        std::array::from_fn(|k| {
+            (((hi[k] - lo[k]).max(0.0) / step[k]).ceil() as u16)
+                .saturating_add(1)
+                .max(1)
+        })
+    };
+    while dims(&step)
+        .iter()
+        .map(|&d| usize::from(d))
+        .product::<usize>()
+        > LATTICE_MAX_POINTS
+    {
+        step = step.map(|v| v * 1.25);
+    }
+    let d = dims(&step);
+    let mut points = Vec::with_capacity(d.iter().map(|&v| usize::from(v)).product());
+    let mut lit = 0;
+    for z in 0..d[2] {
+        for y in 0..d[1] {
+            for x in 0..d[0] {
+                let at = [
+                    lo[0] + f32::from(x) * step[0],
+                    lo[1] + f32::from(y) * step[1],
+                    lo[2] + f32::from(z) * step[2],
+                ];
+                points.push(match sample_light_grid(&view, at) {
+                    Ok(sample) => {
+                        lit += 1;
+                        let lin = lighting_iw4::decode_model_lighting_sample(mean_tile_rgba01(
+                            &sample.tile,
+                        ));
+                        let c = lin.map(|c| {
+                            ((c.max(0.0).sqrt() * 0.5).clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+                        });
+                        [c[0], c[1], c[2], 255]
+                    }
+                    Err(_) => [0; 4],
+                });
+            }
+        }
+    }
+    let n = points.len();
+    Some((wpk::light::encode(lo, step, d, &points), n, lit))
+}
+
 /// Read the static models after a zone walk (the stream still holds its blocks).
 pub fn read(s: &ZoneStream<'_>, links: &Links) -> Result<StaticModels, String> {
     let g = s.gfx_world().ok_or("zone has no GfxWorld")?;

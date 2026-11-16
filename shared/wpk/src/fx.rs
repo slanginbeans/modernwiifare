@@ -5,13 +5,15 @@
 //! `fx_iw4::evaluate_*`). Only sprite elements (billboard, oriented, tail, cloud) and runners (child effects) are
 //! kept; models, lights, decals, trails and sounds are left out.
 //!
-//! `FXDF`: `u32 count`, `count` × `u32` offsets (from the section start), each effect `u16 elems, u16 0`, then the
-//! elements (a [`ELEM_HEADER`]-byte header, the velocity samples as BE f32 local base/amplitude then world
+//! `FXDF`: `u32 count`, `count` × `u32` offsets (from the section start), each effect an [`EFFECT_HEADER`]-byte header
+//! (`u16 elems`, `u16 sound` alias (NONE: none), `i32 looping life ms`, `u16 mark texture`, `u8 mark blend`, `u8 0`,
+//! `f32 mark radius base`, `f32 amplitude`), then the elements (a [`ELEM_HEADER`]-byte header, the velocity samples as BE f32 local base/amplitude then world
 //! base/amplitude, the visual samples raw, padded to 4).
 //! `FXWP`: per `WEAP` record, u16 × 3: its world muzzle flash, first-person flash and explosion effect (or NONE).
 //! `FXIM`: IW4's impact table, [`IMPACT_ROWS`] rows (impact types) × [`IMPACT_COLUMNS`] (31 surface types, then 4
 //! flesh), u16 effect each (or NONE).
 //! `FTEX` / `FTXD`: the effects' textures.
+//! `FXTR`: tracers, [`TracerRecord`] each (IW4 `TracerDef`). `FXWT`: per `WEAP` record, u16: its tracer (or NONE).
 
 use alloc::vec::Vec;
 
@@ -21,6 +23,10 @@ pub const IMPACT_ROWS: usize = 15;
 pub const IMPACT_COLUMNS: usize = 35;
 /// Bytes of an element header.
 pub const ELEM_HEADER: usize = 148;
+/// Bytes of an effect header.
+pub const EFFECT_HEADER: usize = 20;
+/// IW4's looping life meaning "until stopped" (`msecLoopingLife` of i32::MAX).
+pub const LOOP_FOREVER: i32 = i32::MAX;
 /// Bytes of one IW4 visual-state sample.
 pub const VIS_SAMPLE: usize = 0x30;
 
@@ -72,10 +78,96 @@ pub struct Elem<'a> {
     pub vis: &'a [u8],
 }
 
+/// An impact mark an effect leaves (its first decal element): texture, blend and radius range.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mark {
+    /// `FTEX` index (NONE: the effect leaves no mark).
+    pub texture: u16,
+    pub blend: u8,
+    pub radius: [f32; 2],
+}
+
+impl Default for Mark {
+    fn default() -> Mark {
+        Mark {
+            texture: crate::records::NONE,
+            blend: 0,
+            radius: [0.0; 2],
+        }
+    }
+}
+
 /// One effect.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Effect<'a> {
     pub elems: Vec<Elem<'a>>,
+    /// The sound alias it plays (its first sound element's, in the pack's world bank), or NONE.
+    pub sound: u16,
+    /// How long its looping elements keep spawning (IW4 `msecLoopingLife`: 0 none, [`LOOP_FOREVER`]).
+    pub looping_life_ms: i32,
+    pub mark: Mark,
+}
+
+impl Default for Effect<'_> {
+    fn default() -> Self {
+        Effect {
+            elems: Vec::new(),
+            sound: crate::records::NONE,
+            looping_life_ms: 0,
+            mark: Mark::default(),
+        }
+    }
+}
+
+/// A tracer (IW4 `TracerDef`): its texture in `FTEX` (NONE: untextured), how often a shot draws one, its speed
+/// (units/s), beam length and width, screw (wiggle) radius and distance, and colours along it (RGBA 0..1).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TracerRecord {
+    pub texture: u16,
+    pub blend: u8,
+    pub draw_interval: u32,
+    pub speed: f32,
+    pub beam_length: f32,
+    pub beam_width: f32,
+    pub screw_radius: f32,
+    pub screw_dist: f32,
+    pub colors: [[f32; 4]; 5],
+}
+
+impl crate::records::Record for TracerRecord {
+    const LEN: usize = 108;
+    fn write(&self, o: &mut Vec<u8>) {
+        o.u16(self.texture);
+        o.u8(self.blend);
+        o.u8(0);
+        o.u32(self.draw_interval);
+        for v in [
+            self.speed,
+            self.beam_length,
+            self.beam_width,
+            self.screw_radius,
+            self.screw_dist,
+        ] {
+            o.f32(v);
+        }
+        for c in self.colors.iter().flatten() {
+            o.f32(*c);
+        }
+    }
+    fn read(b: &[u8]) -> Self {
+        let f = |k: usize| be::f32(b, 8 + k * 4);
+        TracerRecord {
+            texture: be::u16(b, 0),
+            blend: b[2],
+            draw_interval: be::u32(b, 4),
+            speed: f(0),
+            beam_length: f(1),
+            beam_width: f(2),
+            screw_radius: f(3),
+            screw_dist: f(4),
+            colors: core::array::from_fn(|i| core::array::from_fn(|c| f(5 + i * 4 + c))),
+        }
+    }
 }
 
 pub fn encode(effects: &[Effect]) -> Vec<u8> {
@@ -87,7 +179,13 @@ pub fn encode(effects: &[Effect]) -> Vec<u8> {
         let at = b.len() as u32;
         be::put_u32(&mut b, table + i * 4, at);
         b.u16(e.elems.len() as u16);
-        b.u16(0);
+        b.u16(e.sound);
+        b.u32(e.looping_life_ms as u32);
+        b.u16(e.mark.texture);
+        b.u8(e.mark.blend);
+        b.u8(0);
+        b.f32(e.mark.radius[0]);
+        b.f32(e.mark.radius[1]);
         for el in &e.elems {
             let start = b.len();
             b.u8(el.kind);
@@ -133,8 +231,16 @@ pub fn decode(b: &[u8]) -> Option<Vec<Effect<'_>>> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let mut at = be::u32(b.get(4 + i * 4..8 + i * 4)?, 0) as usize;
-        let count = usize::from(be::u16(b.get(at..at + 2)?, 0));
-        at += 4;
+        let h = b.get(at..at + EFFECT_HEADER)?;
+        let count = usize::from(be::u16(h, 0));
+        let sound = be::u16(h, 2);
+        let looping_life_ms = be::u32(h, 4) as i32;
+        let mark = Mark {
+            texture: be::u16(h, 8),
+            blend: h[10],
+            radius: [be::f32(h, 12), be::f32(h, 16)],
+        };
+        at += EFFECT_HEADER;
         let mut elems = Vec::with_capacity(count);
         for _ in 0..count {
             let h = b.get(at..at + ELEM_HEADER)?;
@@ -185,7 +291,12 @@ pub fn decode(b: &[u8]) -> Option<Vec<Effect<'_>>> {
                 vis,
             });
         }
-        out.push(Effect { elems });
+        out.push(Effect {
+            elems,
+            sound,
+            looping_life_ms,
+            mark,
+        });
     }
     Some(out)
 }
@@ -234,11 +345,37 @@ mod tests {
                         ..Elem::default()
                     },
                 ],
+                sound: 4,
+                looping_life_ms: LOOP_FOREVER,
+                mark: Mark {
+                    texture: 2,
+                    blend: 1,
+                    radius: [3.0, 1.5],
+                },
             },
             Effect::default(),
         ];
         let b = encode(&fx);
         assert_eq!(decode(&b), Some(fx));
         assert_eq!(decode(&b[..b.len() - 3]), None);
+    }
+
+    #[test]
+    fn tracer_round_trips() {
+        use crate::records::{self, Record};
+        let t = TracerRecord {
+            texture: 5,
+            blend: 2,
+            draw_interval: 4,
+            speed: 7500.0,
+            beam_length: 160.0,
+            beam_width: 4.0,
+            screw_radius: 0.5,
+            screw_dist: 100.0,
+            colors: [[1.0, 0.5, 0.25, 1.0]; 5],
+        };
+        let b = records::encode(&[t]);
+        assert_eq!(b.len(), TracerRecord::LEN);
+        assert_eq!(TracerRecord::read(&b), t);
     }
 }

@@ -156,7 +156,7 @@ models are converted; their explosions are MW2's effects (below). Their sounds p
 it lands. Special grenades: the flashbang blinds by distance and where you look (IW4L's flashbang amounts, then
 `_flashgrenades.gsc`'s duration; a white-out by the shock file's fade times; flashed bots see nothing); the stun
 grenade's shock caps how fast you can turn (its `.shock` file's look control: 75°/s in MW2's, easing off over its last two seconds; the stick doesn't take the file's mouse sensitivity scale) and slows movement for `2 + 4 × closeness` seconds (`_weapons.gsc`). Teammates' flashes and stuns
-don't affect you. The throwing knife flies as IW4L's knife does (no fuse; it sticks in what it hits square, skips off what it glances, lies where it slides to a stop), kills whoever it passes through with the weapon's damage, then drops; hold X over a knife you can carry (within 90 units, in sight) for a quarter second to pick it back up (IW4L's use-item rule; X doesn't reload while one is in reach). Claymores and C4 stick as IW4L's equipment does (a claymore to the ground, facing your throw; C4 to anything) and, without a timed detonation, lose their fuse once stuck. A claymore trips on an enemy moving inside its trigger, far enough ahead and inside its cone, in its sight (_weapons.gsc's radius, cone, minimum distance and grace period), then goes off with the weapon's 60° blast cone; C4 goes off when you double-tap X (pressed under 0.5 s, again within 0.5 s, watchC4AltDetonate). Two of each at once (scr_maxPerPlayerExplosives): a third blows the oldest; your charges go when you respawn. The smoke grenade waits until it lands (IW4L), then lays MW2's smoke: the particles of its effect's sight-blocking elements (WSMK: how many, where around the blast, their delays, lives, size and alpha curves), and a sight line through them loses each particle's alpha as IW4L's `get_client_visibility` takes it (bots can't see you once it drops under IW4L's threshold: about 2.75 to 10 s after it lands). Deviation: MW2's smoke elements have no distance fade, which IW4L's `vis_blocker_add_prepared` treats as not blocking at all; here they block at full strength. The particles show as see-through grey boxes until the smoke sprites are converted, and don't drift. Tactical insertion, tactical insertion, blast shield, smoke and deathstreaks are
+don't affect you. The throwing knife flies as IW4L's knife does (no fuse; it sticks in what it hits square, skips off what it glances, lies where it slides to a stop), kills whoever it passes through with the weapon's damage, then drops; hold X over a knife you can carry (within 90 units, in sight) for a quarter second to pick it back up (IW4L's use-item rule; X doesn't reload while one is in reach). Claymores and C4 stick as IW4L's equipment does (a claymore to the ground, facing your throw; C4 to anything) and, without a timed detonation, lose their fuse once stuck. A claymore trips on an enemy moving inside its trigger, far enough ahead and inside its cone, in its sight (_weapons.gsc's radius, cone, minimum distance and grace period), then goes off with the weapon's 60° blast cone; C4 goes off when you double-tap X (pressed under 0.5 s, again within 0.5 s, watchC4AltDetonate). Two of each at once (scr_maxPerPlayerExplosives): a third blows the oldest; your charges go when you respawn. The smoke grenade waits until it lands (IW4L), then lays MW2's smoke: the particles of its effect's sight-blocking elements (WSMK: how many, where around the blast, their delays, lives, size and alpha curves), and a sight line through them loses each particle's alpha as IW4L's `get_client_visibility` takes it (bots can't see you once it drops under IW4L's threshold: about 2.75 to 10 s after it lands). Deviation: MW2's smoke elements have no distance fade, which IW4L's `vis_blocker_add_prepared` treats as not blocking at all; here they block at full strength. What you see is the smoke effect's own looping sprites (see Effects under Gun); the sight-blocking particles themselves don't drift (grey boxes stand in for them only without effects in the pack). Tactical insertion, tactical insertion, blast shield, smoke and deathstreaks are
 chosen and saved but do nothing yet.
 Weapons with attachments use the attachment variant's combat numbers (`m4_acog_mp` ...) but the base weapon's
 first-person model.
@@ -207,17 +207,60 @@ their child effects). Bullets that strike the world play the impact table's effe
 the surface type; bullets that strike a player, its flesh effect. Explosions play the weapon's explosion effect, or
 the impact table's for its impact type and the surface below. The other players' shots play their weapon's world
 flash at the held gun's `tag_flash`; yours plays its view flash in the first-person model's space (it moves with
-the view). Sprites are depth-tested, not depth-written: multiply first, then alpha blend, then additive. Not yet:
-looping elements (lingering smoke, fire), decals and impact marks, models (shells, debris models), lights, trails,
-screen distortion, collision. Without effects in the pack the old placeholders show (a glow for your flash, a box
-for explosions).
+the view). Sprites are depth-tested, not depth-written: multiply first, then alpha blend, then additive.
+Looping elements (the smoke grenade's lingering cloud, fires) spawn on IW4's schedule while their effect's looping
+life lasts (IW4L `fx_iw4::looping_spawn_schedule`, `looping_catchup_begin`; IW4L `fx::spawn_looping_partial`): one
+particle every `spawn[0]` ms, up to `spawn[1]`. Caps: 24 loops at once, 30 s at most each (IW4's "until stopped"
+loops too: nothing stops an effect by handle yet), and looping spawns wait while the 384-particle pool is over
+three quarters full so impacts and flashes keep their room. The smoke grenade's cloud is its explosion effect's own
+looping sprites (the grey boxes only show without effects in the pack); its sight blocking is still `smoke.rs`'s.
+Not measured yet: the fill-rate cost of a full smoke cloud on hardware (large see-through sprites).
+Tracers (`game_core::tracer`, `FXTR` / `FXWT`): each class weapon's IW4 `TracerDef` (material, draw interval, speed,
+beam length and width, colours). Ported from IW4L `render_fx::tracer`: a shooter draws one every `drawInterval`
+shots (IW4L `TracerDrawGate::should_spawn`), none for paths under `FX_TRACER_MIN_DIST`, yours at most
+`FX_TRACER_FIRST_PERSON_MAX_WIDTH` wide; it runs from the muzzle at its speed and its beam is clipped at the hit.
+Colours along the beam from `fx_iw4::beam_sample_color`; drawn as one camera-facing additive quad (the screw wiggle
+is left out; MW2's MP tracers have none).
+Bullet marks (`game_core::marks`, the impact effect's first decal element: its colour material and size): a pool of
+48 for 30 s (fading over the last second), laid on the surface the bullet hit. The Wii has no world triangles on
+the CPU, so where IW4 clips a mark against the drawn triangles (IW4L `marks_iw4::mark_clip_world_surfaces`) the mark
+here is a square on the hit plane with a random roll, cut back where the surface ends: short collision traces across
+each side find how far the plane goes, and IW4L's `marks_iw4::mark_chop_world_poly_behind_plane` chops the square
+there. Drawn right after the world through the shim's decal pass (`mwf_decals`: fogged, lifted 0.25 units and pulled
+towards the eye in window depth). Not yet: marks on players and models, exit marks of penetrating bullets.
+Not yet: models (shells, debris models), lights, trails, screen distortion, collision. Without effects in the pack the
+old placeholders show (a glow for your flash, a box for explosions).
 Sounds: the gun plays MW2's player-view sounds through libogc's ASND mixer (16 voices): fire, empty click, reload
 and raise from the weapon's events, and the reload's clip-out / clip-in / chamber sounds from the first-person
 animation's notetracks (mapped through the weapon's `notetrackSoundMap`). Each play picks a variant, volume and
 pitch from the alias's ranges, as IW4 does. They come from `localized_common_mp` (where MW2 MP keeps its sound
 aliases and clips), stored in `common.wpk` as mono 16-bit PCM at the original 44.1 kHz (~0.5 MiB for the M4).
-No distance falloff or panning yet: there are no other players to hear.
+World sounds fade by the alias's distances and pan by where they are.
+Other players' gunfire: the world variant of each weapon's fire sound (IW4 `fireSound`; IW4L `select_fire_alias` for
+someone else's shot) at their gun's muzzle, from `WSNW` in `common.wpk` (the weapons the bots carry: the default classes'
+primaries with their attachments; resampled to 14 kHz and their quiet tails cut: heard from afar, and MEM2 is short). Each shooter holds one ASND voice: a new
+shot stops their previous one (`sound::Voice`, the shim's `mwf_snd_stop_if`), so a firefight can't take all 16.
+MW2's hitmarker sound (`MP_hit_alert`, IW4L `gamemode_iw4::HIT_ALERT_ALIAS`, `SNDM`) plays with the hitmarker, once a
+frame. Your knife plays IW4's melee cues (IW4L's IW4 melee cue policy, knife first): `melee_knife_hit_body` on a
+player, `melee_knife_hit_other` when the swing reaches the world, nothing on air (the swipe comes from the animation).
+Bullet impacts would play their impact effect's sound element (`Effect::sound`, two a frame at most), but MW2's
+impact table effects carry none in the user's data (the converter reports `effect sounds: 0 of 0 named`) and IW4L has
+no other bullet impact sound code, so impacts are silent for now. Not yet: the bots' knife cues, destructible objects' own sounds (their effects live in the map
+zone's bank, which no pack carries yet).
 Not yet: damage to players, other weapons and attachments.
+
+Light for moving models (`game_core::light`, map pack `LGRD`, `wpk::light`): the converter samples the map's light
+grid on a regular lattice over the world's bounds (IW4L's atapoint lookup at each point, `static_models::
+light_lattice`: the colour a white model gets there, as static models; 96 × 96 × 64 units, coarser until at most
+12,288 points), and the Wii blends the eight points around a model's lighting origin (unlit points left out). The
+viewmodel, the characters (at their middle, 36 units up; the weapon in the hand too) and the destructible objects
+(at their origin) take it as their konst colour. Without a lattice they stay ×1. Not yet: IW4's per-texel model
+lighting (one colour per model here), the sun's direction, dynamic lights.
+
+Memory this adds (MEM2): the weapon world sounds in `common.wpk` (the converter prints `weapon world sounds: N MiB`),
+the impact marks' decal textures (at most 32 texels), the light lattice (at most 48 KiB a map; 26 KiB on mp_rust),
+the tracer definitions (108 bytes each) and the mark pool (48 marks, 9 KiB); the match log's `avfx` line at load gives
+the lattice, tracers and pool, `avfx_counts` every 5 s what played (see `docs/gaps.md` for the measured totals).
 
 ## First-person model
 Each weapon's view hands and gun (`views/<weapon>.wpk`: every animation slot the weapon names, e.g. 22 for the
@@ -232,8 +275,10 @@ it never clips into walls.
 - Placement (`game_core::weapon_view`, IW4L's `weapon_placement_assemble`): the gun lags behind turning (the
   weapon's sway numbers, hip and ADS), bobs with your steps, sways at idle, shifts with stance and movement
   (`standMove` .. `proneRot`), and kicks with recoil. The numbers come from `WFPV` in `common.wpk`.
-Parts the base weapon hides (sights, heartbeat sensor) are left out at conversion. Lighting is flat for now (MW2
-lights it from the light grid). Check it on the PC:
+Parts the base weapon hides (sights, heartbeat sensor) are left out at conversion. Lighting: the map's light lattice
+(`LGRD`, below) at IW4's viewmodel lighting origin (the eye moved by the lean; IW4L
+`lighting_iw4::viewmodel_lighting_origin`, ported in `game_core::light`), as a TEV konst colour (`DrawState::tint`)
+the way static models are lit. Check it on the PC:
 `mwf-convert preview <map.wpk> --viewmodel out/packs/common.wpk [--anim <slot> --time <s>]` (slot 9 = reload).
 Not measured yet: the CPU cost of skinning 7.6k vertices per frame on Broadway.
 
@@ -267,7 +312,7 @@ feed, and hits show MW2's hitmarker.
   victim's own), which also reaches other objects (chain reactions). The model then becomes the next state's (the
   wreck). Their collision boxes block movement and stop bullets (with an impact effect for the box's surface).
   Not yet: separate parts (tires, glass, doors, hoods), pieces flying off, their own sounds (the frag's explosion
-  stands in), the destroy and idle animations (fans, chickens), light-grid lighting (drawn ×1), grenades bouncing off
+  stands in), the destroy and idle animations (fans, chickens), grenades bouncing off
   them, the glass windows (`glass_large` brush models).
 - Spawns: the free-for-all spawn point furthest from everyone alive.
 - Maps converted before this need converting again for the walk graph; without one, bots stand and fight.

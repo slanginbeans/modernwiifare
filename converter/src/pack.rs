@@ -64,6 +64,8 @@ pub struct WorldData {
     /// The player characters, allies then axis (surfaces carry material indices until `build`), or why not.
     characters: Result<Vec<(wpk::view::ViewModel, Vec<String>)>, String>,
     destructibles: crate::destructibles::Built,
+    /// The light lattice for moving models (`wpk::light`), its points and lit points.
+    light: Option<(Vec<u8>, usize, usize)>,
 }
 
 /// What [`read_world`] builds the map's destructibles from: MW2's types (`destructibles::parse`) and the zone's
@@ -155,6 +157,18 @@ pub fn read_world(
         .unwrap_or_default();
     let clip = crate::collision::read_clip(s);
     let models = crate::static_models::read(s, links)?;
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for v in &vertices {
+        for k in 0..3 {
+            lo[k] = lo[k].min(v.pos[k]);
+            hi[k] = hi[k].max(v.pos[k]);
+        }
+    }
+    let light = if vertices.is_empty() {
+        None
+    } else {
+        crate::static_models::light_lattice(s, lo, hi)
+    };
     let vis = crate::visibility::read(s)?;
     let characters = team_models(links)
         .into_iter()
@@ -179,6 +193,7 @@ pub fn read_world(
         vis,
         characters,
         destructibles,
+        light,
     })
 }
 
@@ -1453,6 +1468,16 @@ pub fn build(
             .filter(|&&c| c == wpk::vis::ALWAYS)
             .count(),
     };
+    match &world.light {
+        Some((bytes, points, lit)) => {
+            println!(
+                "light lattice: {points} points ({lit} lit), {:.1} KiB",
+                bytes.len() as f64 / 1024.0
+            );
+            b.section(wpk::tag::LIGHT_LATTICE, *points as u32, bytes.clone());
+        }
+        None => eprintln!("warning: no light grid: characters and the viewmodel stay unlit"),
+    }
     if !v.vis.cells.is_empty() {
         let u16s = |cells: &[u16]| {
             let mut o = Vec::with_capacity(cells.len() * 2);
