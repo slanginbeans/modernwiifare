@@ -148,7 +148,9 @@ Debug menu (DEBUG on the main menu, and on the in-game menu during a match; A or
 - Match: bots don't attack, bots frozen, god mode (no damage, no fall or out-of-world deaths), infinite ammo (magazine, reserve and grenades every frame), all killstreaks (every reward at the start of each life), primary weapon (any catalog weapon instead of the class's, no attachments; at the next spawn).
 - Overlays (see-through boxes): hit boxes (head and neck red, body blue), bot goals (yellow posts where each bot is walking), objectives (Domination flag triggers, coloured by holder), bullet paths (your last six shots for 3 s, through walls).
 - Performance: perf overlay at match start, character models (off: the placeholder boxes), world models, sound.
-- In a match only: teleport to the next spawn or objective, bring a bot in front of you, kill all bots, UAV / Counter-UAV / EMP / nuke now, every killstreak reward, reset the match clock, write the log now, and GIVE one killstreak (care package to AC-130: on top of your list for D-pad left). Actions are recorded in the match log (`debug` events).
+- In a match only: teleport to the next spawn or objective, bring a bot in front of you (an enemy when one is alive; it
+  turns to you at once: a fresh last-seen contact in its memory), kill all bots, UAV / Counter-UAV / EMP / nuke now, every killstreak reward, reset the match clock, write the log now, GIVE one killstreak (care package to AC-130: on top of your list for D-pad left), and BOTS: RIFLES ONLY (the last line:
+  every bot carries the M4 alone for the rest of the match, no launchers, riot shields, secondaries or grenades). Actions are recorded in the match log (`debug` events).
 
 Footsteps: each player's bob cycle wrapping is a step (IW4L), sounding `step_<gait>[_plr]_<surface>` (sprint, run, walk / crouch, prone; the surface under the feet; `_default` when a surface has none; `STEP` in `common.wpk`); yours as you hear them, others' where they are.
 

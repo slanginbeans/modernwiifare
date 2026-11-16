@@ -1,7 +1,8 @@
 # The match HUD over the play view (game_core::autoplay syntax; see docs/testing.md): MW2's crosshair hip and
 # firing, the sniper scope (Barrett from the debug menu), kills with kill-feed icons and the killstreak splash
-# (a bot brought in front three times), the EMP's flash, then waiting for the bots to hit you (hit arrows, blood).
-# Team Deathmatch, so teammates' names show. Needs common.wpk and mp_rust.
+# (a bot brought in front three times), the EMP's flash. Team Deathmatch, so teammates' names show. Your three kills
+# leave your team a kill short of the 500 score limit, so the hit arrows and blood are left to hud_hits.txt and
+# hud_match_rifle.txt. Needs common.wpk and mp_rust.
 wait 90
 # DEBUG: PRIMARY WEAPON to the Barrett (the 31st weapon in the list).
 times 3 press DOWN
@@ -35,6 +36,19 @@ wait 700
 shot c00_class
 press A
 wait 90
+# Steady opponents: START > DEBUG > BOTS DON'T ATTACK and BOTS FROZEN on (until the kills are done: the bot brought
+# in front stays there), then BOTS: RIFLES ONLY (the last line; bots take a random class each life).
+press START
+wait 10
+times 3 press DOWN
+press A
+wait 10
+press A
+press DOWN
+press A
+times 40 press DOWN
+press A
+wait 20
 shot h01_hip
 # Firing opens the crosshair.
 hold R
@@ -51,7 +65,8 @@ wait 40
 shot h04_scope
 release L
 wait 40
-# Three kills: a bot in front (START > DEBUG > BRING A BOT IN FRONT), scoped, fire.
+# Three kills: a bot in front (START > DEBUG > BRING A BOT IN FRONT, an enemy), scoped, two rounds (a limb hit
+# alone doesn't kill).
 press START
 wait 10
 times 3 press DOWN
@@ -62,6 +77,8 @@ press A
 wait 20
 hold L
 wait 50
+press R
+wait 30
 press R
 wait 10
 release L
@@ -79,6 +96,8 @@ wait 20
 hold L
 wait 50
 press R
+wait 30
+press R
 wait 10
 release L
 wait 20
@@ -95,36 +114,28 @@ wait 20
 hold L
 wait 50
 press R
+wait 30
+press R
 wait 10
 release L
 wait 10
 shot k03_splash
 wait 40
 shot k04_splash
-# Your EMP: everyone's screen flashes.
+# Your EMP: everyone's screen flashes. BOTS DON'T ATTACK and BOTS FROZEN back off first, for the hits below.
 press START
 wait 10
 times 3 press DOWN
 press A
 wait 10
-times 25 press DOWN
+press A
+press DOWN
+press A
+times 24 press DOWN
 press A
 wait 4
 shot e01_emp_flash
 wait 60
 shot e02_emp_after
-# Wait for the bots to find you: hit arrows and blood.
-wait 240
-shot w01
-wait 120
-shot w02
-wait 120
-shot w03
-wait 120
-shot w04
-wait 120
-shot w05
-wait 120
-shot w06
 log hud_match done
 quit

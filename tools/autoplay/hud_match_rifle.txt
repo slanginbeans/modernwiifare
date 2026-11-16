@@ -1,6 +1,7 @@
 # The match HUD with the default class's M4 (game_core::autoplay syntax; see docs/testing.md): MW2's hip crosshair
-# at rest and opened by firing, a bot brought in front and left to shoot you (hit arrows, blood), killing it
-# (kill feed icon), and your EMP's flash. Team Deathmatch. Needs common.wpk and mp_rust.
+# at rest and opened by firing, a bot brought in front and left to shoot you (hit arrows, blood; it kills you, the
+# killcam is skipped), a second one brought in front with bots passive and frozen and killed (kill feed icon), and
+# your EMP's flash. Team Deathmatch. Needs common.wpk and mp_rust.
 wait 90
 # DEBUG: RESET TO DEFAULTS (the primary back to the class's).
 times 3 press DOWN
@@ -32,6 +33,16 @@ press A
 wait 700
 press A
 wait 90
+# Steady opponents: START > DEBUG > BOTS: RIFLES ONLY (the last line; bots take a random class each life, and a
+# riot shield would stop the kill below).
+press START
+wait 10
+times 3 press DOWN
+press A
+wait 10
+times 41 press DOWN
+press A
+wait 20
 shot r01_hip
 hold R
 wait 12
@@ -44,7 +55,7 @@ wait 40
 shot r04_ads
 release L
 wait 20
-# A bot in front, left to shoot you.
+# A bot in front, left to shoot you (it turns to you at once): hit arrows and blood, then it kills you.
 press START
 wait 10
 times 3 press DOWN
@@ -52,25 +63,43 @@ press A
 wait 10
 times 21 press DOWN
 press A
-wait 60
+wait 50
 shot r05_hit
-wait 30
+wait 12
 shot r06_hit
-wait 30
+wait 12
 shot r07_hit
-# Kill it.
-hold R
-wait 60
-release R
-wait 10
-shot r08_feed
-# Your EMP: everyone's screen flashes.
+# The killcam: X skips it, then the respawn.
+wait 120
+press X
+wait 150
+# BOTS DON'T ATTACK and BOTS FROZEN on, a bot in front again (it stays there), and kill it (the kill feed's icon).
 press START
 wait 10
 times 3 press DOWN
 press A
 wait 10
-times 25 press DOWN
+press A
+press DOWN
+press A
+times 20 press DOWN
+press A
+wait 20
+hold R
+wait 60
+release R
+wait 10
+shot r08_feed
+# Your EMP: everyone's screen flashes (BOTS DON'T ATTACK and BOTS FROZEN back off on the way).
+press START
+wait 10
+times 3 press DOWN
+press A
+wait 10
+press A
+press DOWN
+press A
+times 24 press DOWN
 press A
 wait 4
 shot r09_emp_flash

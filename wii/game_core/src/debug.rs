@@ -392,13 +392,18 @@ pub enum Action {
     WriteLog,
     /// Give one killstreak reward (`wpk::streaks::NAMES` index), on top of the list.
     Give(u8),
+    /// For the rest of the match every bot carries the M4 alone (no launchers, riot shields, secondaries
+    /// or grenades): a steady
+    /// opponent for test scripts now that bots take a random class each life. Last in the list, so adding it moved no
+    /// script's row.
+    BotRifles,
 }
 
 /// The rewards [`Action::Give`] offers: the care package through the AC-130.
 pub const GIVE_FIRST: u8 = 2;
 pub const GIVE_LAST: u8 = 12;
 
-pub const ACTIONS: [Action; 22] = [
+pub const ACTIONS: [Action; 23] = [
     Action::TeleportSpawn,
     Action::TeleportObjective,
     Action::BotInFront,
@@ -421,6 +426,7 @@ pub const ACTIONS: [Action; 22] = [
     Action::Give(10),
     Action::Give(11),
     Action::Give(12),
+    Action::BotRifles,
 ];
 
 impl Action {
@@ -437,6 +443,7 @@ impl Action {
             Action::RefillRewards => "GIVE ALL KILLSTREAKS",
             Action::ResetClock => "RESET MATCH CLOCK",
             Action::WriteLog => "WRITE THE LOG NOW",
+            Action::BotRifles => "BOTS: RIFLES ONLY",
             Action::Give(i) => match i {
                 2 => "GIVE CARE PACKAGE",
                 3 => "GIVE SENTRY GUN",

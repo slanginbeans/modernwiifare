@@ -1,5 +1,6 @@
 # Last Stand in Dolphin: Create-a-Class gives the first class Last Stand (perk 3), then a free-for-all walking into
-# the bots; screenshots through last stand, the death, the killcam and the respawn.
+# the bots, armed with rifles alone (START > DEBUG > BOTS: RIFLES ONLY: an explosion never puts you in last stand);
+# screenshots through last stand, the death, the killcam and the respawn.
 # Run: tools/dolphin-test.ps1 -Script tools/autoplay/last_stand.txt -Maps mp_rust
 wait 90
 press A
@@ -29,6 +30,15 @@ press A
 wait 700
 press A
 wait 60
+# Steady opponents: START > DEBUG > BOTS: RIFLES ONLY (the last line; bots take a random class each life).
+press START
+wait 10
+times 3 press DOWN
+press A
+wait 10
+times 41 press DOWN
+press A
+wait 20
 stick 0 90
 wait 20
 shot L100

@@ -1168,6 +1168,10 @@ fn run_map(
     let first_life: Vec<core::cell::Cell<bool>> =
         (0..=bots).map(|_| core::cell::Cell::new(true)).collect();
     let class_rng = core::cell::Cell::new(ffi::ms() | 1);
+    // The debug page's BOTS: RIFLES ONLY (`Action::BotRifles`): the M4 alone, no grenades, every life, for the rest
+    // of the match.
+    let rifles_only = core::cell::Cell::new(false);
+    let rifle = || alloc::vec![alloc::string::String::from("m4_mp")];
     let bot_loadout = |i: usize| -> Option<wpk::classes::Loadout> {
         let c = loadouts.catalog?;
         let n = c.defaults.len().max(1);
@@ -1245,6 +1249,9 @@ fn run_map(
         if copied.is_none() {
             roll_class(i);
         }
+        if rifles_only.get() {
+            return make_gun(&rifle(), false);
+        }
         let own = bot_loadout(i);
         make_gun(
             &class_weapon(copied.or(own.as_ref()), false, false, Some("m4_mp")),
@@ -1255,10 +1262,12 @@ fn run_map(
     // new one; otherwise (a copied class) only the holster from its own class.
     let fit_class = |a: &mut Arena, i: usize, now: u32| {
         let l = bot_loadout(i);
-        a.arm_holster(
-            i,
-            make_gun(&class_weapon(l.as_ref(), true, false, None), false),
-        );
+        let holster = if rifles_only.get() {
+            None
+        } else {
+            make_gun(&class_weapon(l.as_ref(), true, false, None), false)
+        };
+        a.arm_holster(i, holster);
         if !rolled.get(i).is_some_and(|r| r.replace(false)) {
             return;
         }
@@ -1658,10 +1667,27 @@ fn run_map(
                                     o[1] + libm::sinf(yaw.to_radians()) * 150.0,
                                     o[2] + 8.0,
                                 ];
-                                if let Some(f) =
-                                    a.fighters.iter_mut().skip(1).find(|f| f.life.alive())
-                                {
+                                // An enemy if one is alive (a teammate can't be hurt), else any bot.
+                                let alive = |i: &usize| a.fighters[*i].life.alive();
+                                let pick = (1..a.fighters.len())
+                                    .filter(alive)
+                                    .find(|&i| a.enemies(0, i))
+                                    .or_else(|| (1..a.fighters.len()).find(alive));
+                                if let Some(i) = pick {
+                                    let f = &mut a.fighters[i];
                                     f.player = Player::spawn(c, at, yaw + 180.0);
+                                    // It has just seen you (a fresh last-seen contact in its IW4L memory): it turns
+                                    // to you on its next think instead of walking on along its old route.
+                                    if let Some(b) = f.brain.as_mut() {
+                                        b.memory.contacts.retain(|r| r.id != 0);
+                                        b.memory.contacts.push(game_core::bot::Remembered {
+                                            id: 0,
+                                            origin: o,
+                                            source: game_core::bot::Source::LastSeen,
+                                            seen_ms: now,
+                                            confidence: 1.0,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -1707,6 +1733,15 @@ fn run_map(
                             clock = MatchClock::with_limit(now, setup.1.time_limit_ms);
                         }
                         (Some(Action::WriteLog), _) => devlog::flush(now),
+                        (Some(Action::BotRifles), _) => {
+                            rifles_only.set(true);
+                            if let Some(a) = arena.as_mut() {
+                                for i in 1..a.fighters.len() {
+                                    a.fighters[i].gun = make_gun(&rifle(), false);
+                                    a.arm_holster(i, None);
+                                }
+                            }
+                        }
                         _ => {}
                     }
                     if let Some(a) = action {
