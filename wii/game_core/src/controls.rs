@@ -15,13 +15,15 @@
 //! | RT | fire | fire |
 //! | left stick click | sprint / hold breath | sprint / hold breath |
 //! | right stick click | melee | crouch, hold for prone |
+//! | D-pad left | the weapon's alternate: underbarrel launcher / shotgun (action slot 3) | the same |
 //! | D-pad right | killstreak reward (action slot 4) | the same |
 //! | START | pause | pause |
 //!
 //! The GameCube pad has fewer buttons, so it keeps this project's mapping: A jump, B stance, X reload / use, Y switch,
 //! Z sprint / hold breath, L aim, R fire, D-pad up / down lethal / tactical, D-pad right melee, D-pad left killstreak; Tactical swaps
-//! B and D-pad right. Developer combinations: Z (GameCube) or BACK (360) held with D-pad up toggles free fly, with
-//! D-pad down the performance overlay.
+//! B and D-pad right. Z with D-pad left switches to the weapon's alternate (the 360 pad's D-pad left). Developer
+//! combinations: Z (GameCube) or BACK (360) held with D-pad up toggles free fly, with D-pad down the performance
+//! overlay.
 
 /// Game actions (bits of [`Controls::held`] / [`Controls::down`]).
 pub mod act {
@@ -47,6 +49,8 @@ pub mod act {
     /// Hold breath (a scope steadied while fully aimed). MW2's console binds `+breath_sprint`: one button sprints
     /// and holds breath (IW4L `input_iw4` command 9 / 10), so BREATH is held with SPRINT in every layout.
     pub const BREATH: u32 = 1 << 15;
+    /// The weapon's alternate: its underbarrel grenade launcher or shotgun, and back (MW2's `+actionslot 3`).
+    pub const ALT: u32 = 1 << 16;
 }
 
 /// GameCube button bits (the shim's `MWF_BTN_*`).
@@ -154,9 +158,13 @@ pub fn gc_actions(p: &GcPad, tactical: bool) -> (u32, u32) {
         | on(gc::X, act::USE)
         | on(gc::Y, act::SWITCH)
         | on(melee, act::MELEE)
-        | on(gc::LEFT, act::KILLSTREAK)
         | on(gc::START, act::PAUSE)
         | on(gc::B, act::FLY_FAST);
+    held |= if z {
+        on(gc::LEFT, act::ALT)
+    } else {
+        on(gc::LEFT, act::KILLSTREAK)
+    };
     if p.held & gc::L != 0 || p.l > 128 {
         held |= act::ADS;
     }
@@ -172,12 +180,15 @@ pub fn gc_actions(p: &GcPad, tactical: bool) -> (u32, u32) {
         | pressed(gc::X, act::USE)
         | pressed(gc::Y, act::SWITCH)
         | pressed(melee, act::MELEE)
-        | pressed(gc::LEFT, act::KILLSTREAK)
         | pressed(gc::START, act::PAUSE);
     if z {
-        down |= pressed(gc::UP, act::FLY) | pressed(gc::DOWN, act::OVERLAY);
+        down |= pressed(gc::UP, act::FLY)
+            | pressed(gc::DOWN, act::OVERLAY)
+            | pressed(gc::LEFT, act::ALT);
     } else {
-        down |= pressed(gc::UP, act::FRAG) | pressed(gc::DOWN, act::TACTICAL);
+        down |= pressed(gc::UP, act::FRAG)
+            | pressed(gc::DOWN, act::TACTICAL)
+            | pressed(gc::LEFT, act::KILLSTREAK);
     }
     (held, down)
 }
@@ -202,7 +213,7 @@ pub fn x360_actions(p: &X360Pad, prev: u16, tactical: bool) -> (u32, u32) {
         if back {
             a |= on(UP, act::FLY) | on(DOWN, act::OVERLAY);
         } else {
-            a |= on(RIGHT, act::KILLSTREAK);
+            a |= on(RIGHT, act::KILLSTREAK) | on(LEFT, act::ALT);
         }
         a
     };
@@ -304,6 +315,7 @@ mod tests {
             (x360::LB, act::TACTICAL),
             (x360::RB, act::FRAG),
             (x360::RIGHT, act::KILLSTREAK),
+            (x360::LEFT, act::ALT),
             (x360::START, act::PAUSE),
         ] {
             m.map(&none, &x(0), false);

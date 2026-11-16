@@ -826,6 +826,11 @@ fn run_map(
                 core::array::from_fn(|s| f(t * 31 + s))
             }))
         });
+    // Launched projectiles' impact, guidance and lock (empty with an older pack).
+    let missiles = wpk::Pack::parse(common, false)
+        .ok()
+        .and_then(|p| p.section(wpk::tag::WEAPON_MISSILE))
+        .map_or(&[][..], |s| s.data);
     // Smoke's sight-blocking elements (empty with an older pack).
     let blockers = wpk::Pack::parse(common, false)
         .ok()
@@ -1107,6 +1112,7 @@ fn run_map(
             a.objects = o;
         }
         a.equips = equips;
+        a.missiles = missiles;
         a.blockers = blockers;
         // Time the bots (telemetry `bai` / `bmv` / `bgun`).
         a.clock = Some(clock_us);
@@ -1145,6 +1151,8 @@ fn run_map(
     let mut blasts: [(Option<[f32; 3]>, u32); 4] = [(None, 0); 4];
     let mut next_blast = 0usize;
     let mut last_shot_ms: Option<u32> = None;
+    // The Javelin's lock on a point (`_javelin.gsc`, `game_core::lock`).
+    let mut javelin = game_core::lock::JavelinLock::default();
     let mut next_impact = 0usize;
     let mut hud_rects: Vec<Rect> = Vec::with_capacity(512);
     let mut life = Life::with_rules(&rules);
@@ -1440,6 +1448,11 @@ fn run_map(
                 "switch_request",
                 format_args!("from={}", arsenal.active),
             );
+        }
+        // D-pad left (360; Z + D-pad left on the GameCube pad): the weapon's underbarrel launcher or shotgun and back
+        // (MW2's action slot 3).
+        if ctl.pressed(act::ALT) && !flying && life.alive() && arsenal.alternate() {
+            devlog::event(now, "alt_request", format_args!("from={}", arsenal.active));
         }
         // Call in the newest killstreak reward (D-pad right on the 360 pad, as MW2's action slot 4; D-pad left on the
         // GameCube pad).
@@ -1835,6 +1848,16 @@ fn run_map(
                     if let Some(a) = arena.as_mut() {
                         a.fighters[0].player = p.clone();
                         a.fighters[0].life = life;
+                        // Your riot shield: in front when it is out, else on your back when you carry it.
+                        let shield =
+                            |g: &Gun| game_core::shield::is_shield(g.name(), g.facts().weap_type);
+                        a.fighters[0].shield = if arsenal.gun().is_some_and(shield) {
+                            game_core::shield::Carry::Front
+                        } else if arsenal.guns[..2].iter().flatten().any(shield) {
+                            game_core::shield::Carry::Back
+                        } else {
+                            game_core::shield::Carry::None
+                        };
                     }
                     sections[section::PLAYER] += lap(&mut mark);
                     let a = arsenal.active;
@@ -1844,6 +1867,35 @@ fn run_map(
                         (Some(ar), true) => ar.melee_charge_target(c, 0),
                         _ => None,
                     };
+                    // The Javelin's lock (a point on the world ahead); a weapon that needs a lock fires only on one
+                    // (IW4L `require_lock_to_fire` with `WeaponLock::can_fire`).
+                    let missile = arsenal.gun().and_then(|g| {
+                        wpk::records::get::<wpk::weapon::MissileRecord>(
+                            missiles,
+                            g.weapon_index() as usize,
+                        )
+                    });
+                    let javelin_out =
+                        missile.is_some_and(|m| m.guidance == game_core::grenade::GUIDANCE_JAVELIN);
+                    if let Some(e) = javelin.update(
+                        now,
+                        javelin_out && life.alive(),
+                        p.ps.f_weapon_pos_frac,
+                        cam.eye,
+                        cam.forward(),
+                        p.ps.origin,
+                        |from, to| {
+                            let t =
+                                c.trace(from, to, [0.0; 3], [0.0; 3], game_core::gun::MASK_SHOT);
+                            // Not the sky or a default surface (the script's `EyeTraceForward`).
+                            (t.fraction < 1.0 && (t.surface_flags >> 20) & 0x1f != 0)
+                                .then_some(t.endpos)
+                        },
+                    ) {
+                        devlog::event(now, "javelin", format_args!("{e:?}"));
+                    }
+                    let lock_ok =
+                        !missile.is_some_and(|m| m.require_lock) || javelin.locked().is_some();
                     if let (Some(g), true) = (arsenal.guns[a].as_mut(), life.alive()) {
                         g.update_spread(
                             tick_ms,
@@ -1859,7 +1911,9 @@ fn run_map(
                             c,
                             tick_ms,
                             &GunInput {
-                                fire: ctl.held(act::FIRE),
+                                fire: ctl.held(act::FIRE) && lock_ok,
+                                // Akimbo fires its left gun with the aim trigger.
+                                ads: ads_held,
                                 reload: reload_held,
                                 // Melee: the right stick click (360, Default) or D-pad right (GameCube).
                                 melee: ctl.held(act::MELEE),
@@ -1885,6 +1939,50 @@ fn run_map(
                         );
                         // The weapon's state goes into the player's (pmove reads it next step).
                         g.sync_player(&mut p.ps);
+                        if g.akimbo()
+                            && matches!(
+                                event,
+                                Some(game_core::gun::WeaponTickEvent::ShotAccepted { .. })
+                            )
+                        {
+                            devlog::event(
+                                now,
+                                "akimbo_fire",
+                                format_args!(
+                                    "right={} left={} stock={}",
+                                    g.ammo().0,
+                                    g.left_clip().unwrap_or(0),
+                                    g.ammo().1
+                                ),
+                            );
+                        }
+                        // A launcher's projectile (rockets, grenade launchers), steered to the Javelin's lock.
+                        if let Some(l) = g.take_launch()
+                            && let Some(a) = arena.as_mut()
+                        {
+                            let target = javelin_out.then(|| javelin.locked()).flatten();
+                            let ok =
+                                a.launch(0, &l, g.facts().weap_class, p.ps.velocity, target, now);
+                            a.fighters[0].last_fire_ms = Some(now);
+                            last_shot_ms = Some(now);
+                            devlog::event(
+                                now,
+                                "launch",
+                                format_args!(
+                                    "weapon={} ok={} locked={}",
+                                    l.weapon,
+                                    u8::from(ok),
+                                    u8::from(target.is_some())
+                                ),
+                            );
+                            if let (Some(fx), Some(v)) =
+                                (effects.as_mut(), arsenal.views[arsenal.active % 2].as_ref())
+                                && let Some((o, f)) = v.muzzle_eye()
+                            {
+                                let e = fx.weapon(g.weapon_index(), effects::VIEW_FLASH);
+                                fx.play_view(e, o, f, now);
+                            }
+                        }
                         if let Some(game_core::gun::WeaponTickEvent::OffhandUsed {
                             weapon,
                             remaining_fuse_ms,
@@ -1939,7 +2037,7 @@ fn run_map(
                             last_shot_ms = Some(now);
                             // The first-person muzzle flash, in the gun's own (eye) space.
                             if let (Some(fx), Some(v)) =
-                                (effects.as_mut(), arsenal.views[arsenal.active].as_ref())
+                                (effects.as_mut(), arsenal.views[arsenal.active % 2].as_ref())
                                 && let Some((o, f)) = v.muzzle_eye()
                             {
                                 let e = fx.weapon(g.weapon_index(), effects::VIEW_FLASH);
@@ -1960,7 +2058,7 @@ fn run_map(
                         let raise_of_other = switch_to.is_some()
                             && event == Some(game_core::gun::WeaponTickEvent::RaiseStarted);
                         if g.swung
-                            && let Some(v) = arsenal.views[a].as_mut()
+                            && let Some(v) = arsenal.views[a % 2].as_mut()
                             && let Some(&s) = v
                                 .sounds
                                 .events
@@ -1969,10 +2067,12 @@ fn run_map(
                         {
                             v.play(s);
                         }
-                        if let (Some(e), Some(v), false) =
-                            (event.as_ref(), arsenal.views[a].as_mut(), raise_of_other)
-                            && let Some(s) =
-                                game_core::weapon_sound::for_event(&v.sounds, e, g.ammo().0)
+                        if let (Some(e), Some(v), false) = (
+                            event.as_ref(),
+                            arsenal.views[a % 2].as_mut(),
+                            raise_of_other,
+                        ) && let Some(s) =
+                            game_core::weapon_sound::for_event(&v.sounds, e, g.ammo().0)
                         {
                             v.play(s);
                         }
@@ -2121,6 +2221,9 @@ fn run_map(
                     flesh,
                     impact_type,
                 } => {
+                    if surface == game_core::shield::SURFACE {
+                        devlog::event(now, "shield_block", format_args!(""));
+                    }
                     if let Some(fx) = effects.as_mut() {
                         let e = fx.impact(impact_type, surface, flesh);
                         fx.play(e, origin, normal, now);
@@ -2180,12 +2283,16 @@ fn run_map(
                     surface,
                 } => {
                     if let Some(w) = world_sounds.as_mut() {
-                        w.play_at(
-                            equip_sound(weapon, wpk::weapon::equip_sound::EXPLODE),
-                            origin,
-                            cam.eye,
-                            cam.right(),
-                        );
+                        // Launchers (their own explosion sounds aren't packed) use the frag's.
+                        let own = equip_sound(weapon, wpk::weapon::equip_sound::EXPLODE);
+                        let alias =
+                            match (own, wpk::weapon::find_indexed(weapons, "frag_grenade_mp")) {
+                                (wpk::sound::NONE, Some((frag, _))) => {
+                                    equip_sound(frag, wpk::weapon::equip_sound::EXPLODE)
+                                }
+                                _ => own,
+                            };
+                        w.play_at(alias, origin, cam.eye, cam.right());
                     }
                     // MW2's explosion effect (the weapon's own, else the impact table's for its impact type and
                     // the surface), or the placeholder flash without one.
@@ -2436,7 +2543,7 @@ fn run_map(
         if !flying
             && life.alive()
             && let (Some(v), Some(g), Some(p)) = (
-                arsenal.views[arsenal.active].as_mut(),
+                arsenal.views[arsenal.view_slot()].as_mut(),
                 arsenal.guns[arsenal.active].as_ref(),
                 player.as_ref(),
             )

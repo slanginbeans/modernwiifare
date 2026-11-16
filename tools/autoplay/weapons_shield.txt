@@ -1,0 +1,68 @@
+# The riot shield and akimbo (game_core::autoplay syntax): MW2's Riot Control class (the riot shield, akimbo PP2000
+# as the secondary). Bots attack; infinite ammo off so the magazines count down. First Y to the akimbo pair: the
+# right gun (R), the left (L), both ("akimbo_fire right=.. left=.. stock=.." in the match log). Then Y back to the
+# shield, a bot brought in front: its bullets stop on the shield ("shield_block"). Then Y to the akimbo pair again
+# (the shield goes on your back) and turn away from the bot: its bullets stop on the shield on your back.
+wait 90
+# DEBUG: reset (bots attack, no god mode).
+times 3 press DOWN
+press A
+wait 10
+times 18 press DOWN
+press A
+press B
+wait 10
+times 3 press UP
+press A
+wait 10
+press A
+wait 700
+times 9 press DOWN
+wait 5
+shot 01_class_riot
+press A
+wait 150
+shot 02_shield_out
+log akimbo
+press Y
+wait 90
+shot 03_akimbo
+log right gun
+hold R
+wait 2
+release R
+wait 20
+log left gun
+hold L
+wait 2
+release L
+wait 20
+log both
+hold L+R
+wait 2
+release L+R
+wait 10
+shot 04_akimbo_fired
+log shield again
+press Y
+wait 90
+press START
+wait 10
+times 3 press DOWN
+press A
+wait 10
+times 21 press DOWN
+press A
+log bot in front of the shield
+wait 90
+shot 05_shield_taking_fire
+log akimbo out, shield on the back
+press Y
+wait 20
+cstick 127 0
+wait 25
+cstick 0 0
+log turned away
+wait 90
+shot 06_back_to_the_bot
+quit

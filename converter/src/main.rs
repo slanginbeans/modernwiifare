@@ -1210,7 +1210,31 @@ fn run_common(args: &[String]) -> ExitCode {
         .collect();
     both.sort_by_key(|(w, _)| w.name);
     both.dedup_by(|x, y| x.0.name == y.0.name);
-    let (weapons, extra): (Vec<_>, Vec<_>) = both.into_iter().unzip();
+    let (mut weapons, extra): (Vec<_>, Vec<_>) = both.into_iter().unzip();
+    // Each weapon's alternate (`altWeapon`: the underbarrel launcher or shotgun) as its index in this sorted list (0:
+    // none; the first weapon is never an alternate), and the akimbo pairs (`weapons::is_akimbo`).
+    let index_of: HashMap<String, u32> = weapons
+        .iter()
+        .enumerate()
+        .map(|(k, w)| (w.name().to_owned(), k as u32))
+        .collect();
+    let mut alts = 0;
+    for w in weapons.iter_mut() {
+        let name = w.name().to_owned();
+        let alt = links
+            .weapons
+            .iter()
+            .position(|n| *n == name)
+            .and_then(|i| links.weapon_alt.get(i).cloned().flatten())
+            .and_then(|a| index_of.get(&a).copied())
+            .filter(|&k| k != 0);
+        if let Some(k) = alt {
+            w.combat.alternate_weapon = k;
+            alts += 1;
+        }
+        w.combat.dual_wield = weapons::is_akimbo(&name);
+    }
+    println!("alternate weapons: {alts}");
     let kicks: Vec<_> = extra.iter().map(|e| e.0).collect();
     let moves: Vec<_> = extra.iter().map(|e| e.1).collect();
     let aims: Vec<_> = extra.iter().map(|e| e.2).collect();
@@ -1230,6 +1254,8 @@ fn run_common(args: &[String]) -> ExitCode {
                     }
                 }
             }
+            // Launchers' own explosion sounds are not packed (MW2's are 32 s of 44.1 kHz, 2.8 MiB): the game plays
+            // the frag's for them.
             r
         })
         .collect();
@@ -1588,6 +1614,23 @@ fn run_common(args: &[String]) -> ExitCode {
         wpk::tag::WEAPON_PEN,
         pens.len() as u32,
         wpk::records::encode(&pens),
+    );
+    // Launched projectiles: impact explosion, guidance, ignition delay, lock-on (first weapon of each name).
+    let missiles: Vec<wpk::weapon::MissileRecord> = weapons
+        .iter()
+        .map(|w| {
+            links
+                .weapons
+                .iter()
+                .position(|n| n == w.name())
+                .and_then(|i| links.weapon_missile.get(i).copied())
+                .unwrap_or_default()
+        })
+        .collect();
+    b.section(
+        wpk::tag::WEAPON_MISSILE,
+        missiles.len() as u32,
+        wpk::records::encode(&missiles),
     );
     match links.pen_table {
         Some(t) => {

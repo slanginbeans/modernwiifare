@@ -159,7 +159,61 @@ grenade's shock caps how fast you can turn (its `.shock` file's look control: 75
 don't affect you. The throwing knife flies as IW4L's knife does (no fuse; it sticks in what it hits square, skips off what it glances, lies where it slides to a stop), kills whoever it passes through with the weapon's damage, then drops; hold X over a knife you can carry (within 90 units, in sight) for a quarter second to pick it back up (IW4L's use-item rule; X doesn't reload while one is in reach). Claymores and C4 stick as IW4L's equipment does (a claymore to the ground, facing your throw; C4 to anything) and, without a timed detonation, lose their fuse once stuck. A claymore trips on an enemy moving inside its trigger, far enough ahead and inside its cone, in its sight (_weapons.gsc's radius, cone, minimum distance and grace period), then goes off with the weapon's 60° blast cone; C4 goes off when you double-tap X (pressed under 0.5 s, again within 0.5 s, watchC4AltDetonate). Two of each at once (scr_maxPerPlayerExplosives): a third blows the oldest; your charges go when you respawn. The smoke grenade waits until it lands (IW4L), then lays MW2's smoke: the particles of its effect's sight-blocking elements (WSMK: how many, where around the blast, their delays, lives, size and alpha curves), and a sight line through them loses each particle's alpha as IW4L's `get_client_visibility` takes it (bots can't see you once it drops under IW4L's threshold: about 2.75 to 10 s after it lands). Deviation: MW2's smoke elements have no distance fade, which IW4L's `vis_blocker_add_prepared` treats as not blocking at all; here they block at full strength. The particles show as see-through grey boxes until the smoke sprites are converted, and don't drift. Tactical insertion, tactical insertion, blast shield, smoke and deathstreaks are
 chosen and saved but do nothing yet.
 Weapons with attachments use the attachment variant's combat numbers (`m4_acog_mp` ...) but the base weapon's
-first-person model.
+first-person model. Burst weapons (the FAMAS, the M16) get IW4L's host-rule burst cooldown (200 ms,
+`WeaponHostRules`, as IW4L's `ResolvedCombat` does); before, the converter wrote 0, IW4L refused their facts and a
+class carrying one spawned with its secondary out.
+
+Launchers (`game_core::grenade::Grenade::launch` / `fly`, `Arena::launch` / `missile_hits`): a projectile weapon (IW4
+`WEAPTYPE_PROJECTILE`) fires a projectile instead of a bullet, in the same spread cone (IW4L `fire_accepted_shot`,
+`spread_direction_on_plane`). Rockets (RPG, AT4, Stinger, Javelin) leave at the weapon's projectile speed plus your
+velocity, each axis truncated to whole units, and fly straight (IW4L `fire_missile`, `TR_LINEAR`); grenade launchers
+(the Thumper, the underbarrel launchers) are thrown like grenades (IW4L `grenade_launch_velocity`) and fall under
+gravity, with no fuse when they have an arming distance (IW4L `grenade_deadlines`). Each step traces the world, then the
+players along the step (not the shooter): a body takes the weapon's impact damage (IW4L `direct_hits`); past the
+arming distance (`projectileActivateDist`) a projectile with `projImpactExplode` explodes there, through the same
+radius damage and explosion effect as grenades (the sound is the frag's: launchers' own explosion sounds would add
+2.8 MiB to `common.wpk`); before it, it is a dud (no blast); armed without impact
+explosion it bounces. A rocket that hits nothing goes after 60 s. `WMSL` carries `projImpactExplode`, the guidance type,
+the ignition delay and the lock-on rules. The Javelin locks on a point as MW2's `_javelin.gsc` does (`game_core::lock`:
+full ADS, 12 eye-trace points 25 ms apart within 400 units, then 1150 ms with the point in the reticle, not under 1100
+units away; stock numbers, not yet read from the user's script); locked, it leaves 0.3 up and 2.5 units right, falls,
+climbs and dives on the point (IW4L `missile_guidance::steer`, top attack; IW4L slerps yaw / pitch rotations, here the
+direction turns along the great circle by the same share). The gun now hands IW4L's weapon step the ADS fraction
+(`WeaponCmd::f_weapon_pos_frac`; it was 0): ADS-only weapons (the Javelin) wait from the hip for the time left to aim
+in (IW4L `ads_fire_only_delay_ms`) and fire at once aimed in, and the ADS fire / rechamber animations, the start of the
+reduced-kick window and the melee check see the real fraction. The Javelin and Stinger need a lock to fire when their
+weapon file says so (`requireLockonToFire`). The Stinger only locks onto killstreak aircraft (`level.stingerTargets`),
+which aren't in this build, so it has nothing to lock onto. Bots fire their launchers the same way. Projectiles show as
+the grenades' placeholder boxes until projectile models are converted; no smoke trail.
+
+Alternate weapons: a weapon file's `altWeapon` (the underbarrel grenade launcher `gl_<weapon>_mp`, the underbarrel
+shotgun `<weapon>_shotgun_attach_mp`) is carried as its own gun with its own ammunition (`arsenal.rs`: primary,
+secondary and each one's alternate). D-pad left on the 360 pad (MW2's `+actionslot 3`; Z + D-pad left on the GameCube
+pad, whose D-pad left calls killstreaks) switches to it and back through IW4L's alternate switch (`alternate_switch`:
+the weapon's `altDropTime`, then the alternate's `altRaiseTime`); Y from either goes to the other weapon. The alternate
+shows its weapon's first-person model and animations (the underbarrel's own fire / reload animations aren't played).
+
+Akimbo (`<weapon>_akimbo_mp`): both guns step through IW4L's `weapon_hands` (`last_weapon_hand` 1), each with its own
+magazine and the reserve shared (IW4L `spawn_clip_stock`); as MW2 binds a pad for akimbo, the fire trigger fires the
+right gun and the aim trigger the left. The first-person model shows the right gun only (the left hand's model and
+`szXAnimsLeftHanded` aren't converted), and the HUD counts the right magazine. The converter marks akimbo files by
+name: IW4L's IW4 capture reads no dual-wield flag (`dual_wield: false`).
+
+Riot shield (`game_core::shield`): carried in the hands it covers the front, as the other weapon the back (MW2's
+`trackRiotShield`: `tag_weapon_left` / `tag_shield_back`), for you and for bots (a bot holding one). A bullet that meets
+it before the body stops there with no damage, striking the shield's surface (IW4L `segment_is_shield`, hit location
+19, surface 29); a projectile explodes on it without its impact damage. Blasts: MW2's scripts don't scale explosive
+damage for the shield (`_damage.gsc` only launches the dropped shield); the engine's attached shield model blocks.
+IW4L's radius damage doesn't model that, so here the shield hides what it covers from the blast's visibility traces
+(`can_damage_player_vis_scale`). The shield is a box in the player's frame, as wide as the body's hit boxes (IW4L poses the
+shield model's collision bones, which aren't converted); a trace against MW2 is still to do. Not yet: shield ricochets (IW4L
+bounces some bullets off it), melee against it, the shield model on the character's left arm or back (the held weapon
+draws on `tag_weapon_right`; only bots are drawn and they carry one weapon).
+
+These follow IW4L's code (ported: `sim/src/missile.rs` `fire_missile`, `sim/src/equipment.rs` `think_projectile`,
+`grenade_deadlines`, `bounce_missile`, `sim/src/missile_guidance.rs` `steer` / `turn_toward`, `sim/src/shield.rs`,
+`sim/src/combat.rs` `segment_is_shield`, `weapon_iw4` `weapon_hands` / `weapon_change`; `console/src/binds.rs`
+`gameplay_binding` for the akimbo triggers) with host tests against its values; a trace against MW2 is still to do.
 
 Solid colour screens (START goes back to the menu): red = no SD card or no such pack, magenta = the pack failed its
 checks (or is from an older converter: convert again), orange = out of memory or texture slots.
@@ -167,6 +221,9 @@ checks (or is from an older converter: convert again), orange = out of memory or
 ## Memory
 The two weapon files of the spawned class load into MEM2 above the map (about 2 × 1.8 MiB) and are swapped when a
 spawn brings other weapons (MEM2 and texture handles released back to a mark taken after the map).
+Launchers, alternates, akimbo and the shield add 14 KiB of MEM2 (`common.wpk`'s `WMSL`, 12 bytes a weapon); an
+alternate shows its weapon's file (no third weapon file), and the projectiles, the second hand and the Javelin's lock
+are a few hundred bytes of MEM1.
 The pack's GPU data (textures, vertices, display lists) is read into MEM2 and used in place; the sections decoded at
 load (visibility, cell tables, collision, walk graph) are written last by the converter, read into a temporary MEM1
 buffer, decoded into MEM1 and the buffer freed. Only the part before them stays in memory, so everything read in place

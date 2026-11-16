@@ -660,6 +660,39 @@ impl crate::records::Record for PenRecord {
     }
 }
 
+/// A launched projectile's flight and impact (`WMSL`, parallel to `WEAP`; zero for weapons that launch nothing):
+/// IW4 `projImpactExplode`, `guidedMissileType` (0 none, 1 sidewinder (Stinger), 2 Hellfire, 3 Javelin),
+/// `projIgnitionDelay` (ms), `requireLockonToFire` and `stickToPlayers`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MissileRecord {
+    pub impact_explode: bool,
+    pub guidance: i32,
+    pub ignition_delay_ms: i32,
+    pub require_lock: bool,
+    pub stick_to_players: bool,
+}
+
+impl crate::records::Record for MissileRecord {
+    const LEN: usize = 12;
+    fn write(&self, o: &mut Vec<u8>) {
+        o.u32(self.guidance as u32);
+        o.u32(self.ignition_delay_ms as u32);
+        o.u8(u8::from(self.impact_explode));
+        o.u8(u8::from(self.require_lock));
+        o.u8(u8::from(self.stick_to_players));
+        o.u8(0);
+    }
+    fn read(b: &[u8]) -> Self {
+        MissileRecord {
+            guidance: be::u32(b, 0) as i32,
+            ignition_delay_ms: be::u32(b, 4) as i32,
+            impact_explode: b[8] != 0,
+            require_lock: b[9] != 0,
+            stick_to_players: b[10] != 0,
+        }
+    }
+}
+
 /// The record named `name` in a `WEAP` section, with its index.
 pub fn find_indexed(section: &[u8], name: &str) -> Option<(u32, WeaponRecord)> {
     section.chunks_exact(LEN).enumerate().find_map(|(i, r)| {

@@ -340,6 +340,10 @@ pub struct Links {
     pub weapon_fpv: Vec<wpk::weapon::FpvRecord>,
     /// Thrown / launched weapons' numbers (parallel to `weapons`).
     pub weapon_equip: Vec<wpk::weapon::EquipRecord>,
+    /// Launched projectiles' flight and impact (parallel to `weapons`).
+    pub weapon_missile: Vec<wpk::weapon::MissileRecord>,
+    /// Each weapon's alternate weapon (`altWeapon`: the underbarrel launcher or shotgun; parallel to `weapons`).
+    pub weapon_alt: Vec<Option<String>>,
     /// Each weapon's world sound alias names (explosion, bounce, pull back, throw; parallel to `weapons`).
     pub weapon_world_sounds: Vec<[Option<String>; 4]>,
     /// Each effect's sounds and child effects, by name (lower case).
@@ -566,6 +570,12 @@ impl Links {
         self.weapon_aims.push(crate::weapons::aims(&w));
         self.weapon_fpv.push(crate::weapons::fpv(&w));
         self.weapon_equip.push(crate::weapons::equip(&w));
+        self.weapon_missile.push(crate::weapons::missile(&w));
+        self.weapon_alt.push(
+            w.alternate_weapon_name
+                .and_then(text)
+                .filter(|n| !n.is_empty()),
+        );
         let anims = w.sz_xanims.map_or_else(Vec::new, |arr| {
             (0..asset_iw4::size::WEAPON_ANIM_COUNT)
                 .map(|i| match s.ptr_at(arr, i * s.pointer_bytes()) {

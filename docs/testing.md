@@ -55,6 +55,11 @@ its question, back to the lobby and the main menu.
 the Scout Sniper class's scoped rifle. The match log gets `warp`, `mantle_start` / `mantle_end`, `land_dip` and
 `breath_hold` / `breath_release` lines.
 
+`tools/autoplay/weapons_rpg.txt`, `weapons_javelin.txt`, `weapons_alt.txt` and `weapons_shield.txt` test the
+launchers (a rocket into a bot; the Javelin's lock and top attack), the underbarrel launcher (Grenadier class, Z +
+D-pad left), and the riot shield and akimbo (Riot Control class); their match logs record `launch`, `javelin`,
+`alt_request`, `shield_block` and `akimbo_fire` events.
+
 On the PC, `tools/dolphin-test.ps1 -Dolphin <Dolphin.exe>` (or `MWF_DOLPHIN`) runs a script in Dolphin on the
 built game (`dist\apps\mwf_game`, `out\packs`): it sets up its own Dolphin profile and an SD card folder under
 `out\dolphin` (your Dolphin settings are untouched), boots the game, waits for `quit` and converts the screenshots
