@@ -28,6 +28,7 @@ pub mod held;
 pub mod life_rules;
 pub mod light;
 pub mod nav;
+pub mod parts;
 pub mod player_anim;
 pub mod quant;
 pub mod records;
@@ -93,6 +94,11 @@ pub mod tag {
     pub const HELD_INDEX: Tag = *b"GUNI";
     pub const HELD_TEXTURES: Tag = *b"GTEX";
     pub const HELD_TEXTURE_DATA: Tag = *b"GTXD";
+    /// Per `WEAP` record, the `GUNM` draws its model leaves out (`parts`: attachment parts the variant hides).
+    pub const HELD_PARTS: Tag = *b"GUNH";
+    /// In `views/<weapon>.wpk`: per weapon record using this first-person model, the `VIEW` surfaces it hides
+    /// (`parts`).
+    pub const VIEW_PARTS: Tag = *b"VHID";
     /// Effects (`fx`): definitions, each weapon's, the impact table, textures.
     pub const FX_DEFS: Tag = *b"FXDF";
     pub const FX_WEAPONS: Tag = *b"FXWP";

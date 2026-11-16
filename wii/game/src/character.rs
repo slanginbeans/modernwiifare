@@ -79,6 +79,8 @@ struct Seen {
 struct Held {
     guns: Guns<'static>,
     index: &'static [u8],
+    /// Per weapon record, the draws its model leaves out (`GUNH`: attachment parts that variant hides).
+    parts: Option<wpk::parts::Parts<'static>>,
     textures: Vec<i32>,
 }
 
@@ -87,6 +89,9 @@ impl Held {
         Some(Held {
             guns: Guns::parse(common.section(wpk::tag::HELD_MODELS)?.data)?,
             index: common.section(wpk::tag::HELD_INDEX)?.data,
+            parts: common
+                .section(wpk::tag::HELD_PARTS)
+                .and_then(|s| wpk::parts::Parts::parse(s.data)),
             textures: crate::effects::create_textures(
                 common,
                 wpk::tag::HELD_TEXTURES,
@@ -103,6 +108,12 @@ impl Held {
         (m != NONE)
             .then(|| self.guns.model(usize::from(m)))
             .flatten()
+    }
+
+    /// The draws of its model weapon record `weapon` leaves out (attachments it doesn't carry).
+    fn hidden(&self, weapon: u32) -> wpk::parts::Hidden<'static> {
+        self.parts
+            .map_or(wpk::parts::Hidden::NONE, |p| p.hidden(weapon))
     }
 }
 
@@ -398,7 +409,8 @@ impl Characters {
             }
             gfx.pos_matrix(&vmod::mul(view, &model));
             let mut last: Option<DrawState> = None;
-            for i in 0..gun.draws() {
+            let hidden = held.hidden(d.weapon);
+            for i in (0..gun.draws()).filter(|&i| !hidden.contains(i)) {
                 let Some(dr) = gun.draw(i) else { continue };
                 let state = DrawState {
                     tex: held
@@ -452,7 +464,8 @@ impl Characters {
         }
         gfx.pos_matrix(in_view);
         let mut last: Option<DrawState> = None;
-        for i in 0..gun.draws() {
+        let hidden = held.hidden(weapon);
+        for i in (0..gun.draws()).filter(|&i| !hidden.contains(i)) {
             let Some(d) = gun.draw(i) else { continue };
             let state = DrawState {
                 tex: held
@@ -595,7 +608,8 @@ impl Characters {
                 self.seen[p.slot].flash = Some((vmod::apply(&gun_world, o), dir));
                 gfx.pos_matrix(&vmod::mul(view, &gun_world));
                 let mut last: Option<DrawState> = None;
-                for i in 0..gun.draws() {
+                let hidden = held.hidden(w);
+                for i in (0..gun.draws()).filter(|&i| !hidden.contains(i)) {
                     let Some(d) = gun.draw(i) else { continue };
                     let state = DrawState {
                         tex: held

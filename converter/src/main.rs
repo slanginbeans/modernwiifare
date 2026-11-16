@@ -1316,34 +1316,53 @@ fn run_common(args: &[String]) -> ExitCode {
         // The weapons in the characters' hands: each base weapon's world model, its textures shared.
         let mut held: Vec<(String, wpk::held::Model)> = Vec::new();
         let mut held_tex = pack::Textures::default();
+        // Per weapon file (by name): the held model's draws it hides (attachment parts).
+        let mut held_parts: Vec<(String, wpk::parts::Bits)> = Vec::new();
         for base in &bases {
             let name = format!("{base}_mp");
             let Some(w) = links.weapons.iter().position(|n| *n == name) else {
                 continue;
             };
             let view = &links.weapon_views[w];
+            // Its attachment variants: MW2 gives them the base's models and their own hide tags.
+            let variants: Vec<usize> = (0..links.weapons.len())
+                .filter(|&i| {
+                    i != w && ui_tables::variant_base(&links.weapons[i], &bases) == Some(base)
+                })
+                .collect();
             if let Some(m) = view
                 .world
                 .as_deref()
                 .and_then(|n| links.models.iter().position(|x| x.name == n))
             {
-                match viewmodel::build_held(
-                    s,
-                    links,
-                    m,
-                    &view.hide,
-                    &index,
-                    &tex_dir,
-                    &mut held_tex,
-                ) {
-                    Ok(model) => held.push((base.clone(), model)),
+                // The variants holding the same world model, the base first.
+                let holders: Vec<usize> = std::iter::once(w)
+                    .chain(variants.iter().copied().filter(|&v| {
+                        let x = &links.weapon_views[v].world;
+                        x.is_none() || *x == view.world
+                    }))
+                    .collect();
+                let hides: Vec<&[String]> = holders
+                    .iter()
+                    .map(|&v| links.weapon_views[v].hide.as_slice())
+                    .collect();
+                match viewmodel::build_held(s, links, m, &hides, &index, &tex_dir, &mut held_tex) {
+                    Ok((model, parts)) => {
+                        held.push((base.clone(), model));
+                        held_parts.extend(
+                            holders
+                                .iter()
+                                .zip(parts)
+                                .map(|(&v, bits)| (links.weapons[v].clone(), bits)),
+                        );
+                    }
                     Err(e) => eprintln!("warning: {base}'s third-person model: {e}"),
                 }
             }
             let mut tex = pack::Textures::default();
             tex.base_level_only = a.slim_views;
-            match viewmodel::build(s, links, w, &index, &tex_dir, &mut tex) {
-                Ok((vm, report)) => {
+            match viewmodel::build(s, links, w, &variants, &index, &tex_dir, &mut tex) {
+                Ok((vm, report, parts)) => {
                     let view = &links.weapon_views[w];
                     let notes = sounds::view_notes(s, links, view);
                     views.push(View {
@@ -1354,6 +1373,10 @@ fn run_common(args: &[String]) -> ExitCode {
                         tex,
                         sounds: view.sounds.clone(),
                         notes,
+                        parts: parts
+                            .into_iter()
+                            .map(|(v, bits)| (links.weapons[v].clone(), bits))
+                            .collect(),
                     });
                 }
                 Err(e) => {
@@ -1400,15 +1423,16 @@ fn run_common(args: &[String]) -> ExitCode {
             player_anims::dump(&parsed);
         }
         let anims = viewmodel::bake_player_anims(s, links, &parsed.anims);
-        (views, failed, (anims, parsed), (held, held_tex))
+        (views, failed, (anims, parsed), (held, held_tex, held_parts))
     });
-    let (mut collector, (views, failed, player_anims, (held, mut held_tex))) = match walked {
-        Ok(x) => x,
-        Err(e) => {
-            eprintln!("reading {label}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (mut collector, (views, failed, player_anims, (held, mut held_tex, held_parts))) =
+        match walked {
+            Ok(x) => x,
+            Err(e) => {
+                eprintln!("reading {label}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
     // The weapons' sound aliases and clips come from the localized zone.
     let mut capture = std::mem::take(&mut collector.links.sounds);
     match walk_zone(&a, SOUND_ZONE) {
@@ -1959,6 +1983,20 @@ fn run_common(args: &[String]) -> ExitCode {
                 .map_or(wpk::records::NONE, |(i, _)| i as u16)
         })
         .collect();
+    // Each record's attachment parts on that model: its own hide tags, else (a record the model's walk didn't list)
+    // its base weapon's.
+    let held_rows: Vec<(u32, wpk::parts::Bits)> = weapons
+        .iter()
+        .zip(&held_index)
+        .enumerate()
+        .filter(|(_, (_, m))| **m != wpk::records::NONE)
+        .filter_map(|(i, (w, &m))| {
+            let own = held_parts.iter().find(|(n, _)| n == w.name());
+            let base = format!("{}_mp", held[usize::from(m)].0);
+            let bits = own.or_else(|| held_parts.iter().find(|(n, _)| *n == base))?;
+            Some((i as u32, bits.1.clone()))
+        })
+        .collect();
     let held_models: Vec<wpk::held::Model> = held.into_iter().map(|(_, m)| m).collect();
     let held_bytes = wpk::held::encode(&held_models);
     println!(
@@ -1978,6 +2016,11 @@ fn run_common(args: &[String]) -> ExitCode {
         wpk::tag::HELD_INDEX,
         held_index.len() as u32,
         held_index.iter().flat_map(|v| v.to_be_bytes()).collect(),
+    );
+    b.section(
+        wpk::tag::HELD_PARTS,
+        held_rows.len() as u32,
+        wpk::parts::encode(&held_rows),
     );
     b.section(
         wpk::tag::HELD_TEXTURES,
@@ -2185,6 +2228,23 @@ fn run_common(args: &[String]) -> ExitCode {
         };
         b.section(wpk::tag::VIEWMODEL, w as u32, view_blob);
         b.section(wpk::tag::WEAPON_SOUNDS, w as u32, snd.encode());
+        // The attachment variants' hidden surfaces, by name key.
+        let rows: Vec<(u32, wpk::parts::Bits)> = v
+            .parts
+            .iter()
+            .map(|(n, bits)| (wpk::parts::name_key(n), bits.clone()))
+            .collect();
+        let mut keys: Vec<u32> = rows.iter().map(|r| r.0).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        if keys.len() != rows.len() {
+            eprintln!("warning: {}: two weapon names share a parts key", v.base);
+        }
+        b.section(
+            wpk::tag::VIEW_PARTS,
+            rows.len() as u32,
+            wpk::parts::encode(&rows),
+        );
         b.section(
             wpk::tag::SOUND_ALIASES,
             bank.aliases.len() as u32,
@@ -2295,6 +2355,8 @@ struct View {
     tex: pack::Textures,
     sounds: sounds::WeaponSoundNames,
     notes: Vec<(u8, String, f32)>,
+    /// Per weapon file sharing this model (by name): the `VIEW` surfaces it hides.
+    parts: Vec<(String, wpk::parts::Bits)>,
 }
 
 /// Write `bytes` to `path`, creating its folder; false (with a message) on failure.

@@ -545,6 +545,7 @@ pub struct Built {
 /// Destructible models: at most this many vertices (the first LOD under it), textures this many texels across.
 const LIMITS: crate::viewmodel::RigidLimits = crate::viewmodel::RigidLimits {
     max_vertices: 1500,
+    max_attachment_vertices: 0,
     texture_max: 128,
     role: "destructible",
 };

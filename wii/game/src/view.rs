@@ -79,10 +79,24 @@ fn mem2(count: usize) -> Option<&'static mut [u8]> {
 
 impl View {
     /// A weapon's first-person file (`views/<weapon>.wpk`, in MEM2 and flushed): its model with textures created,
-    /// and its sounds.
-    pub fn load(file: &'static [u8], gfx: &mut impl Gfx) -> Option<View> {
+    /// and its sounds. `names`: the weapon names the slot's gun may be, in the order tried: the first the file has
+    /// a `VHID` row for decides which attachment parts are kept (the rest are left out of memory).
+    pub fn load(
+        file: &'static [u8],
+        gfx: &mut impl Gfx,
+        names: &[alloc::string::String],
+    ) -> Option<View> {
         let pack = wpk::Pack::parse(file, false).ok()?;
-        let vm = ViewModel::decode(pack.section(wpk::tag::VIEWMODEL)?.data).ok()?;
+        let mut vm = ViewModel::decode(pack.section(wpk::tag::VIEWMODEL)?.data).ok()?;
+        if let Some(parts) = pack
+            .section(wpk::tag::VIEW_PARTS)
+            .and_then(|s| wpk::parts::Parts::parse(s.data))
+            && let Some(hidden) = names
+                .iter()
+                .find_map(|n| parts.row(wpk::parts::name_key(n)))
+        {
+            vm.drop_surfaces(|i| hidden.contains(i));
+        }
         let sounds = pack
             .section(wpk::tag::WEAPON_SOUNDS)
             .and_then(|s| WeaponSounds::decode(s.data))

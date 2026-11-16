@@ -37,6 +37,43 @@ pub fn position_key(p: [f32; 3]) -> [u32; 3] {
     p.map(f32::to_bits)
 }
 
+/// A small far-away part (a held weapon's attachment): `tris` (indices into `positions`) cut to about `target`
+/// triangles by meshoptimizer's sloppy simplifier (topology not kept: it only has to read at a distance), then the
+/// vertices still used, renumbered. Unchanged when `target` isn't smaller or the result would be empty.
+pub fn far_part(positions: &[[f32; 3]], tris: &[u16], target: usize) -> (Vec<usize>, Vec<u16>) {
+    let all = || ((0..positions.len()).collect(), tris.to_vec());
+    if target * 3 >= tris.len() {
+        return all();
+    }
+    let bytes: Vec<u8> = positions
+        .iter()
+        .flatten()
+        .flat_map(|f| f.to_ne_bytes())
+        .collect();
+    let Ok(adapter) = VertexDataAdapter::new(&bytes, 12, 0) else {
+        return all();
+    };
+    let indices: Vec<u32> = tris.iter().map(|&i| u32::from(i)).collect();
+    let out = meshopt::simplify_sloppy(&indices, &adapter, target.max(1) * 3, 1.0, None);
+    if out.is_empty() {
+        return all();
+    }
+    let mut keep = vec![u16::MAX; positions.len()];
+    let mut used = Vec::new();
+    let tris = out
+        .iter()
+        .map(|&i| {
+            let k = &mut keep[i as usize];
+            if *k == u16::MAX {
+                *k = used.len() as u16;
+                used.push(i as usize);
+            }
+            *k
+        })
+        .collect();
+    (used, tris)
+}
+
 /// `tris` (indices into `verts`) simplified by `q`; `shared(v)` says whether vertex `v`'s position is also used
 /// by another batch (it stays). The same triangles when nothing can go.
 pub fn batch(
@@ -129,6 +166,29 @@ pub fn batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 20 × 20 grid cut to ~40 triangles: fewer vertices, every index in range.
+    #[test]
+    fn far_parts_shrink_to_their_target() {
+        let n = 21u16;
+        let positions: Vec<[f32; 3]> = (0..n * n)
+            .map(|i| [f32::from(i % n), f32::from(i / n), 0.0])
+            .collect();
+        let mut tris = Vec::new();
+        for y in 0..n - 1 {
+            for x in 0..n - 1 {
+                let a = y * n + x;
+                tris.extend([a, a + 1, a + n, a + 1, a + n + 1, a + n]);
+            }
+        }
+        let (used, out) = far_part(&positions, &tris, 40);
+        assert!(!out.is_empty() && out.len() <= 3 * 60, "{}", out.len());
+        assert!(used.len() < positions.len());
+        assert!(out.iter().all(|&i| usize::from(i) < used.len()));
+        // A target at or over what it has: unchanged.
+        let (used, same) = far_part(&positions, &tris, 800);
+        assert_eq!((used.len(), same), (positions.len(), tris));
+    }
 
     /// A flat 10 × 10 quad grid (200 triangles) with planar UVs: simplified, it keeps its outline.
     #[test]

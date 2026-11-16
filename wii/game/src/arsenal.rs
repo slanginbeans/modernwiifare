@@ -94,8 +94,9 @@ pub struct Arsenal {
     pending: Option<usize>,
     /// Which weapons were out this life (the first raise is the long one).
     used: [bool; 4],
-    /// Base weapon names whose files are loaded.
-    loaded: [heapless_name::Name; 2],
+    /// Per slot: the base weapon whose file is loaded and the weapon names it was loaded for (the first with a
+    /// `VHID` row picks the attachments shown).
+    loaded: [Want; 2],
     mem2_mark: u32,
     tex_mark: i32,
     /// Files being streamed in (while dead).
@@ -107,7 +108,7 @@ const STREAM_SLICE: usize = 192 << 10;
 
 /// Weapon files streaming into MEM2: for `wanted`, slot `slot` next, the open file's buffer and how much of it is in.
 struct Stream {
-    wanted: [Name; 2],
+    wanted: [Want; 2],
     slot: usize,
     file: Option<(AppPath, &'static mut [u8], usize)>,
 }
@@ -136,6 +137,9 @@ mod heapless_name {
 
 use heapless_name::Name;
 
+/// A slot's first-person file (its base weapon) and the weapon names its gun may be, in the order tried.
+type Want = (Name, alloc::vec::Vec<alloc::string::String>);
+
 impl Arsenal {
     /// Call after the map is loaded: the weapon files go above what is loaded now.
     pub fn new() -> Arsenal {
@@ -145,7 +149,7 @@ impl Arsenal {
             active: 0,
             pending: None,
             used: [true, false, false, false],
-            loaded: [Name::default(); 2],
+            loaded: Default::default(),
             mem2_mark: unsafe { ffi::mwf_mem2_mark() },
             tex_mark: unsafe { ffi::mwf_tex_mark() },
             stream: None,
@@ -159,7 +163,7 @@ impl Arsenal {
         cat: Option<&Catalog>,
         class: Option<&Loadout>,
     ) {
-        let wanted = slot_names(cat, class).map(|(n, _)| n);
+        let wanted = slot_names(cat, class);
         if wanted == self.loaded {
             return;
         }
@@ -170,14 +174,14 @@ impl Arsenal {
     }
 
     /// Drop the loaded files and start streaming `wanted`.
-    fn begin(&mut self, wanted: [Name; 2]) {
+    fn begin(&mut self, wanted: [Want; 2]) {
         // Drop the old views before their MEM2 goes.
         self.views = [None, None];
         unsafe {
             ffi::mwf_mem2_release(self.mem2_mark);
             ffi::mwf_tex_release(self.tex_mark);
         }
-        self.loaded = [Name::default(); 2];
+        self.loaded = Default::default();
         self.stream = Some(Stream {
             wanted,
             slot: 0,
@@ -189,11 +193,11 @@ impl Arsenal {
     fn step(&mut self, gfx: &mut impl game_core::gfx::Gfx, mut budget: usize) {
         while let Some(s) = self.stream.as_mut() {
             if s.slot >= 2 {
-                self.loaded = s.wanted;
+                self.loaded = core::mem::take(&mut s.wanted);
                 self.stream = None;
                 return;
             }
-            let name = s.wanted[s.slot];
+            let name = s.wanted[s.slot].0;
             if name.as_str().is_empty() {
                 s.slot += 1;
                 continue;
@@ -235,7 +239,7 @@ impl Arsenal {
                 unsafe { ffi::mwf_flush(bytes.as_ptr(), bytes.len() as u32) };
                 self.views[slot] = wpk::Pack::parse(bytes, false)
                     .is_ok()
-                    .then(|| View::load(bytes, gfx))
+                    .then(|| View::load(bytes, gfx, &s.wanted[slot].1))
                     .flatten();
             }
         }
@@ -308,7 +312,7 @@ impl Arsenal {
         self.active = if self.guns[0].is_some() { 0 } else { 1 };
         self.pending = None;
         self.used = [self.active == 0, self.active == 1, false, false];
-        let wanted = [slots[0].0, slots[1].0];
+        let wanted = slots;
         if wanted != self.loaded {
             // Whatever the death screen didn't stream in loads now.
             if self.stream.as_ref().is_none_or(|s| s.wanted != wanted) {
@@ -434,10 +438,14 @@ impl Arsenal {
         self.guns[a] = Some(g);
         self.used[a] = true;
         self.pending = None;
-        // The slot's first-person file: the base weapon's (`m4_reflex_mp` → `m4`).
+        // The slot's first-person file: the base weapon's (`m4_reflex_mp` → `m4`), showing this weapon's
+        // attachments.
         let base = rec.name().split('_').next().unwrap_or("");
-        let mut wanted = self.loaded;
-        wanted[a] = Name::new(base);
+        let mut wanted = self.loaded.clone();
+        wanted[a] = (
+            Name::new(base),
+            alloc::vec![alloc::string::String::from(rec.name())],
+        );
         if wanted != self.loaded {
             self.begin(wanted);
             self.step(gfx, usize::MAX);
