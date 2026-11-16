@@ -661,6 +661,70 @@ impl Textures {
         Ok(i)
     }
 
+    /// A sight's reticle: the file's top level alone (a thin reticle fades out of the smaller mips), its colour
+    /// multiplied by `tint` and doubled when a tint is given (IW4's reflex sight draws a dim grey reticle as red
+    /// light).
+    pub(crate) fn add_file_reticle(
+        &mut self,
+        dir: &Path,
+        file: &str,
+        wrap: Wrap,
+        tint: Option<[u8; 3]>,
+    ) -> Result<u16, String> {
+        let key = format!("{file}@reticle{tint:?}");
+        if let Some(&i) = self.by_file.get(&key) {
+            return Ok(i);
+        }
+        let bytes = std::fs::read(dir.join(file)).map_err(|e| format!("{file}: {e}"))?;
+        let (h, data) =
+            gx_texture::container::parse(&bytes).map_err(|e| format!("{file}: {e:?}"))?;
+        let plane = gx_texture::container::parse_alpha_plane(&bytes)
+            .map_err(|e| format!("{file}: {e:?}"))?;
+        let (w, ht) = (u32::from(h.width), u32::from(h.height));
+        let top =
+            |fmt: gx_texture::TexFormat, d: &[u8]| d[..fmt.level_size(w, ht).min(d.len())].to_vec();
+        let mut colour = top(h.format, data);
+        if let Some(t) = tint {
+            let mut img = gx_texture::decode(&colour, w, ht, h.format)
+                .ok_or_else(|| format!("{file}: undecodable"))?;
+            for p in &mut img.pixels {
+                for k in 0..3 {
+                    p[k] = (u32::from(p[k]) * u32::from(t[k]) * 2 / 255).min(255) as u8;
+                }
+            }
+            colour = gx_texture::encode(&img, h.format);
+        }
+        let c = gx_texture::Converted {
+            format: h.format,
+            width: w,
+            height: ht,
+            levels: 1,
+            traits: gx_texture::policy::Traits {
+                grey: false,
+                alpha: gx_texture::policy::Alpha::Opaque,
+            },
+            data: colour,
+            alpha_plane: plane.map(|(a, p)| top(a.format, p)),
+        };
+        let i = self.add(&c, wrap);
+        self.by_file.insert(key, i);
+        Ok(i)
+    }
+
+    /// [`Textures::add_file_capped`], unless the file is already in full size (shared with a part that has it so).
+    pub(crate) fn add_file_shared(
+        &mut self,
+        dir: &Path,
+        file: &str,
+        wrap: Wrap,
+        max: u32,
+    ) -> Result<u16, String> {
+        match self.by_file.get(file) {
+            Some(&i) => Ok(i),
+            None => self.add_file_capped(dir, file, wrap, max),
+        }
+    }
+
     /// Add a converted `.gxt` from the texture folder (once per file).
     pub(crate) fn add_file(&mut self, dir: &Path, file: &str, wrap: Wrap) -> Result<u16, String> {
         if let Some(&i) = self.by_file.get(file) {

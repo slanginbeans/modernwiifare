@@ -12,6 +12,7 @@ use std::path::Path;
 
 use asset_iw4::size as sz;
 use fastfile_iw4::{Ptr, XAnimPartsGeometry, ZonePtr, ZoneStream};
+use wpk::parts::Bits;
 use wpk::records::{NONE, Wrap};
 use wpk::view::{Bone, Clip, SkinVertex, Surface, Track, ViewModel, quat_to_i16, slot};
 use xmodel_runtime::{AnimClip, ClipNotify, RawXAnimParts};
@@ -225,6 +226,8 @@ fn read_skin(
 
 struct SkinnedSurface {
     material: Option<usize>,
+    /// IW4 `partBits`: the bones (model-local) the surface uses.
+    part_bits: [u32; 6],
     verts: Vec<SkinVertex>,
     indices: Vec<u16>,
 }
@@ -262,10 +265,7 @@ fn read_surfaces(
         let surf = surfaces.at(i * sz::XSURFACE);
         let part_bits: [u32; 6] =
             std::array::from_fn(|k| s.u32_at(surf, s.layout(40, 64) + k * 4).unwrap_or(0));
-        if hidden
-            .iter()
-            .any(|&b| b < 192 && part_bits[b >> 5] & (0x8000_0000u32 >> (b & 31)) != 0)
-        {
+        if uses_any(&part_bits, hidden) {
             hidden_count += 1;
             continue;
         }
@@ -304,11 +304,68 @@ fn read_surfaces(
             .flatten();
         out.push(SkinnedSurface {
             material,
+            part_bits,
             verts: sv,
             indices,
         });
     }
     Ok((out, hidden_count))
+}
+
+/// IW4's reflex sight technique (`*reflexsight*`: red dot and holographic sights) draws its grey-on-black reticle
+/// texture as red light. The tint for a reticle with that technique, else None.
+pub fn reticle_look(techset: Option<&str>) -> Option<[u8; 3]> {
+    techset
+        .is_some_and(|t| t.contains("reflexsight"))
+        .then_some(RETICLE_RED)
+}
+
+/// The reflex reticle's colour (MW2 draws it red).
+const RETICLE_RED: [u8; 3] = [255, 40, 24];
+
+/// IW4: a surface is hidden when its part bits meet a hidden bone (model-local indices).
+fn uses_any(part_bits: &[u32; 6], bones: &[usize]) -> bool {
+    bones
+        .iter()
+        .any(|&b| b < 192 && part_bits[b >> 5] & (0x8000_0000u32 >> (b & 31)) != 0)
+}
+
+/// The bones `hide` hides (names, any case) and every bone under them (a hidden tag hides its whole subtree, e.g.
+/// tag_heartbeat's screen bones, a sight's reticle), as model-local indices. `parent[i] < i`.
+pub fn hidden_bones(names: &[String], parent: &[Option<usize>], hide: &[String]) -> Vec<usize> {
+    let mut hidden = vec![false; names.len()];
+    for i in 0..names.len() {
+        let named = hide.iter().any(|h| h.eq_ignore_ascii_case(&names[i]));
+        hidden[i] = named || parent[i].is_some_and(|p| p < i && hidden[p]);
+    }
+    (0..hidden.len()).filter(|&i| hidden[i]).collect()
+}
+
+/// For a model shared by weapon variants (MW2's attachment variants share the base's models and differ by
+/// `hideTags`): the bones every variant hides (left out of the model), and per variant the bones it hides beyond
+/// those. `hides`: each variant's hide list.
+pub fn shared_hides(
+    names: &[String],
+    parent: &[Option<usize>],
+    hides: &[&[String]],
+) -> (Vec<usize>, Vec<Vec<usize>>) {
+    let per: Vec<Vec<usize>> = hides
+        .iter()
+        .map(|h| hidden_bones(names, parent, h))
+        .collect();
+    let always: Vec<usize> = match per.split_first() {
+        Some((first, rest)) => first
+            .iter()
+            .copied()
+            .filter(|b| rest.iter().all(|r| r.contains(b)))
+            .collect(),
+        None => Vec::new(),
+    };
+    let extra = per
+        .into_iter()
+        .map(|v| v.into_iter().filter(|b| !always.contains(b)).collect())
+        .collect();
+    (always, extra)
 }
 
 /// Read `n` little-endian values of `size` bytes from `p` (empty when the pointer is absent or short).
@@ -452,15 +509,21 @@ pub struct ViewReport {
     pub hidden_surfaces: usize,
 }
 
+/// Per attachment variant (`links.weapons` index): the `ViewModel` surfaces it hides.
+pub type VariantParts = Vec<(usize, Bits)>;
+
 /// The first-person model of weapon `w` (index into `links.weapons`), with its textures added to `tex`.
+/// `variants`: the weapons sharing its models (attachment variants, `links.weapons` indices): the model keeps every
+/// surface one of them shows, and the result lists, per variant, the `ViewModel` surfaces it hides.
 pub fn build(
     s: &ZoneStream<'_>,
     links: &Links,
     w: usize,
+    variants: &[usize],
     index: &[IndexEntry],
     tex_dir: &Path,
     tex: &mut Textures,
-) -> Result<(ViewModel, ViewReport), String> {
+) -> Result<(ViewModel, ViewReport, VariantParts), String> {
     let view = links.weapon_views.get(w).ok_or("no such weapon")?;
     let model_named = |n: &Option<String>| {
         let n = n.as_deref()?;
@@ -527,23 +590,36 @@ pub fn build(
     };
     let mut texture_count = 0;
     let mut hidden_surfaces = 0;
+    // The variants' hide lists (the weapon itself first); a variant with other models isn't one. (Some variants'
+    // model names don't resolve in the zone reader: those keep the base's, as MW2's variants do.)
+    let mut owners = vec![w];
+    owners.extend(variants.iter().copied().filter(|&v| {
+        v != w
+            && links
+                .weapon_views
+                .get(v)
+                .is_some_and(|x| x.gun.is_none() || x.gun == view.gun)
+    }));
+    let hides: Vec<&[String]> = owners
+        .iter()
+        .map(|&v| links.weapon_views[v].hide.as_slice())
+        .collect();
+    let mut parts: Vec<(usize, Bits)> = owners.iter().map(|&v| (v, Bits::default())).collect();
     for (m, bone_base, mb) in [(hands, 0, &hb), (gun, base, &gb)] {
-        // A hidden tag hides its whole subtree (e.g. tag_heartbeat's screen bones, a sight's reticle).
-        let mut hide_bone = vec![false; mb.names.len()];
-        for i in 0..mb.names.len() {
-            let named = view
-                .hide
-                .iter()
-                .any(|h| h.eq_ignore_ascii_case(&mb.names[i]));
-            let parent_hidden = mb.parent[i].is_some_and(|p| hide_bone[p]);
-            hide_bone[i] = named || parent_hidden;
-        }
-        let hidden: Vec<usize> = (0..mb.names.len()).filter(|&i| hide_bone[i]).collect();
+        // Left out: what every variant hides; per variant: what it hides beyond that.
+        let (hidden, extra) = shared_hides(&mb.names, &mb.parent, &hides);
         let (surfaces, h) = read_surfaces(s, links, &sets, m, bone_base, &hidden, 0)?;
         hidden_surfaces += h;
         for surf in surfaces {
             let Some(mat) = surf.material else { continue };
             let info = &links.material_info[mat];
+            // An attachment part (the weapon itself hides it): its textures smaller (every file of a base carries
+            // all its attachments, two files sit in MEM2).
+            let attachment = extra.first().is_some_and(|x| uses_any(&surf.part_bits, x));
+            // A sight's reticle (on a `*reticle*` bone): drawn as IW4 draws it (see `reticle_look`).
+            let reticle = (0..mb.names.len())
+                .any(|b| mb.names[b].contains("reticle") && uses_any(&surf.part_bits, &[b]));
+            let reflex = reticle && reticle_look(info.techset.as_deref()).is_some();
             let texture = match links
                 .colour_image(mat)
                 .and_then(|img| files_by_image.get(&img))
@@ -551,7 +627,18 @@ pub fn build(
                 Some(e) => {
                     texture_count += 1;
                     tex.role = e.role;
-                    tex.add_file(tex_dir, &e.file, Wrap::Repeat)?
+                    if reticle {
+                        tex.add_file_reticle(
+                            tex_dir,
+                            &e.file,
+                            Wrap::Clamp,
+                            reticle_look(info.techset.as_deref()),
+                        )?
+                    } else if attachment {
+                        tex.add_file_shared(tex_dir, &e.file, Wrap::Repeat, ATTACHMENT_TEXTURE_MAX)?
+                    } else {
+                        tex.add_file(tex_dir, &e.file, Wrap::Repeat)?
+                    }
                 }
                 None => NONE,
             };
@@ -562,9 +649,20 @@ pub fn build(
                 BlendMode::Additive => (wpk::records::Blend::Additive, 0),
                 BlendMode::Multiply => (wpk::records::Blend::Multiply, 0),
             };
+            // The reflex sight's reticle adds light (its grey-on-black texture tinted).
+            let (blend, alpha_ref) = if reflex {
+                (wpk::records::Blend::Additive, 0)
+            } else {
+                (blend, alpha_ref)
+            };
             let first_vertex = vm.verts.len();
             if first_vertex + surf.verts.len() > 65535 {
                 return Err("more than 65535 viewmodel vertices".into());
+            }
+            for ((_, bits), extra) in parts.iter_mut().zip(&extra) {
+                if uses_any(&surf.part_bits, extra) {
+                    bits.set(vm.surfaces.len());
+                }
             }
             vm.surfaces.push(Surface {
                 first_index: vm.indices.len() as u32,
@@ -575,7 +673,13 @@ pub fn build(
             });
             vm.indices
                 .extend(surf.indices.iter().map(|&i| i + first_vertex as u16));
-            vm.verts.extend(surf.verts);
+            // IW4's reflex shader ignores vertex colour (the holographic sight's reticle quad has black ones).
+            vm.verts.extend(surf.verts.into_iter().map(|mut v| {
+                if reflex {
+                    v.rgba = 0xffff_ffff;
+                }
+                v
+            }));
         }
     }
 
@@ -611,7 +715,7 @@ pub fn build(
         missing_clips: missing,
         hidden_surfaces,
     };
-    Ok((vm, report))
+    Ok((vm, report, parts))
 }
 
 /// A player character for the map pack: body model `body` with head model `head` attached as IW4 attaches a head
@@ -768,34 +872,43 @@ pub fn character_hitboxes(
 const HELD_MAX_VERTICES: usize = 900;
 /// Third-person weapon textures are at most this many texels across (a gun is a few dozen pixels on screen).
 const HELD_TEXTURE_MAX: u32 = 64;
+/// All attachment parts of a held model together: their first LOD at or under this many vertices.
+const HELD_MAX_ATTACHMENT_VERTICES: usize = 200;
+/// First-person attachment parts' textures (sights, grips, launchers): at most this many texels across.
+pub const ATTACHMENT_TEXTURE_MAX: u32 = 128;
 /// GX vertex format of character and held-weapon display lists (POS, CLR0, TEX0 indexed: three u16 per vertex).
 const HELD_VTXFMT: u8 = 6;
 
 /// A weapon's third-person model (`common.wpk` `GUNM`): world model `m` at its first LOD of at most
 /// [`HELD_MAX_VERTICES`] vertices, in its bind pose (origin at `tag_origin`, which goes on the hand's
 /// `tag_weapon_right`), the parts under bones named in `hide` left out, as strips; textures (capped at
-/// [`HELD_TEXTURE_MAX`]) into `tex`. Returns the model and its vertex count.
+/// [`HELD_TEXTURE_MAX`]) into `tex`. `hides`: the hide lists of the weapons holding this model (attachment
+/// variants): parts all of them hide are left out. Returns the model and, per entry of `hides`, the draws it hides.
 pub fn build_held(
     s: &ZoneStream<'_>,
     links: &Links,
     m: usize,
-    hide: &[String],
+    hides: &[&[String]],
     index: &[IndexEntry],
     tex_dir: &Path,
     tex: &mut Textures,
-) -> Result<wpk::held::Model, String> {
+) -> Result<(wpk::held::Model, Vec<Bits>), String> {
     let limits = RigidLimits {
         max_vertices: HELD_MAX_VERTICES,
+        max_attachment_vertices: HELD_MAX_ATTACHMENT_VERTICES,
         texture_max: HELD_TEXTURE_MAX,
         role: "held",
     };
-    build_rigid(s, links, m, hide, &limits, index, tex_dir, tex).map(|(model, _)| model)
+    build_rigid_parts(s, links, m, hides, &limits, index, tex_dir, tex)
+        .map(|(model, _, parts)| (model, parts))
 }
 
 /// How detailed a rigid model is built.
 pub struct RigidLimits {
     /// The first LOD at or under this many vertices is used (else the last).
     pub max_vertices: usize,
+    /// Attachment parts (see [`build_held`]): their first LOD at or under this many vertices (all of them together).
+    pub max_attachment_vertices: usize,
     /// Textures at most this many texels across.
     pub texture_max: u32,
     /// The texture report's role.
@@ -817,27 +930,73 @@ pub fn build_rigid(
     tex_dir: &Path,
     tex: &mut Textures,
 ) -> Result<(wpk::held::Model, Tags), String> {
+    build_rigid_parts(s, links, m, &[hide], limits, index, tex_dir, tex)
+        .map(|(model, tags, _)| (model, tags))
+}
+
+/// [`build_rigid`] for a model shared by variants with their own `hides` (see [`build_held`]).
+#[allow(clippy::too_many_arguments)]
+fn build_rigid_parts(
+    s: &ZoneStream<'_>,
+    links: &Links,
+    m: usize,
+    hides: &[&[String]],
+    limits: &RigidLimits,
+    index: &[IndexEntry],
+    tex_dir: &Path,
+    tex: &mut Textures,
+) -> Result<(wpk::held::Model, Tags, Vec<Bits>), String> {
     let sets = surface_sets(s, links);
     let bones = read_bones(s, links, m)?;
-    let mut hidden = vec![false; bones.names.len()];
-    for i in 0..bones.names.len() {
-        let named = hide.iter().any(|h| h.eq_ignore_ascii_case(&bones.names[i]));
-        hidden[i] = named || bones.parent[i].is_some_and(|p| hidden[p]);
-    }
-    let hidden: Vec<usize> = (0..hidden.len()).filter(|&i| hidden[i]).collect();
+    let (hidden, extra) = shared_hides(&bones.names, &bones.parent, hides);
+    let mut parts = vec![Bits::default(); hides.len()];
     let lods = links
         .model_geometry
         .get(m)
         .map_or(1, |g| g.lod_numsurfs.len().max(1));
-    let mut surfaces = Vec::new();
+    // The parts the first model shows from its first LOD within the limit; attachment parts (the first model
+    // hides them, a variant shows them) from their first LOD within `limits.max_attachment_vertices`.
+    let base_hides = extra.first().cloned().unwrap_or_default();
+    let split = |surfs: Vec<SkinnedSurface>| -> (Vec<SkinnedSurface>, Vec<SkinnedSurface>) {
+        surfs
+            .into_iter()
+            .partition(|x| !uses_any(&x.part_bits, &base_hides))
+    };
+    let count = |v: &[SkinnedSurface]| v.iter().map(|x| x.verts.len()).sum::<usize>();
+    let (mut shown, mut parts_lod) = (None, None);
     for lod in 0..lods {
         let (surfs, _) = read_surfaces(s, links, &sets, m, 0, &hidden, lod)?;
-        let n: usize = surfs.iter().map(|x| x.verts.len()).sum();
-        surfaces = surfs;
-        if n <= limits.max_vertices {
+        let (b, a) = split(surfs);
+        let last = lod + 1 == lods;
+        if shown.is_none() && (count(&b) <= limits.max_vertices || last) {
+            shown = Some(b);
+        }
+        if parts_lod.is_none() && (count(&a) <= limits.max_attachment_vertices || last) {
+            parts_lod = Some(a);
+        }
+        if shown.is_some() && parts_lod.is_some() {
             break;
         }
     }
+    let mut surfaces = shown.unwrap_or_default();
+    // Attachment parts over their budget: each surface thinned in proportion (seen small, at a distance).
+    let mut parts_lod = parts_lod.unwrap_or_default();
+    let n = count(&parts_lod);
+    if n > limits.max_attachment_vertices && limits.max_attachment_vertices > 0 {
+        let ratio = limits.max_attachment_vertices as f32 / n as f32;
+        for x in &mut parts_lod {
+            let tris = x.indices.len() / 3;
+            if tris < 16 {
+                continue;
+            }
+            let positions: Vec<[f32; 3]> = x.verts.iter().map(|v| v.pos).collect();
+            let target = ((tris as f32 * ratio).ceil() as usize).max(8);
+            let (used, idx) = crate::simplify::far_part(&positions, &x.indices, target);
+            x.verts = used.iter().map(|&i| x.verts[i]).collect();
+            x.indices = idx;
+        }
+    }
+    surfaces.extend(parts_lod);
     let mut files_by_image: HashMap<usize, &IndexEntry> = HashMap::new();
     for e in index {
         for &i in &e.images {
@@ -877,6 +1036,11 @@ pub fn build_rigid(
         if first + surf.verts.len() > 65535 {
             return Err("more than 65535 held weapon vertices".into());
         }
+        for (bits, extra) in parts.iter_mut().zip(&extra) {
+            if uses_any(&surf.part_bits, extra) {
+                bits.set(out.draws.len());
+            }
+        }
         for v in &surf.verts {
             out.positions.push(v.pos);
             out.attributes.push((v.rgba, v.uv));
@@ -899,7 +1063,7 @@ pub fn build_rigid(
             (n.clone(), *t, [r[0][0], r[1][0], r[2][0]])
         })
         .collect();
-    Ok((out, tags))
+    Ok((out, tags, parts))
 }
 
 /// Player animations baked by bone name (`common.wpk`): each animation of `list` becomes a clip (an empty one when
@@ -1106,6 +1270,94 @@ fn key_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A gun skeleton like MW2's: sights and a launcher under the gun, a reticle under one sight, flip-up iron
+    /// sights. The base hides every attachment; variants show theirs (two at once for Bling).
+    fn gun_bones() -> (Vec<String>, Vec<Option<usize>>) {
+        let names = [
+            "j_gun",          // 0
+            "tag_sight_a",    // 1
+            "tag_reticle_a",  // 2, under 1
+            "tag_sight_b",    // 3
+            "tag_launcher",   // 4
+            "j_grenade",      // 5, under 4
+            "tag_iron_on",    // 6
+            "tag_iron_off",   // 7
+            "tag_suppressor", // 8
+        ];
+        let parent = vec![
+            None,
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(0),
+            Some(4),
+            Some(0),
+            Some(0),
+            Some(0),
+        ];
+        (names.map(String::from).to_vec(), parent)
+    }
+
+    fn list(n: &[&str]) -> Vec<String> {
+        n.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn reflex_reticles_are_tinted_light() {
+        assert_eq!(reticle_look(Some("mc_reflexsight")), Some(RETICLE_RED));
+        assert_eq!(reticle_look(Some("mc_effect_replace")), None);
+        assert_eq!(reticle_look(None), None);
+    }
+
+    #[test]
+    fn a_hidden_tag_takes_its_subtree_in_any_case() {
+        let (names, parent) = gun_bones();
+        assert_eq!(
+            hidden_bones(&names, &parent, &list(&["TAG_SIGHT_A"])),
+            vec![1, 2]
+        );
+        assert_eq!(
+            hidden_bones(&names, &parent, &list(&["tag_launcher", "nope"])),
+            vec![4, 5]
+        );
+        assert!(hidden_bones(&names, &parent, &[]).is_empty());
+    }
+
+    #[test]
+    fn variants_share_a_model_and_differ_by_masks() {
+        let (names, parent) = gun_bones();
+        let base = list(&[
+            "tag_sight_a",
+            "tag_sight_b",
+            "tag_launcher",
+            "tag_iron_off",
+            "tag_suppressor",
+        ]);
+        // Sight A folds the iron sight down (shows the "off" one).
+        let sight = list(&[
+            "tag_sight_b",
+            "tag_launcher",
+            "tag_iron_on",
+            "tag_suppressor",
+        ]);
+        let bling = list(&["tag_sight_b", "tag_launcher", "tag_iron_on"]);
+        let (always, per) = shared_hides(&names, &parent, &[&base, &sight, &bling]);
+        // Sight B and the launcher are hidden by all three: left out of the model.
+        assert_eq!(always, vec![3, 4, 5]);
+        assert_eq!(per[0], vec![1, 2, 7, 8]);
+        assert_eq!(per[1], vec![6, 8]);
+        // Two attachments at once: the sight, its reticle and the suppressor all show.
+        assert_eq!(per[2], vec![6]);
+        // A surface on the reticle is hidden for the base, shown for both sight variants.
+        let mut bits = [0u32; 6];
+        bits[0] = 0x8000_0000 >> 2;
+        assert!(uses_any(&bits, &per[0]) && !uses_any(&bits, &per[1]) && !uses_any(&bits, &per[2]));
+        // One variant alone: nothing extra.
+        let (always, per) = shared_hides(&names, &parent, &[&base]);
+        assert_eq!(always, vec![1, 2, 3, 4, 5, 7, 8]);
+        assert!(per[0].is_empty());
+    }
 
     #[test]
     fn key_frames_keep_the_turns() {

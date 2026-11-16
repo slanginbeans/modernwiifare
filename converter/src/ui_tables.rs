@@ -67,6 +67,22 @@ pub fn weapon_bases(tables: &HashMap<String, Table>) -> Vec<String> {
         .collect()
 }
 
+/// The base weapon (one of `bases`) weapon file `name` is a variant of: `<base>_mp` itself or `<base>_<...>_mp`
+/// (attachments, akimbo), the longest base that fits (`mp5k_...` is `mp5k`'s, not `mp5`'s).
+pub fn variant_base<'a>(name: &str, bases: &'a [String]) -> Option<&'a str> {
+    let stem = name.strip_suffix("_mp")?;
+    bases
+        .iter()
+        .filter(|b| {
+            stem == b.as_str()
+                || stem
+                    .strip_prefix(b.as_str())
+                    .is_some_and(|r| r.starts_with('_'))
+        })
+        .max_by_key(|b| b.len())
+        .map(String::as_str)
+}
+
 /// The Create-a-Class catalog from MW2's tables (`code_post_gfx_mp`) and localized names. `weapon_files`: weapon
 /// names in `WEAP`; weapons without a `<name>_mp` file are left out.
 pub fn catalog(
@@ -281,6 +297,20 @@ pub fn catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn variants_find_their_longest_base() {
+        let bases: Vec<String> = ["mp5", "mp5k", "m4", "usp"].map(String::from).to_vec();
+        assert_eq!(variant_base("m4_mp", &bases), Some("m4"));
+        assert_eq!(variant_base("m4_acog_silencer_mp", &bases), Some("m4"));
+        assert_eq!(variant_base("mp5k_reflex_mp", &bases), Some("mp5k"));
+        assert_eq!(variant_base("mp5_reflex_mp", &bases), Some("mp5"));
+        assert_eq!(variant_base("usp_akimbo_mp", &bases), Some("usp"));
+        // Not a variant: another weapon, a launcher named after the gun, no `_mp`.
+        assert_eq!(variant_base("m40a3_mp", &bases), None);
+        assert_eq!(variant_base("gl_m4_mp", &bases), None);
+        assert_eq!(variant_base("m4_acog", &bases), None);
+    }
 
     fn t(rows: &[&[&str]]) -> Table {
         let columns = rows[0].len();

@@ -456,6 +456,66 @@ impl ViewModel {
         Ok(v)
     }
 
+    /// Leave out the surfaces `hidden` names (by index; an attachment variant's hidden parts, `parts`) and the
+    /// vertices only they used; the rest keep their order. Bones and clips are untouched.
+    pub fn drop_surfaces(&mut self, hidden: impl Fn(usize) -> bool) {
+        if !(0..self.surfaces.len()).any(&hidden) {
+            return;
+        }
+        // Sized exactly (MEM1 is short): the kept surfaces' indices and the vertices they use.
+        let mut used = alloc::vec![false; self.verts.len()];
+        let mut index_count = 0;
+        let mut surface_count = 0;
+        for (_, s) in self
+            .surfaces
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !hidden(*i))
+        {
+            surface_count += 1;
+            let at = s.first_index as usize;
+            let end = (at + s.index_count as usize).min(self.indices.len());
+            for &v in self.indices.get(at..end).unwrap_or(&[]) {
+                if let Some(u) = used.get_mut(usize::from(v)) {
+                    *u = true;
+                    index_count += 1;
+                }
+            }
+        }
+        let vertex_count = used.iter().filter(|&&u| u).count();
+        drop(used);
+        let mut keep = alloc::vec![u16::MAX; self.verts.len()];
+        let mut verts = Vec::with_capacity(vertex_count);
+        let mut indices = Vec::with_capacity(index_count);
+        let mut surfaces = Vec::with_capacity(surface_count);
+        for (i, s) in self.surfaces.iter().enumerate() {
+            if hidden(i) {
+                continue;
+            }
+            let first_index = indices.len() as u32;
+            let at = s.first_index as usize;
+            let end = (at + s.index_count as usize).min(self.indices.len());
+            for &v in self.indices.get(at..end).unwrap_or(&[]) {
+                let Some(k) = keep.get_mut(usize::from(v)) else {
+                    continue;
+                };
+                if *k == u16::MAX {
+                    *k = verts.len() as u16;
+                    verts.push(self.verts[usize::from(v)]);
+                }
+                indices.push(*k);
+            }
+            surfaces.push(Surface {
+                first_index,
+                index_count: indices.len() as u32 - first_index,
+                ..*s
+            });
+        }
+        self.verts = verts;
+        self.indices = indices;
+        self.surfaces = surfaces;
+    }
+
     pub fn clip(&self, slot: u8) -> Option<&Clip> {
         self.clips.iter().find(|c| c.slot == slot)
     }
@@ -769,6 +829,43 @@ pub fn quat_to_i16(q: [f32; 4]) -> [i16; 4] {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    /// Three surfaces (a quad, a triangle sharing a vertex with it, a lone triangle): the middle one left out.
+    #[test]
+    fn dropped_surfaces_take_only_their_own_vertices() {
+        let v = |x: f32| SkinVertex {
+            pos: [x, 0.0, 0.0],
+            ..SkinVertex::default()
+        };
+        let mut vm = model_with(vec![]);
+        vm.verts = (0..9).map(|i| v(i as f32)).collect();
+        vm.indices = vec![0, 1, 2, 2, 1, 3, 3, 4, 5, 6, 7, 8];
+        let surf = |first_index, index_count, texture| Surface {
+            first_index,
+            index_count,
+            texture,
+            ..Surface::default()
+        };
+        vm.surfaces = vec![surf(0, 6, 10), surf(6, 3, 11), surf(9, 3, 12)];
+        let mut cut = vm.clone();
+        cut.drop_surfaces(|i| i == 1);
+        assert_eq!(cut.surfaces.len(), 2);
+        assert_eq!(
+            (cut.surfaces[1].texture, cut.surfaces[1].first_index),
+            (12, 6)
+        );
+        // 4 + 3 vertices kept (4 and 5 belonged to the dropped surface only), positions as before.
+        assert_eq!(cut.verts.len(), 7);
+        let pos = |m: &ViewModel, k: usize| m.verts[usize::from(m.indices[k])].pos[0];
+        for (k, j) in [(0, 0), (5, 5), (6, 9), (8, 11)] {
+            assert_eq!(pos(&cut, k), pos(&vm, j));
+        }
+        assert!(cut.validate().is_ok());
+        // Nothing hidden: unchanged.
+        let mut same = vm.clone();
+        same.drop_surfaces(|_| false);
+        assert_eq!(same, vm);
+    }
 
     /// A two-bone model with the given clips (enough for decode's checks).
     fn model_with(clips: alloc::vec::Vec<Clip>) -> ViewModel {

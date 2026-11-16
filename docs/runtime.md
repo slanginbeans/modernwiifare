@@ -164,8 +164,20 @@ it lands. Special grenades: the flashbang blinds by distance and where you look 
 grenade's shock caps how fast you can turn (its `.shock` file's look control: 75°/s in MW2's, easing off over its last two seconds; the stick doesn't take the file's mouse sensitivity scale) and slows movement for `2 + 4 × closeness` seconds (`_weapons.gsc`). Teammates' flashes and stuns
 don't affect you. The throwing knife flies as IW4L's knife does (no fuse; it sticks in what it hits square, skips off what it glances, lies where it slides to a stop), kills whoever it passes through with the weapon's damage, then drops; hold X over a knife you can carry (within 90 units, in sight) for a quarter second to pick it back up (IW4L's use-item rule; X doesn't reload while one is in reach). Claymores and C4 stick as IW4L's equipment does (a claymore to the ground, facing your throw; C4 to anything) and, without a timed detonation, lose their fuse once stuck. A claymore trips on an enemy moving inside its trigger, far enough ahead and inside its cone, in its sight (_weapons.gsc's radius, cone, minimum distance and grace period), then goes off with the weapon's 60° blast cone; C4 goes off when you double-tap X (pressed under 0.5 s, again within 0.5 s, watchC4AltDetonate). Two of each at once (scr_maxPerPlayerExplosives): a third blows the oldest; your charges go when you respawn. The smoke grenade waits until it lands (IW4L), then lays MW2's smoke: the particles of its effect's sight-blocking elements (WSMK: how many, where around the blast, their delays, lives, size and alpha curves), and a sight line through them loses each particle's alpha as IW4L's `get_client_visibility` takes it (bots can't see you once it drops under IW4L's threshold: about 2.75 to 10 s after it lands). Deviation: MW2's smoke elements have no distance fade, which IW4L's `vis_blocker_add_prepared` treats as not blocking at all; here they block at full strength. The particles show as see-through grey boxes until the smoke sprites are converted, and don't drift. Tactical insertion and blast shield are
 chosen and saved but do nothing yet (deathstreaks: see Life and match).
-Weapons with attachments use the attachment variant's combat numbers (`m4_acog_mp` ...) but the base weapon's
-first-person model. Burst weapons (the FAMAS, the M16) get IW4L's host-rule burst cooldown (200 ms,
+Weapons with attachments use the attachment variant's combat numbers (`m4_acog_mp` ...) and show their attachments
+as MW2 does: the variants share the base weapon's first-person and world models and differ only by the bones they
+hide (IW4 `hideTags`, a hidden bone takes its subtree). Each `views/<base>.wpk` carries every attachment its variants
+show, and `VHID` says which surfaces each variant hides; when the arsenal loads a slot's file it keeps only what the
+slot's weapon shows (`ViewModel::drop_surfaces`: the other attachments' vertices never reach the arrays, MEM1 or the
+display lists), so a different variant of the same weapon (a pick-up, a class change) reloads the file. Bling's two
+attachments are one variant (`m4_acog_silencer_mp`), so they work the same way. The flip-up iron sight folds under an
+optic as MW2's does (its own hidden bones). Sights: the lens and reticle are the sight's own surfaces; the red dot
+and holographic reticles (IW4's `reflexsight` technique, a grey-on-black texture) add red light, at full detail
+without mips, the ACOG's chevron is its alpha-tested quad. Bots' and dropped weapons (`GUNM`) leave out what their
+weapon record hides (`GUNH`); their attachment parts come from the model's coarsest LOD, thinned by meshoptimizer to
+200 vertices per weapon. Not yet: the thermal scope's thermal view (its ADS shows the scope overlay over the normal
+view; the scope's screen shows its off texture), the heartbeat sensor's dots (its screen is blank), the ACOG chevron
+is about 2 px across at 480p. Burst weapons (the FAMAS, the M16) get IW4L's host-rule burst cooldown (200 ms,
 `WeaponHostRules`, as IW4L's `ResolvedCombat` does); before, the converter wrote 0, IW4L refused their facts and a
 class carrying one spawned with its secondary out.
 
