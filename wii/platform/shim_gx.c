@@ -6,7 +6,10 @@
 
 #include "shim.h"
 
-#define FIFO_SIZE (256 * 1024)
+/* Room for two frames of the heaviest maps' commands (`mp_terminal` writes ~420 KB a frame): with less, the CPU stops
+ * mid-frame whenever the FIFO reaches its high watermark and waits for the GPU (telemetry `full`), and frames can't
+ * overlap as pipelining intends. MEM1. */
+#define FIFO_SIZE (1024 * 1024)
 
 extern GXRModeObj *mwf_rmode;
 extern void *mwf_xfb[MWF_XFB_COUNT];
@@ -39,10 +42,40 @@ static u32 metric_frames = 0;
 static uint32_t metric_t0 = 0;
 static mwf_gpu_metric metric_last[MWF_GPU_METRIC_SETS];
 
+/* The PI's view of the CPU FIFO: base, end and write pointer (bit 26 flags a wrap). */
+#define PI_FIFO_BASE (*(volatile u32 *)0xCC00300C)
+#define PI_FIFO_END (*(volatile u32 *)0xCC003010)
+#define PI_FIFO_WP (*(volatile u32 *)0xCC003014)
+static u32 fifo_last_wp = 0, fifo_base = 0, fifo_end = 0;
+static uint32_t fifo_written = 0;
+
+/* One uncached register read: cheap enough every 16th world draw. */
+void mwf_fifo_sample(void) {
+    u32 base = fifo_base, end = fifo_end;
+    u32 wp = PI_FIFO_WP & 0x03FFFFE0;
+    if (wp >= fifo_last_wp)
+        fifo_written += wp - fifo_last_wp;
+    else
+        fifo_written += (end - fifo_last_wp) + (wp - base);
+    fifo_last_wp = wp;
+}
+
+uint32_t mwf_fifo_bytes(void) {
+    mwf_fifo_sample();
+    return fifo_written;
+}
+
+uint32_t mwf_fifo_overflows(void) {
+    return GX_GetOverflowCount();
+}
+
 void mwf_gx_init(uint32_t clear_rgba) {
     void *fifo = memalign(32, FIFO_SIZE);
     memset(fifo, 0, FIFO_SIZE);
     GX_Init(fifo, FIFO_SIZE);
+    fifo_base = PI_FIFO_BASE & 0x03FFFFE0;
+    fifo_end = PI_FIFO_END & 0x03FFFFE0;
+    fifo_last_wp = PI_FIFO_WP & 0x03FFFFE0;
 
     GXColor bg = {(u8)(clear_rgba >> 24), (u8)(clear_rgba >> 16), (u8)(clear_rgba >> 8), 0xff};
     GX_SetCopyClear(bg, 0x00ffffff);

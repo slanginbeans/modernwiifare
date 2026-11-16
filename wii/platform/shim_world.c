@@ -335,6 +335,7 @@ void mwf_frame_begin(const float view[3][4], float fovy_deg, float znear, float 
     GX_SetCurrentMtx(GX_PNMTX0);
     GX_SetViewport(0, 0, mwf_rmode->fbWidth, mwf_rmode->efbHeight, VIEW_DEPTH, 1.0f);
     GX_InvalidateTexAll();
+    GX_InvVtxCache();
     GX_SetColorUpdate(GX_TRUE);
     GX_SetAlphaUpdate(GX_FALSE);
     mode = MODE_NONE;
@@ -350,9 +351,21 @@ void mwf_frame_begin(const float view[3][4], float fovy_deg, float znear, float 
 #define MWF_DL_NO_COLOR 2
 static u8 world_dl_flags = 0;
 
+/* What mwf_world_state last set up while in world mode: the texture in each slot it uses, the TEV layout (by what it
+ * combines), the light colour and the pixel ops. Only what changed is sent again. Valid until world mode is left
+ * (every other draw sets its own state and leaves world mode first): world_mode clears it. */
+static struct {
+    int valid;
+    int32_t map[3];
+    int tev;
+    uint32_t tint;
+    int blend, alpha_ref, cull;
+} ws;
+
 static void world_mode(void) {
     if (mode == MODE_WORLD) return;
     mode = MODE_WORLD;
+    ws.valid = 0;
     world_dl_flags = 0;
     fog_world(1);
     GX_ClearVtxDesc();
@@ -397,7 +410,8 @@ void mwf_world_arrays(const void *v, uint32_t stride) {
         GX_SetArray(GX_VA_TEX0, (void *)(b + 10), (u8)stride);
         GX_SetArray(GX_VA_TEX1, (void *)(b + 14), (u8)stride);
     }
-    GX_InvVtxCache();
+    /* No vertex cache invalidation: it caches memory by address, and world vertices never change in a frame
+     * (mwf_frame_begin invalidates once a frame, after any load). */
 }
 
 static void stage_ops(u8 stage, u8 scale) {
@@ -413,95 +427,126 @@ static void stage_ops(u8 stage, u8 scale) {
 void mwf_world_tint(uint32_t rgba) {
     GXColor k = {(u8)(rgba >> 24), (u8)(rgba >> 16), (u8)(rgba >> 8), 0xff};
     GX_SetTevKColor(GX_KCOLOR0, k);
+    ws.tint = rgba;
 }
 
 void mwf_world_state(const mwf_draw_state *s) {
     int has_tex = s->tex >= 0 && s->tex < tex_count;
     int lit = s->lightmap >= 0 && s->lightmap < tex_count;
     int has_plane = has_tex && tex_has_alpha[s->tex];
-    u8 st = GX_TEVSTAGE0;
+    int tinted = s->tint != 0;
+    int tev = has_tex | (lit << 1) | (tinted << 2) | (has_plane << 3);
+    if (mode != MODE_WORLD || !ws.valid) {
+        ws.map[0] = ws.map[1] = ws.map[2] = -1;
+        ws.tev = ws.blend = ws.alpha_ref = ws.cull = -1;
+        ws.tint = 0;
+    }
+    ws.valid = mode == MODE_WORLD;
 
-    if (has_tex) {
+    if (has_tex && ws.map[0] != s->tex) {
         GX_LoadTexObj(&tex_obj[s->tex], GX_TEXMAP0);
-        GX_SetTevOrder(st, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
-        if (lit)
-            GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_TEXC);
-        else
-            GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_TEXC, GX_CC_RASC, GX_CC_ZERO);
-        GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_TEXA, GX_CA_RASA, GX_CA_ZERO);
-    } else {
-        GX_SetTevOrder(st, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
-        GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, lit ? GX_CC_ONE : GX_CC_RASC);
-        GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_RASA);
+        ws.map[0] = s->tex;
     }
-    stage_ops(st, GX_CS_SCALE_1);
-    st++;
-
-    if (lit) {
+    if (lit && ws.map[1] != s->lightmap) {
         GX_LoadTexObj(&tex_obj[s->lightmap], GX_TEXMAP1);
-        GX_SetTevOrder(st, GX_TEXCOORD1, GX_TEXMAP1, GX_COLORNULL);
-        GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_CPREV, GX_CC_TEXC, GX_CC_ZERO);
-        GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
-        stage_ops(st, GX_CS_SCALE_2);
-        st++;
+        ws.map[1] = s->lightmap;
     }
-
-    if (s->tint != 0) {
+    if (has_plane && ws.map[2] != s->tex) {
+        GX_LoadTexObj(&tex_alpha[s->tex], GX_TEXMAP2);
+        ws.map[2] = s->tex;
+    }
+    if (tinted && ws.tint != s->tint) {
         /* Static model light: colour x konst x 2 (the konst holds half the light, like lightmaps). */
         mwf_world_tint(s->tint);
-        GX_SetTevKColorSel(st, GX_TEV_KCSEL_K0);
-        GX_SetTevOrder(st, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLORNULL);
-        GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_CPREV, GX_CC_KONST, GX_CC_ZERO);
-        GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
-        stage_ops(st, GX_CS_SCALE_2);
-        st++;
     }
 
-    if (has_plane) {
-        GX_LoadTexObj(&tex_alpha[s->tex], GX_TEXMAP2);
-        GX_SetTevOrder(st, GX_TEXCOORD0, GX_TEXMAP2, GX_COLOR0A0);
-        GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_CPREV);
-        GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_TEXA, GX_CA_RASA, GX_CA_ZERO);
+    if (ws.tev != tev) {
+        ws.tev = tev;
+        u8 st = GX_TEVSTAGE0;
+        if (has_tex) {
+            GX_SetTevOrder(st, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
+            if (lit)
+                GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_TEXC);
+            else
+                GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_TEXC, GX_CC_RASC, GX_CC_ZERO);
+            GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_TEXA, GX_CA_RASA, GX_CA_ZERO);
+        } else {
+            GX_SetTevOrder(st, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+            GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, lit ? GX_CC_ONE : GX_CC_RASC);
+            GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_RASA);
+        }
         stage_ops(st, GX_CS_SCALE_1);
         st++;
-    }
-    GX_SetNumTevStages(st);
 
-    switch (s->blend) {
-    case MWF_BLEND_ALPHA_TEST:
-        GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
-        GX_SetAlphaCompare(GX_GEQUAL, s->alpha_ref, GX_AOP_AND, GX_ALWAYS, 0);
-        GX_SetZCompLoc(GX_FALSE); /* Z after texturing, so cut-out texels do not write depth */
-        GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
-        break;
-    case MWF_BLEND_BLEND:
-        GX_SetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_CLEAR);
-        GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
-        GX_SetZCompLoc(GX_TRUE);
-        GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_FALSE);
-        break;
-    case MWF_BLEND_ADD:
-        GX_SetBlendMode(GX_BM_BLEND, GX_BL_ONE, GX_BL_ONE, GX_LO_CLEAR);
-        GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
-        GX_SetZCompLoc(GX_TRUE);
-        GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_FALSE);
-        break;
-    case MWF_BLEND_MULTIPLY:
-        GX_SetBlendMode(GX_BM_BLEND, GX_BL_DSTCLR, GX_BL_ZERO, GX_LO_CLEAR);
-        GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
-        GX_SetZCompLoc(GX_TRUE);
-        GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_FALSE);
-        break;
-    default:
-        GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
-        GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
-        GX_SetZCompLoc(GX_TRUE);
-        GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
-        break;
+        if (lit) {
+            GX_SetTevOrder(st, GX_TEXCOORD1, GX_TEXMAP1, GX_COLORNULL);
+            GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_CPREV, GX_CC_TEXC, GX_CC_ZERO);
+            GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
+            stage_ops(st, GX_CS_SCALE_2);
+            st++;
+        }
+
+        if (tinted) {
+            GX_SetTevKColorSel(st, GX_TEV_KCSEL_K0);
+            GX_SetTevOrder(st, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLORNULL);
+            GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_CPREV, GX_CC_KONST, GX_CC_ZERO);
+            GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_APREV);
+            stage_ops(st, GX_CS_SCALE_2);
+            st++;
+        }
+
+        if (has_plane) {
+            GX_SetTevOrder(st, GX_TEXCOORD0, GX_TEXMAP2, GX_COLOR0A0);
+            GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_CPREV);
+            GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_TEXA, GX_CA_RASA, GX_CA_ZERO);
+            stage_ops(st, GX_CS_SCALE_1);
+            st++;
+        }
+        GX_SetNumTevStages(st);
     }
-    GX_SetCullMode(s->cull == MWF_CULL_BACK    ? MWF_GX_CULL_BACK
-                   : s->cull == MWF_CULL_FRONT ? MWF_GX_CULL_FRONT
-                                               : GX_CULL_NONE);
+
+    if (ws.blend != s->blend || ws.alpha_ref != s->alpha_ref) {
+        ws.blend = s->blend;
+        ws.alpha_ref = s->alpha_ref;
+        switch (s->blend) {
+        case MWF_BLEND_ALPHA_TEST:
+            GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
+            GX_SetAlphaCompare(GX_GEQUAL, s->alpha_ref, GX_AOP_AND, GX_ALWAYS, 0);
+            GX_SetZCompLoc(GX_FALSE); /* Z after texturing, so cut-out texels do not write depth */
+            GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
+            break;
+        case MWF_BLEND_BLEND:
+            GX_SetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_CLEAR);
+            GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+            GX_SetZCompLoc(GX_TRUE);
+            GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_FALSE);
+            break;
+        case MWF_BLEND_ADD:
+            GX_SetBlendMode(GX_BM_BLEND, GX_BL_ONE, GX_BL_ONE, GX_LO_CLEAR);
+            GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+            GX_SetZCompLoc(GX_TRUE);
+            GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_FALSE);
+            break;
+        case MWF_BLEND_MULTIPLY:
+            GX_SetBlendMode(GX_BM_BLEND, GX_BL_DSTCLR, GX_BL_ZERO, GX_LO_CLEAR);
+            GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+            GX_SetZCompLoc(GX_TRUE);
+            GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_FALSE);
+            break;
+        default:
+            GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
+            GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+            GX_SetZCompLoc(GX_TRUE);
+            GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
+            break;
+        }
+    }
+    if (ws.cull != s->cull) {
+        ws.cull = s->cull;
+        GX_SetCullMode(s->cull == MWF_CULL_BACK    ? MWF_GX_CULL_BACK
+                       : s->cull == MWF_CULL_FRONT ? MWF_GX_CULL_FRONT
+                                                   : GX_CULL_NONE);
+    }
 }
 
 /* How the next world display lists index their vertices: u8 or u16 indices, with or without a colour index. Without
@@ -526,7 +571,9 @@ void mwf_world_desc(uint8_t flags) {
 }
 
 void mwf_call_dl(const void *dl, uint32_t len) {
+    static u32 calls = 0;
     GX_CallDispList((void *)dl, len);
+    if ((++calls & 15) == 0) mwf_fifo_sample();
 }
 
 /* ---- sky ----------------------------------------------------------------------------------------------------- */

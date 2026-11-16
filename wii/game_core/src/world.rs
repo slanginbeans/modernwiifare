@@ -183,21 +183,34 @@ pub struct World<'a> {
     model_surfaces: Vec<BatchRecord>,
     models: Vec<ModelRecord>,
     instances: Vec<InstanceRecord>,
-    /// Per instance, fixed for the map: world-space centre, bounding radius and placement scale (computed at load,
-    /// not every frame).
-    instance_bounds: Vec<([f32; 3], f32, f32)>,
     vis: Option<VisRuntime<'a>>,
-    /// Cell of each batch / instance (`ALWAYS` when none); empty when the pack has no visibility.
-    batch_cells: Vec<u16>,
-    instance_cells: Vec<u16>,
-    /// Scratch for the frame's draw order: (class, sort key, draw). A draw below `MODEL_DRAW` is a world batch;
-    /// otherwise it indexes `model_draws`.
-    order: Vec<(u8, i32, u32)>,
-    /// Every world batch in draw order, sorted once at load: the opaque and alpha-tested ones by material and
-    /// lightmap first (so a frame's visible ones come out already sorted), then the blended ones.
-    batch_order: Vec<u32>,
-    /// Scratch: (instance, model surface) of each visible model surface.
-    model_draws: Vec<(u16, u32)>,
+    /// What culling reads of each world batch, in draw order (`batch_order`, sorted once at load: the opaque and
+    /// alpha-tested ones by material and lightmap, so a frame's visible ones come out already sorted, then the
+    /// blended ones), and of each instance: built at load so the per-frame loops walk one small record each, in
+    /// order.
+    batch_cull: Vec<BatchCull>,
+    instance_cull: Vec<InstanceCull>,
+    /// The same in groups by cell and grid square (`batch_cull` / `instance_cull` indices): a group out of view or
+    /// in a hidden cell rules out all its members at once. Instance groups bound their members' spheres, with a
+    /// margin so that rounding never rules out a member that would pass on its own.
+    batch_groups: (Vec<CullGroup>, Vec<u32>),
+    instance_groups: (Vec<CullGroup>, Vec<u32>),
+    /// Scratch: one bit per batch / instance whose group passed.
+    cull_bits: Vec<u32>,
+    /// Scratch for the frame's draw order, packed by [`order_key`]: (class, sort key, draw). A draw without
+    /// `MODEL_DRAW` is a world batch; otherwise it indexes `model_draws`.
+    order: Vec<u64>,
+    /// Scratch: (instance, model surface, its slot in `instance_views`) of each visible model surface.
+    model_draws: Vec<(u16, u32, u32)>,
+    /// Scratch: the frame's opaque model draws as (surface << 32 | draw), in the order they were found, and the
+    /// blended draws (world and models) as order keys; with a buffer for the radix sort.
+    opaque_models: Vec<u64>,
+    blended: Vec<u64>,
+    radix_tmp: Vec<u64>,
+    /// Bytes of a model surface number (passes of the radix sort).
+    surface_bytes: u32,
+    /// Scratch: view x placement of each visible instance (once per instance, not per surface).
+    instance_views: Vec<Mtx34>,
     /// Draw the static models (the debug menu can turn them off to measure them).
     pub draw_models: bool,
     /// The far plane in world units; 0 is the full [`ZFAR`]. Shorter culls everything past it (world batches by
@@ -212,9 +225,159 @@ pub struct World<'a> {
     /// cell sees nothing below), and the near plane is [`SKY_NEAR`] (the world 15 000 units off keeps its depth).
     pub skip_vis: bool,
     fog: Option<records::Fog>,
+    /// A microsecond clock for [`World::cost`] (the Wii's; none on the host: nothing is timed).
+    pub clock: Option<fn() -> u32>,
+    /// What the last [`World::draw`] cost, by stage.
+    pub cost: WorldCost,
 }
 
-const MODEL_DRAW: u32 = 1 << 31;
+/// [`World::draw`]'s stages (microseconds; telemetry `wvis` / `wcul` / `wsrt` / `wsub`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldCost {
+    /// The portal walk (visible cells).
+    pub vis_us: u32,
+    /// World batches and static model instances against cells, draw distance, LOD and the frustum.
+    pub cull_us: u32,
+    /// Sorting the visible draws.
+    pub sort_us: u32,
+    /// The draw calls: matrices, arrays, state, display lists (frame begin and sky included).
+    pub submit_us: u32,
+}
+
+/// A world batch as culling sees it (32 bytes).
+#[derive(Clone, Copy, Debug)]
+struct BatchCull {
+    min: [f32; 3],
+    max: [f32; 3],
+    /// Index in `batches`.
+    batch: u32,
+    /// Visibility cell (`ALWAYS` when none).
+    cell: u16,
+    blended: bool,
+}
+
+/// A static model instance as culling sees it (32 bytes), fixed for the map.
+#[derive(Clone, Copy, Debug)]
+struct InstanceCull {
+    /// World-space centre and bounding radius.
+    centre: [f32; 3],
+    radius: f32,
+    /// Placement scale (LOD distances are in model units).
+    scale: f32,
+    /// The square of its draw distance (infinite when it has none).
+    far2: f32,
+    model: u16,
+    cell: u16,
+}
+
+/// Side of the grid squares world batches and instances are grouped by for culling (world units).
+const GROUP_SIZE: f32 = 1024.0;
+
+/// A group of world batches or instances in one cell and grid square, tested before its members: `min` / `max`
+/// bound the members' boxes or spheres; `members` is its run in the member list.
+#[derive(Clone, Copy, Debug)]
+struct CullGroup {
+    min: [f32; 3],
+    max: [f32; 3],
+    cell: u16,
+    first: u32,
+    count: u32,
+}
+
+/// Group items (centre, box min / max, cell) by cell and grid square: the groups and their members' indices.
+fn cull_groups(
+    items: impl Iterator<Item = ([f32; 3], [f32; 3], u16)>,
+) -> (Vec<CullGroup>, Vec<u32>) {
+    let mut map: alloc::collections::BTreeMap<(u16, i32, i32), (CullGroup, Vec<u32>)> =
+        alloc::collections::BTreeMap::new();
+    for (i, (min, max, cell)) in items.enumerate() {
+        let sq = |a: usize| libm::floorf((min[a] + max[a]) * 0.5 / GROUP_SIZE) as i32;
+        let e = map.entry((cell, sq(0), sq(1))).or_insert_with(|| {
+            (
+                CullGroup {
+                    min,
+                    max,
+                    cell,
+                    first: 0,
+                    count: 0,
+                },
+                Vec::new(),
+            )
+        });
+        for a in 0..3 {
+            e.0.min[a] = e.0.min[a].min(min[a]);
+            e.0.max[a] = e.0.max[a].max(max[a]);
+        }
+        e.1.push(i as u32);
+    }
+    let mut groups = Vec::with_capacity(map.len());
+    let mut members = Vec::new();
+    for (_, (mut g, m)) in map {
+        g.first = members.len() as u32;
+        g.count = m.len() as u32;
+        members.extend(m);
+        groups.push(g);
+    }
+    (groups, members)
+}
+
+/// Set the bits of the members of the groups that `keep` passes (and only those).
+fn mark_groups(
+    bits: &mut Vec<u32>,
+    len: usize,
+    groups: &[CullGroup],
+    members: &[u32],
+    mut keep: impl FnMut(&CullGroup) -> bool,
+) {
+    bits.clear();
+    bits.resize(len.div_ceil(32), 0);
+    for g in groups.iter().filter(|g| keep(g)) {
+        for &m in &members[g.first as usize..(g.first + g.count) as usize] {
+            bits[m as usize / 32] |= 1 << (m % 32);
+        }
+    }
+}
+
+/// Draw numbers: world batch indices, or `MODEL_DRAW` | an index into `model_draws` (both under 2^24).
+const MODEL_DRAW: u32 = 1 << 24;
+
+/// One draw's place in the frame's order as a single integer: by class, then sort key (signed), then draw number,
+/// exactly the order of the tuple `(class, key, draw)`, sorted in one compare.
+fn order_key(class: u8, key: i32, draw: u32) -> u64 {
+    debug_assert!(class < 4 && draw < MODEL_DRAW << 1);
+    (u64::from(class) << 57) | (u64::from(key as u32 ^ 0x8000_0000) << 25) | u64::from(draw)
+}
+
+#[cfg(test)]
+fn order_class(k: u64) -> u8 {
+    (k >> 57) as u8
+}
+
+/// Stable LSD radix sort of `v` by the low `bytes` bytes of each value's high 32 bits (`tmp` is scratch).
+fn radix_sort_high(v: &mut Vec<u64>, tmp: &mut Vec<u64>, bytes: u32) {
+    for pass in 0..bytes.min(4) {
+        let shift = 32 + pass * 8;
+        let mut count = [0u32; 257];
+        for &x in v.iter() {
+            count[((x >> shift) & 0xff) as usize + 1] += 1;
+        }
+        for i in 1..257 {
+            count[i] += count[i - 1];
+        }
+        tmp.clear();
+        tmp.resize(v.len(), 0);
+        for &x in v.iter() {
+            let b = ((x >> shift) & 0xff) as usize;
+            tmp[count[b] as usize] = x;
+            count[b] += 1;
+        }
+        core::mem::swap(v, tmp);
+    }
+}
+
+fn order_draw(k: u64) -> u32 {
+    (k as u32) & ((MODEL_DRAW << 1) - 1)
+}
 
 impl World<'_> {
     /// The handle of the pack's texture `i` (-1 when there is none).
@@ -252,6 +415,35 @@ pub fn mul34(a: &Mtx34, b: &Mtx34) -> Mtx34 {
             a[r][0] * b[0][c] + a[r][1] * b[1][c] + a[r][2] * b[2][c] + t
         })
     })
+}
+
+/// IW4's LOD choice, `model.lod_for(sqrt(d2) * lod_scale / scale)` (camera distance over placement scale against
+/// each LOD's switch distance; past the last LOD the model is not drawn), without the square root (software on
+/// Broadway) unless the distance is within 0.01% of a switch distance: there the exact rule decides, so the choice
+/// is always the same.
+fn choose_lod(
+    model: &ModelRecord,
+    d2: f32,
+    lod_scale: f32,
+    scale: f32,
+) -> Option<&wpk::records::ModelLod> {
+    const CLOSE: f32 = 1e-4;
+    let s = scale.max(1e-6);
+    let k = lod_scale / s;
+    let a = d2 * (k * k);
+    for l in &model.lods[..usize::from(model.lod_count.min(4))] {
+        if l.dist <= 0.0 {
+            return Some(l);
+        }
+        let t = l.dist * l.dist;
+        if a < t * (1.0 - CLOSE) {
+            return Some(l);
+        }
+        if a <= t * (1.0 + CLOSE) || a.is_nan() {
+            return model.lod_for(libm::sqrtf(d2) * lod_scale / s);
+        }
+    }
+    None
 }
 
 fn place(m: &Mtx34, p: [f32; 3]) -> [f32; 3] {
@@ -407,9 +599,10 @@ impl<'a> World<'a> {
         }
         let runtime = vis.and_then(|v| VisRuntime::new(&v.vis));
         let (batch_cells, instance_cells) = match (vis, &runtime) {
-            (Some(v), Some(_)) => (v.batch_cells.clone(), v.instance_cells.clone()),
-            _ => (Vec::new(), Vec::new()),
+            (Some(v), Some(_)) => (&v.batch_cells[..], &v.instance_cells[..]),
+            _ => (&[][..], &[][..]),
         };
+        let cell_of = |cells: &[u16], i: usize| cells.get(i).copied().unwrap_or(ALWAYS);
         let vis = runtime;
         let handle = |t: u16| -> i32 { textures.get(usize::from(t)).copied().unwrap_or(-1) };
         let sky = pack
@@ -429,12 +622,58 @@ impl<'a> World<'a> {
             .and_then(|s| s.split('\0').next())
             .unwrap_or("");
         let batch_order = batch_order(&batches, &materials);
+        let batch_cull: Vec<BatchCull> = batch_order
+            .iter()
+            .map(|&i| {
+                let b = &batches[i as usize];
+                BatchCull {
+                    min: b.bounds_min,
+                    max: b.bounds_max,
+                    batch: i,
+                    cell: cell_of(batch_cells, i as usize),
+                    blended: Blend::from_u8(materials[usize::from(b.material)].blend)
+                        >= Blend::Blend,
+                }
+            })
+            .collect();
+        let instance_cull = instances
+            .iter()
+            .enumerate()
+            .map(|(i, inst)| {
+                let scale = max_scale(&inst.mtx);
+                let (centre, radius) = models
+                    .get(usize::from(inst.model))
+                    .map_or(([0.0; 3], 0.0), |m| {
+                        (place(&inst.mtx, m.centre), m.radius * scale)
+                    });
+                let far = f32::from(inst.cull_dist);
+                InstanceCull {
+                    centre,
+                    radius,
+                    scale,
+                    far2: if inst.cull_dist != 0 {
+                        far * far
+                    } else {
+                        f32::INFINITY
+                    },
+                    model: inst.model,
+                    cell: cell_of(instance_cells, i),
+                }
+            })
+            .collect::<Vec<InstanceCull>>();
+        let batch_groups = cull_groups(batch_cull.iter().map(|b| (b.min, b.max, b.cell)));
+        let instance_groups = cull_groups(instance_cull.iter().map(|c| {
+            // The sphere's box, wider by a margin larger than any rounding in the sphere tests.
+            let r = c.radius
+                + 1.0
+                + 1e-4 * (c.radius + c.centre.iter().map(|v| v.abs()).fold(0.0, f32::max));
+            (c.centre.map(|v| v - r), c.centre.map(|v| v + r), c.cell)
+        }));
         Ok(World {
             name,
             textures,
             materials,
             order: Vec::with_capacity(batches.len()),
-            batch_order,
             batches,
             vertices,
             dls,
@@ -447,31 +686,30 @@ impl<'a> World<'a> {
             batch_quant,
             surface_quant,
             model_draws: Vec::with_capacity(model_surfaces.len()),
+            instance_views: Vec::new(),
+            opaque_models: Vec::new(),
+            blended: Vec::new(),
+            radix_tmp: Vec::new(),
+            surface_bytes: (u32::BITS - (model_surfaces.len() as u32).leading_zeros()).div_ceil(8),
             draw_models: true,
             draw_distance: 0.0,
             lod_scale: LOD_SCALE,
             map_fog: true,
             skip_vis: false,
+            clock: None,
+            cost: WorldCost::default(),
             fog: pack
                 .section(tag::FOG)
                 .and_then(|s| records::get::<records::Fog>(s.data, 0)),
             model_surfaces,
-            instance_bounds: instances
-                .iter()
-                .map(|inst| {
-                    let scale = max_scale(&inst.mtx);
-                    models
-                        .get(usize::from(inst.model))
-                        .map_or(([0.0; 3], 0.0, scale), |m| {
-                            (place(&inst.mtx, m.centre), m.radius * scale, scale)
-                        })
-                })
-                .collect(),
             models,
             instances,
             vis,
-            batch_cells,
-            instance_cells,
+            batch_cull,
+            instance_cull,
+            batch_groups,
+            instance_groups,
+            cull_bits: Vec::new(),
         })
     }
 
@@ -550,6 +788,9 @@ impl<'a> World<'a> {
         scratch: &mut WalkScratch,
     ) -> FrameStats {
         let mut stats = FrameStats::default();
+        let clock = self.clock;
+        let us = || clock.map_or(0, |c| c());
+        let t0 = us();
         let far = self.far();
         let near = if self.skip_vis { SKY_NEAR } else { ZNEAR };
         let frustum = cam.frustum(near, far);
@@ -562,7 +803,7 @@ impl<'a> World<'a> {
                 .sum::<u32>()
                 .min(v.cell_ranges.len() as u32);
         }
-        let cell_of = |cells: &[u16], i: usize| cells.get(i).copied().unwrap_or(ALWAYS);
+        let t1 = us();
         gfx.frame_begin(&cam.view(), cam.fovy, near, far, CLEAR);
         gfx.fog(self.fog_ramp());
         if let Some(faces) = self.sky {
@@ -572,97 +813,135 @@ impl<'a> World<'a> {
             }
         }
 
+        let t2 = us();
         // Visible draws: (class, sort key, draw). Class 0 world opaque / alpha test, 1 static models opaque,
         // 2 blended (world and models, far to near).
         self.order.clear();
-        for &i in &self.batch_order {
-            let i = i as usize;
-            let b = &self.batches[i];
-            let in_view = self.skip_vis
-                || self
-                    .vis
-                    .as_ref()
-                    .is_none_or(|v| v.visible(cell_of(&self.batch_cells, i)));
-            if !in_view || !frustum.sees_box(b.bounds_min, b.bounds_max) {
-                stats.culled += 1;
-                continue;
-            }
-            let m = &self.materials[usize::from(b.material)];
-            if Blend::from_u8(m.blend) >= Blend::Blend {
-                let c = [
-                    (b.bounds_min[0] + b.bounds_max[0]) * 0.5,
-                    (b.bounds_min[1] + b.bounds_max[1]) * 0.5,
-                    (b.bounds_min[2] + b.bounds_max[2]) * 0.5,
-                ];
-                // Far first: larger depth sorts first.
-                self.order.push((2, -(cam.depth_of(c) as i32), i as u32));
-            } else {
-                let key = (i32::from(b.material) << 16) | i32::from(b.lightmap);
-                self.order.push((0, key, i as u32));
+        self.blended.clear();
+        self.opaque_models.clear();
+        let vis = self.vis.as_ref().filter(|_| !self.skip_vis);
+        // A box in view is in its group's view (the group's box holds it, and the test only grows with the box).
+        let mut bits = core::mem::take(&mut self.cull_bits);
+        mark_groups(
+            &mut bits,
+            self.batch_cull.len(),
+            &self.batch_groups.0,
+            &self.batch_groups.1,
+            |g| vis.is_none_or(|v| v.visible(g.cell)) && frustum.sees_box(g.min, g.max),
+        );
+        stats.culled = self.batch_cull.len() as u32;
+        for (w, &word) in bits.iter().enumerate() {
+            let mut word = word;
+            while word != 0 {
+                let i = w * 32 + word.trailing_zeros() as usize;
+                word &= word - 1;
+                let b = &self.batch_cull[i];
+                if !frustum.sees_box(b.min, b.max) {
+                    continue;
+                }
+                stats.culled -= 1;
+                if b.blended {
+                    let c = [
+                        (b.min[0] + b.max[0]) * 0.5,
+                        (b.min[1] + b.max[1]) * 0.5,
+                        (b.min[2] + b.max[2]) * 0.5,
+                    ];
+                    // Far first: larger depth sorts first.
+                    self.blended
+                        .push(order_key(2, -(cam.depth_of(c) as i32), b.batch));
+                } else {
+                    // Already in order (`batch_order`): no key needed.
+                    self.order.push(order_key(0, 0, b.batch));
+                }
             }
         }
         // Visible static model surfaces.
         self.model_draws.clear();
+        self.instance_views.clear();
+        let view = cam.view();
         let fwd = cam.forward();
-        for (ii, inst) in self
-            .instances
-            .iter()
-            .enumerate()
-            .filter(|_| self.draw_models)
-        {
-            if !self.skip_vis
-                && self
-                    .vis
-                    .as_ref()
-                    .is_some_and(|v| !v.visible(cell_of(&self.instance_cells, ii)))
-            {
-                stats.instances_culled += 1;
-                continue;
-            }
-            let model = &self.models[usize::from(inst.model)];
-            let (centre, r, scale) = self.instance_bounds[ii];
-            let d = sub(centre, cam.eye);
-            if inst.cull_dist != 0 {
-                let far = f32::from(inst.cull_dist);
-                if dot(d, d) > far * far {
-                    stats.instances_culled += 1;
+        // An instance in view is in its group's view: the group's box holds its sphere with room to spare (the
+        // box test of a sphere's box passes whenever the sphere test does).
+        mark_groups(
+            &mut bits,
+            if self.draw_models {
+                self.instance_cull.len()
+            } else {
+                0
+            },
+            &self.instance_groups.0,
+            &self.instance_groups.1,
+            |g| {
+                self.draw_models
+                    && vis.is_none_or(|v| v.visible(g.cell))
+                    && frustum.sees_box(g.min, g.max)
+            },
+        );
+        if self.draw_models {
+            stats.instances_culled = self.instance_cull.len() as u32;
+        }
+        for (w, &word) in bits.iter().enumerate() {
+            let mut word = word;
+            while word != 0 {
+                let ii = w * 32 + word.trailing_zeros() as usize;
+                word &= word - 1;
+                let c = &self.instance_cull[ii];
+                let d = sub(c.centre, cam.eye);
+                if dot(d, d) > c.far2 {
                     continue;
                 }
-            }
-            // IW4 LOD choice: camera distance over placement scale against each LOD's switch distance; past the
-            // last LOD the model is not drawn.
-            let Some(lod) =
-                model.lod_for(libm::sqrtf(dot(d, d)) * self.lod_scale / scale.max(1e-6))
-            else {
-                stats.instances_culled += 1;
-                continue;
-            };
-            if !frustum.sees_sphere(centre, r) {
-                stats.instances_culled += 1;
-                continue;
-            }
-            stats.instances += 1;
-            let depth = dot(d, fwd);
-            let first = lod.first_surface;
-            for si in first..first + u32::from(lod.surface_count) {
-                let b = &self.model_surfaces[si as usize];
-                let m = &self.materials[usize::from(b.material)];
-                let draw = MODEL_DRAW | self.model_draws.len() as u32;
-                self.model_draws.push((ii as u16, si));
-                if Blend::from_u8(m.blend) >= Blend::Blend {
-                    self.order.push((2, -(depth as i32), draw));
-                } else {
-                    // After the world's opaque batches, surface by surface (then instance by instance): every
-                    // instance of a model then draws with one material, changing only its light colour (tint).
-                    self.order.push((1, si as i32, draw));
+                // The frustum before the LOD: most instances are out of view, and the LOD needs a square root.
+                if !frustum.sees_sphere(c.centre, c.radius) {
+                    continue;
+                }
+                // IW4 LOD choice: camera distance over placement scale against each LOD's switch distance; past the
+                // last LOD the model is not drawn.
+                let model = &self.models[usize::from(c.model)];
+                let Some(lod) = choose_lod(model, dot(d, d), self.lod_scale, c.scale) else {
+                    continue;
+                };
+                stats.instances += 1;
+                stats.instances_culled -= 1;
+                let slot = self.instance_views.len() as u32;
+                self.instance_views
+                    .push(mul34(&view, &self.instances[ii].mtx));
+                let depth = dot(d, fwd);
+                let first = lod.first_surface;
+                for si in first..first + u32::from(lod.surface_count) {
+                    let b = &self.model_surfaces[si as usize];
+                    let m = &self.materials[usize::from(b.material)];
+                    let draw = MODEL_DRAW | self.model_draws.len() as u32;
+                    self.model_draws.push((ii as u16, si, slot));
+                    if Blend::from_u8(m.blend) >= Blend::Blend {
+                        self.blended.push(order_key(2, -(depth as i32), draw));
+                    } else {
+                        // After the world's opaque batches, surface by surface (then instance by instance): every
+                        // instance of a model then draws with one material, changing only its light colour (tint).
+                        self.opaque_models
+                            .push((u64::from(si) << 32) | u64::from(draw));
+                    }
                 }
             }
         }
-        // The opaque world batches went in first, already in order: only the rest needs sorting.
-        let sorted = self.order.iter().take_while(|o| o.0 == 0).count();
-        self.order[sorted..].sort_unstable();
+        self.cull_bits = bits;
+        let t3 = us();
+        // The opaque world batches are already in order. The opaque model draws by surface, each surface's in the
+        // order they were found (a stable radix sort: draw numbers grow in that order, so this is the (surface,
+        // draw) order), then the blended ones far to near: (class, key, draw) order throughout.
+        radix_sort_high(
+            &mut self.opaque_models,
+            &mut self.radix_tmp,
+            self.surface_bytes,
+        );
+        self.order.extend(
+            self.opaque_models
+                .iter()
+                .map(|&m| order_key(1, (m >> 32) as i32, m as u32)),
+        );
+        self.blended.sort_unstable();
+        self.order.extend_from_slice(&self.blended);
+        let t4 = us();
 
-        let view = cam.view();
         let mut last_state: Option<DrawState> = None;
         // Bound vertex block: (model vertices?, compact?, base). Loaded matrix: (instance or u32::MAX for the view,
         // polygon offset level, vertex origin); the view alone is loaded by frame_begin.
@@ -673,16 +952,18 @@ impl<'a> World<'a> {
         };
         let mut last_base = (false, false, u32::MAX);
         let mut last_mtx = (u32::MAX, 0u8, [0u32; 3]);
-        for &(_, _, d) in &self.order {
+        let mut last_desc: Option<u8> = None;
+        for &o in &self.order {
+            let d = order_draw(o);
             let (b, q, inst) = if d & MODEL_DRAW != 0 {
-                let (ii, si) = self.model_draws[(d & !MODEL_DRAW) as usize];
+                let (ii, si, slot) = self.model_draws[(d & !MODEL_DRAW) as usize];
                 (
                     &self.model_surfaces[si as usize],
                     self.surface_quant
                         .get(si as usize)
                         .copied()
                         .unwrap_or(float),
-                    Some(ii),
+                    Some((ii, slot)),
                 )
             } else {
                 (
@@ -700,14 +981,14 @@ impl<'a> World<'a> {
             let offset =
                 self.materials[usize::from(b.material)].flags & material_flags::POLYGON_OFFSET;
             let want = (
-                inst.map_or(u32::MAX, u32::from),
+                inst.map_or(u32::MAX, |(ii, _)| u32::from(ii)),
                 offset,
                 q.origin.map(f32::to_bits),
             );
             if want != last_mtx {
                 last_mtx = want;
                 let mut m = match inst {
-                    Some(ii) => mul34(&view, &self.instances[usize::from(ii)].mtx),
+                    Some((_, slot)) => self.instance_views[slot as usize],
                     None => view,
                 };
                 // Compact vertices are relative to their batch's origin.
@@ -715,8 +996,10 @@ impl<'a> World<'a> {
                     row[3] += row[0] * q.origin[0] + row[1] * q.origin[1] + row[2] * q.origin[2];
                 }
                 // Decals: pull towards the eye along each view ray (same pixels, smaller depth).
-                let pull = material_flags::depth_pull(offset);
-                m.iter_mut().flatten().for_each(|v| *v *= pull);
+                if offset != 0 {
+                    let pull = material_flags::depth_pull(offset);
+                    m.iter_mut().flatten().for_each(|v| *v *= pull);
+                }
                 gfx.pos_matrix(&m);
             }
             if (inst.is_some(), q.is_compact(), b.vertex_base) != last_base {
@@ -725,7 +1008,7 @@ impl<'a> World<'a> {
                 gfx.world_arrays(verts[off..].as_ptr(), stride as u8);
             }
             let mut s = self.state(b);
-            if let Some(ii) = inst {
+            if let Some((ii, _)) = inst {
                 s.tint = self.instances[usize::from(ii)].light;
             }
             if last_state != Some(s) {
@@ -741,9 +1024,12 @@ impl<'a> World<'a> {
                 }
                 last_state = Some(s);
             }
-            // How this batch's display list indexes its vertices (u8 indices, no colour; 0 in older packs). The
-            // renderer skips the change when it matches the last one.
-            gfx.world_desc(q.flags);
+            // How this batch's display list indexes its vertices (u8 indices, no colour; 0 in older packs), when it
+            // changed (most batches of a map share one layout).
+            if last_desc != Some(q.flags) {
+                last_desc = Some(q.flags);
+                gfx.world_desc(q.flags);
+            }
             gfx.call_dl(&self.dls[b.dl_off as usize..(b.dl_off + b.dl_len) as usize]);
             stats.batches += 1;
             stats.triangles += b.tri_count;
@@ -751,6 +1037,13 @@ impl<'a> World<'a> {
                 stats.model_triangles += b.tri_count;
             }
         }
+        let t5 = us();
+        self.cost = WorldCost {
+            vis_us: t1.wrapping_sub(t0),
+            cull_us: t3.wrapping_sub(t2),
+            sort_us: t4.wrapping_sub(t3),
+            submit_us: t5.wrapping_sub(t4).wrapping_add(t2.wrapping_sub(t1)),
+        };
         stats
     }
 }
@@ -1186,6 +1479,115 @@ mod tests {
             &calls[i + 4..i + 7],
             [Call::Mtx(-160), Call::Tint(0x4040_40ff), Call::Dl(0)]
         );
+    }
+
+    #[test]
+    fn lod_choice_matches_the_square_root_rule() {
+        use wpk::records::ModelLod;
+        let mut rng = 0x1234_5678u32;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            rng
+        };
+        let mut unit = || (next() >> 8) as f32 / (1u32 << 24) as f32;
+        for case in 0..400_000 {
+            let lod_count = 1 + (case % 4) as u8;
+            let mut lods = [ModelLod {
+                first_surface: 0,
+                surface_count: 0,
+                dist: 0.0,
+            }; 4];
+            let mut d = 0.0;
+            for (i, l) in lods.iter_mut().enumerate() {
+                d += 50.0 + unit() * 3000.0;
+                l.first_surface = i as u32;
+                // Now and then a last LOD with no switch distance (drawn however far).
+                l.dist = if i + 1 == usize::from(lod_count) && case % 7 == 0 {
+                    0.0
+                } else {
+                    d
+                };
+            }
+            let model = ModelRecord {
+                centre: [0.0; 3],
+                radius: 1.0,
+                lod_count,
+                lods,
+            };
+            let lod_scale: f32 = [1.0, 1.5, 2.0, 3.0][case % 4];
+            let scale: f32 = [1.0, 0.5, 2.37, 1e-9][(case / 4) % 4];
+            // Distances spread over the range, and many right at a switch distance.
+            let dist = if case % 3 == 0 {
+                let l = lods[(case / 3) % usize::from(lod_count)].dist;
+                l * scale.max(1e-6) / lod_scale * (1.0 + (unit() - 0.5) * 4e-6)
+            } else {
+                unit() * 15_000.0
+            };
+            let d2 = dist * dist;
+            let want = model.lod_for(libm::sqrtf(d2) * lod_scale / scale.max(1e-6));
+            let got = choose_lod(&model, d2, lod_scale, scale);
+            assert_eq!(
+                want.map(|l| l.first_surface),
+                got.map(|l| l.first_surface),
+                "case {case}: d2 {d2} scale {scale} lod_scale {lod_scale}"
+            );
+        }
+    }
+
+    #[test]
+    fn radix_sort_is_stable_by_surface() {
+        let mut rng = 0x2545_f491u32;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            rng
+        };
+        for &(bytes, span) in &[(1u32, 200u32), (2, 40_000), (3, 70_000)] {
+            let mut v: Vec<u64> = (0..5_000u32)
+                .map(|draw| (u64::from(next() % span) << 32) | u64::from(draw))
+                .collect();
+            let mut want = v.clone();
+            want.sort_by_key(|x| x >> 32);
+            let mut tmp = Vec::new();
+            radix_sort_high(&mut v, &mut tmp, bytes);
+            assert_eq!(v, want, "{bytes} bytes");
+        }
+    }
+
+    #[test]
+    fn order_keys_sort_like_tuples() {
+        let mut rng = 0x9e37_79b9u32;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            rng
+        };
+        let mut items: Vec<(u8, i32, u32)> = (0..20_000)
+            .map(|i| {
+                let class = (next() % 3) as u8;
+                let key = match i % 4 {
+                    0 => i32::MIN + (next() % 4) as i32,
+                    1 => i32::MAX - (next() % 4) as i32,
+                    _ => (next() % 64) as i32 - 32,
+                };
+                let draw = if next() % 2 == 0 {
+                    next() % MODEL_DRAW
+                } else {
+                    MODEL_DRAW | (next() % MODEL_DRAW)
+                };
+                (class, key, draw)
+            })
+            .collect();
+        let mut keys: Vec<u64> = items.iter().map(|&(c, k, d)| order_key(c, k, d)).collect();
+        items.sort_unstable();
+        keys.sort_unstable();
+        for (t, k) in items.iter().zip(&keys) {
+            assert_eq!((t.0, t.2), (order_class(*k), order_draw(*k)));
+        }
     }
 
     #[test]

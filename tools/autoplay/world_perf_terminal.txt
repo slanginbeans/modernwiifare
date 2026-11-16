@@ -1,0 +1,41 @@
+# World draw cost from fixed views on mp_terminal (the heaviest views from the spawns, found by
+# wii/game_core/tests/world_bench.rs). Run with tools/dolphin-test.ps1 -Maps mp_terminal -Script tools/autoplay/world_perf_terminal.txt after deleting
+# out/dolphin/sd/apps/mwf_game/debug.dat. Bots are frozen and harmless; each view holds ~4 s: compare the match
+# log's S rows (wld, wvis / wcul / wsrt / wsub, fifo, full) between builds on the same machine, and the shots.
+wait 90
+press A
+wait 10
+press A
+wait 700
+press A
+wait 60
+# DEBUG (START, the 4th line): bots don't attack, bots frozen, god mode.
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+press A
+press DOWN
+press A
+press DOWN
+press A
+wait 5
+press B
+wait 20
+warp 624 2476 44 60
+wait 60
+log view 1
+wait 240
+shot terminal_view1
+warp 787 7325 224 270
+wait 60
+log view 2
+wait 240
+shot terminal_view2
+warp 2092 3012 48 135
+wait 60
+log view 3
+wait 240
+shot terminal_view3
+quit

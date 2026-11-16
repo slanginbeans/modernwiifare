@@ -193,6 +193,8 @@ unsafe extern "C" {
     pub fn mwf_set_frame_interval(retraces: u32);
     pub fn mwf_pace_wait_us() -> u32;
     pub fn mwf_gpu_metrics(out: *mut GpuMetric);
+    pub fn mwf_fifo_bytes() -> u32;
+    pub fn mwf_fifo_overflows() -> u32;
 }
 
 pub fn ms() -> u32 {

@@ -112,6 +112,12 @@ typedef struct {
     uint32_t c0, c1, frames, us, taken;
 } mwf_gpu_metric;
 void mwf_gpu_metrics(mwf_gpu_metric out[MWF_GPU_METRIC_SETS]);
+/* Bytes the CPU has written to the GX FIFO so far (wraps), from the PI write pointer sampled now and every 16th
+ * world display list; and how often the FIFO reached its high watermark (the CPU then stops until the GPU drains
+ * it to half). */
+uint32_t mwf_fifo_bytes(void);
+uint32_t mwf_fifo_overflows(void);
+void mwf_fifo_sample(void);
 /* Wait until the GPU has drawn everything queued (before memory it may read is released or reused). */
 void mwf_gpu_idle(void);
 
