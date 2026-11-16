@@ -49,6 +49,13 @@ Playercard popup and the Killstreak Rewards page, a Team Deathmatch (the class m
 over the game, Choose Class, Options (the safe area at 80% and back), End Game and
 its question, back to the lobby and the main menu.
 
+`tools/autoplay/hits_world.txt` plays a free-for-all on the first map (`-Maps mp_terminal` has glass): turns, walks,
+fires in bursts and holds Y now and then. Check the match log for `hit`, `hitvol` (hit volume cost every 5 s),
+`glass` (pieces at load), `glass_shattered`, `item_drop`, `ammo_pickup`, `scavenged` and `weapon_swap`.
+`tools/autoplay/hits_swap.txt` uses the in-game debug page (passive and frozen bots, god mode, the hit box overlay,
+BRING A BOT IN FRONT) to shoot a bot with the drawn bones and take its weapon with a Y hold, three times. Its toggles
+assume the debug defaults: delete `<app folder>/debug.dat` (`out\dolphin\sd\apps\mwf_game\debug.dat`) first.
+
 On the PC, `tools/dolphin-test.ps1 -Dolphin <Dolphin.exe>` (or `MWF_DOLPHIN`) runs a script in Dolphin on the
 built game (`dist\apps\mwf_game`, `out\packs`): it sets up its own Dolphin profile and an SD card folder under
 `out\dolphin` (your Dolphin settings are untouched), boots the game, waits for `quit` and converts the screenshots

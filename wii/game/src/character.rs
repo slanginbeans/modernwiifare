@@ -273,7 +273,11 @@ impl Characters {
                 rig,
                 hitboxes: hitboxes
                     .iter()
-                    .filter(|h| h.team == team && usize::from(h.bone) < vm.bones.len())
+                    // No location ("none", the head model's own bones in packs from before the converter left
+                    // them out): not a hit volume.
+                    .filter(|h| {
+                        h.team == team && h.loc != 0 && usize::from(h.bone) < vm.bones.len()
+                    })
                     .copied()
                     .collect(),
                 vm,
@@ -410,6 +414,11 @@ impl Characters {
                 gfx.call_dl(dr.dl);
             }
         }
+    }
+
+    /// The bone hit boxes of every team's model (`CHHB`; 0 with an older pack).
+    pub fn hitbox_count(&self) -> usize {
+        self.teams.iter().map(|t| t.hitboxes.len()).sum()
     }
 
     /// Player `slot`'s bone hit boxes, when its body was posed at `now` (drawn this frame).

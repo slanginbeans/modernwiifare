@@ -27,6 +27,7 @@ Version 3 (2026-11-13): fixed-point vertices. Version 2: LOD tables in `ModelRec
 | `SPWN` | `SpawnRecord` (24 B) | origin, yaw, kind (TDM / DM), team, initial flag |
 | `OBJS` | `ObjectiveRecord` (24 B) | game-mode objectives: kind (Domination flag), label (A, B, C ... from `script_label`), the trigger's origin, radius and height |
 | `CHAR` | `view::encode_characters` | the player characters, allies then axis: each team's body (its first assault body) with its first head attached (shared bones by name), skinned surfaces of LOD 3 (or the nearest more detailed), textures in this pack, and the bone names |
+| `CHHB` | `records::BoneHitRecord` (28 B) | the characters' hit boxes: team, bone (in that team's `CHAR` model), hit location (`partClassification`), the bone's `XBoneInfo` midpoint and half size |
 | `MVTX` | `WorldVertex` (28 B) | static model vertices in model space (same format as `WVTX`; lightmap UV unused) |
 | `MSRF` | `BatchRecord` (48 B) | static model surfaces: vertex range in `MVTX`, material, display list in `WDLS`, model-space bounds |
 | `MODL` | `ModelRecord` (68 B) | model-space bounding sphere and up to 4 LODs: each a run of `MSRF` surfaces and IW4's switch distance (`lodDist`); past the last, the model is not drawn |
@@ -61,7 +62,7 @@ ignores the section.
 | `WFPV` | `FpvRecord` (224 B) | how each first-person weapon moves, parallel to `WEAP`: view sway (hip / ADS), idle sway, stance and movement offsets, crouched / prone offsets, ADS aim pitch and bob factors |
 | `WEQP` | `EquipRecord` (324 B) | thrown / launched weapons, parallel to `WEAP` (zero for guns): offhand class, fuse and cooking, blast radius and inner / outer damage, throw speeds, arming distance, stickiness, direct-hit (impact) damage, the blast's cone angle, bounce factors per surface type, and its world sounds (explosion, bounce, pull back, throw: alias indices into this pack's `SNDA`). The explosion is the weapon's own, else its explosion effect's sound element, else IW4L's engine alias (`grenade_explode_default` / `rocket_explode_default`) |
 | `SNDA` / `SNDV` / `SNDD` | as in `views/*.wpk` | the thrown weapons' world sounds |
-| `WPEN` | `PenRecord` (8 B) | bullet penetration per weapon, parallel to `WEAP`: `penetrateType`, `penetrateMultiplier` |
+| `WPEN` | `PenRecord` (8 B) | bullet penetration per weapon, parallel to `WEAP`: `penetrateType` (bit 31: `bRifleBullet`), `penetrateMultiplier` |
 | `PENT` | f32 × 124 | the penetration depth table (`info/bullet_penetration_mp`), by type (none, small, medium, large) and surface type |
 | `STEP` | u16 × 248 | footstep aliases (indices into this pack's `SNDA`) by gait (sprint, run, walk, prone), listener (others, you) and surface type |
 | `WSMK` | `BlockerRecord` (92 B) | sight-blocking elements of thrown weapons' explosion effects (smoke): weapon index, one-shot / looping, particle count, delay and life ranges, spawn offset radius and height, distance fade, size and alpha at five points of a particle's life |

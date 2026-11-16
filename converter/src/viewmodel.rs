@@ -745,7 +745,10 @@ pub fn character_hitboxes(
                     && mid.iter().all(|v| v.is_finite())
                     && half.iter().all(|v| v.is_finite() && *v >= 0.0);
                 let index = base + bone;
-                if ok && index < 256 {
+                // A bone with no hit location (0, "none": the attached head's own bones) is left out: the
+                // body's `j_head` box (location head) covers the head, and a "none" box in front of it would take
+                // the head shot at ×1.
+                if ok && index < 256 && loc != 0 {
                     out.push(wpk::records::BoneHitRecord {
                         team,
                         bone: index as u8,

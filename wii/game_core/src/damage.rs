@@ -2,10 +2,11 @@
 //! the weapon's per-hit-location multipliers (MW2's `mp_lochit_dmgtable` baked in by the converter), against players'
 //! hit volumes.
 //!
-//! Hit volumes: MW2 traces bullets against each character model's hit boxes. Until the character models are
-//! converted, a player is a stack of boxes around the standing or crouched hull (head, neck, upper and lower torso,
-//! upper and lower legs, arms on each side), sized from IW4's player hull and view heights. Damage numbers are the
-//! weapon's own; only where a shot lands on the body is approximated (docs/deviations.md).
+//! Hit volumes: MW2 traces bullets against each character model's bone boxes (`XBoneInfo`, hit location from
+//! `partClassification`), posed with the body. [`bone_box`] places one (IW4L `xmodel_runtime`'s collision bones,
+//! the boxes from the map pack's `CHHB`) and [`segment_obb`] tests it (IW4L `sim` `ray_obb`). Where no posed body is
+//! at hand (bodies not drawn this frame), [`boxes`] gives a stand-in column (head, neck, upper and lower torso, upper
+//! and lower legs, arms on each side) sized from IW4's hull, squashed to the stance and turned with the body's yaw.
 
 use weapon_iw4::{HITLOC_COUNT, WeaponCombatFacts, location_damage_scale};
 

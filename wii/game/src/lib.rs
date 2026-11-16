@@ -941,6 +941,14 @@ fn run_map(
         None => (None, None),
     };
     let mut poses: Vec<character::Pose> = Vec::with_capacity(bots);
+    devlog::event(
+        ffi::ms(),
+        "hitboxes",
+        format_args!(
+            "bone_boxes={}",
+            characters.as_ref().map_or(0, |c| c.hitbox_count())
+        ),
+    );
     let clip: Option<MapClip<'_>> = clip_data.as_ref().map(MapClip::new);
     devlog::event(
         ffi::ms(),

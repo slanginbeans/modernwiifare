@@ -1,0 +1,106 @@
+# A bot in front, shot with the drawn bones, its weapon taken with a Y hold (docs/testing.md). Debug page (in-game
+# START menu > DEBUG): bots passive and frozen, god mode, hit box overlay, then BRING A BOT IN FRONT, three times.
+# Read the match log: hit (by=0), hitvol bones=, item_drop, weapon_swap.
+wait 90
+press A
+wait 10
+press A
+wait 700
+press A
+wait 60
+shot hs_00_hud
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+press A
+press DOWN
+press A
+press DOWN
+press A
+times 4 press DOWN
+press A
+times 15 press DOWN
+wait 5
+shot hs_01_debug
+log round 1 (bot 1, no gun: only a bag drops)
+press A
+wait 30
+shot hs_r1_bot_front
+hold R
+wait 50
+release R
+wait 10
+shot hs_r1_after_fire
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 9 press UP
+wait 5
+shot hs_r2_debug
+log round 2
+press A
+wait 30
+shot hs_r2_bot_front
+hold R
+wait 50
+release R
+wait 30
+shot hs_r2_after_fire
+stick 0 110
+wait 40
+stick 0 0
+wait 15
+shot hs_r2_over_weapon
+hold Y
+wait 30
+release Y
+wait 90
+shot hs_r2_after_y
+# Step back and look down at the weapon left on the floor.
+stick 0 -110
+wait 25
+stick 0 0
+cstick 0 -110
+wait 25
+cstick 0 0
+wait 5
+shot hs_r2_floor
+cstick 0 110
+wait 25
+cstick 0 0
+cstick 80 0
+wait 25
+cstick 0 0
+press START
+wait 20
+times 3 press DOWN
+press A
+wait 10
+times 9 press UP
+wait 5
+shot hs_r3_debug
+log round 3
+press A
+wait 30
+shot hs_r3_bot_front
+hold R
+wait 50
+release R
+wait 30
+shot hs_r3_after_fire
+stick 0 110
+wait 40
+stick 0 0
+wait 15
+shot hs_r3_over_weapon
+hold Y
+wait 30
+release Y
+wait 90
+shot hs_r3_after_y
+log hits_swap done
+quit

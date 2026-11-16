@@ -361,6 +361,8 @@ pub struct Arena {
     pub items: crate::item::Items,
     /// The weapon on the ground the human would take (IW4L `selected_item`), as an index into `items.list`.
     pub item_hint: Option<usize>,
+    /// Each fighter's origin at the last [`Arena::update_items`] while alive (None: dead then).
+    touch_prev: Vec<Option<[f32; 3]>>,
 }
 
 /// IW4 surface type glass (`SURF_TYPE_GLASS`) and impact type small bullet, for the break effect's impacts.
@@ -582,6 +584,7 @@ impl Arena {
             glass: crate::glass::Glass::default(),
             items: crate::item::Items::new(),
             item_hint: None,
+            touch_prev: Vec::new(),
         };
         a.fighters.push(Fighter::new(human, gun(0), None, &rules));
         for i in 1..=bots {
@@ -1061,15 +1064,31 @@ impl Arena {
                 scavenger: false,
             });
         }
+        // Who may touch items: alive now and at the last update, and not moved far since (a respawn moves a
+        // player; IW4L also waits after a spawn before using items).
+        self.touch_prev.resize(self.fighters.len(), None);
+        let settled: Vec<bool> = self
+            .fighters
+            .iter()
+            .zip(self.touch_prev.iter_mut())
+            .map(|(f, prev)| {
+                let o = f.player.ps.origin;
+                let now_alive = f.life.alive().then_some(o);
+                let ok =
+                    matches!((*prev, now_alive), (Some(p), Some(_)) if dist2(p, o) < 256.0 * 256.0);
+                *prev = now_alive;
+                ok
+            })
+            .collect();
         if self.items.list.is_empty() {
             self.item_hint = None;
             return;
         }
         self.items.think(clip, now);
         // Touch: the first item each living fighter overlaps that it can use.
-        for i in 0..self.fighters.len() {
+        for (i, &ready) in settled.iter().enumerate() {
             let f = &self.fighters[i];
-            if !f.life.alive() || (i == 0 && !self.human_present) {
+            if !f.life.alive() || !ready || (i == 0 && !self.human_present) {
                 continue;
             }
             let origin = f.player.ps.origin;
@@ -2814,8 +2833,11 @@ mod tests {
         a.fighters[2].player.ps.origin = [1500.0, 1500.0, 0.0];
         a.fighters[0].player.ps.origin = bag.origin;
         a.fighters[0].player.ps.perks[0] |= playerstate_iw4::PERK_SCAVENGER;
+        // Put there from afar (as a respawn would): no touch until an update later.
         out.clear();
         a.update_items(&mc, 3050, &mut out);
+        assert!(!out.contains(&Event::Scavenged { fighter: 0 }));
+        a.update_items(&mc, 3060, &mut out);
         assert!(out.contains(&Event::Scavenged { fighter: 0 }));
         assert!(a.items.list.iter().all(|d| !d.scavenger));
         // Killing yourself drops no bag.

@@ -243,10 +243,41 @@ clock (MW2 FFA's defaults), then a scoreboard. The top right shows your kills an
 feed, and hits show MW2's hitmarker.
 - **Damage** is each weapon's own: IW4L's range falloff (full damage to its max-damage range, down to its minimum at
   its min-damage range) times the hit location's multiplier from MW2's `mp_lochit_dmgtable` (read from your copy and
-  baked into each weapon by the converter, as IW4L does). Bullets hit the first player in their path before the wall
-  behind. Players' hit volumes are a stack of boxes (head, neck, upper and lower torso, arms, upper and lower legs)
-  sized from IW4's hull and view heights, standing, crouched or prone (the standing boxes squashed to the hull), until the character models are converted: where a
-  shot lands on the body is approximated, the damage numbers are not.
+  baked into each weapon by the converter, as IW4L does).
+- **Hit volumes** are oriented boxes (IW4L's `ray_obb`). Your shots test a drawn body's bones: each character bone's
+  box from MW2's own model (`XBoneInfo` bounds and `partClassification` hit location, map pack `CHHB`), posed as the
+  body is drawn, used while it was drawn in the last 50 ms (what you see is what you hit). Bots' shots, and bodies
+  not drawn (behind you, or you), test a stand-in column of boxes (head, neck, upper and lower torso, arms, upper and
+  lower legs) sized from IW4's hull, squashed to the stance's height and turned with the view's yaw. A broad test
+  around each body comes first; the match log's `hitvol` line gives the cost every 5 s (bodies tested, of them on
+  bones, boxes, µs).
+- **Through players** (IW4L `fire_penetrate` / `fire_extended`): every player along the shot is hit in order. A
+  penetrating weapon loses `thickness / depth` through each body (the flesh depth for its type from
+  `bullet_penetration_mp`, times its multiplier), as through walls, until nothing is left; a non-penetrating rifle
+  bullet (`bRifleBullet`) goes on at half damage each time; anything else stops at the first body. Pack `WPEN`
+  carries the rifle flag (packs from before need converting again; they read as no flag). A destructible object stops
+  the bullet. Damage numbers follow IW4L; a trace against MW2 is still to do.
+- **Glass** (`game_core::glass`, IW4L `entity_iw4::glass`'s rules): the map's breakable panes are its clip brushes
+  that carry a glass piece. Bullets go through intact panes and each pane takes the bullet's damage at that
+  distance; 25 weakens it (a weakened pane may fall apart by itself 3 s to 10 min later, IW4's random collapse),
+  100 shatters it; a melee swing does 1000, grenades and exploding objects 4 × their damage within 256 units.
+  A shattered pane drops out of every trace: bullets, bots' sight and movement pass. The break: a spray of glass
+  impacts over the pane. MW2's glass pieces aren't drawn (they're FX glass); a faint stand-in box shows each intact
+  pane within 1500 units (brighter when weakened) and goes when it shatters. Not yet: the shatter pieces, the
+  breaking sound, the glass pane drawn as MW2 draws it.
+- **Weapons on the ground** (`game_core::item`, IW4L `sim/src/item.rs`; MW2's `_weapons.gsc` rules): a player who
+  dies drops the weapon in hand when its clip has rounds (its reserve capped at the maximum), thrown a little as
+  IW4L throws it; it falls, lands and stays 60 s. Killed by someone else, they also drop a Scavenger bag. At most 16
+  items; the oldest goes. Walking over a weapon you carry tops up its reserve (IW4L's split: reserve first, what
+  doesn't fit stays); walking over a bag with Scavenger gives a clip's worth of reserve to each weapon and one more of
+  each grenade. Looking at a weapon you don't carry within 128 units shows "HOLD Y TO SWAP FOR ..."; hold Y 250 ms to
+  take it with its rounds in place of the one in hand, which is left where it lay (a tap of Y still switches). The
+  new weapon's first-person file loads at the swap (a short hitch). Bots drop weapons and bags and take ammunition
+  by touch; they don't swap. Dropped weapons are drawn with their third-person model on its side; bags as a small
+  stand-in box (no bag model is packed). Not yet: the pickup and Scavenger sounds, the HUD's weapon icon in the hint.
+- Memory: the per-bone boxes are 28 bytes a bone in the map pack (102 for `mp_terminal`'s two characters, 2.8 KiB; bones without a hit location, the attached head's own, are left out),
+  and up to 64 posed boxes per fighter on the heap (about 4 KiB each); glass state is 8 bytes and a 24-byte box per
+  piece; items 16 × 80 bytes. Together well under the round's 0.2 MB.
 - **Bots** play with the same IW4L movement and weapon code as you, their guns from MW2's five default classes. They
   see 90° in front of them up to 5906 units with a clear line (IW4L's bot sensor), hear gunfire within 2000 units,
   step every 50 ms and decide every 100 ms like IW4's server bots, react after about a third of a second, turn at limited speed (IW4L's bot motor), fire inside an 8° cone with a small aim error that settles,
@@ -254,7 +285,7 @@ feed, and hits show MW2's hitmarker.
   bakes from the map's collision (`NAVG` in the pack, flooded out from the spawn points on a 48-unit grid) with A*
   routes, and jump when stuck. Not yet: mantling, ladders, doors, grenades, knifing, their weapon sounds, and other
   players blocking movement (players pass through each other).
-- **Bodies**: MW2's character models (see "Player characters"); the shaded boxes, one per hit volume, only without
+- **Bodies**: MW2's character models (see "Player characters"); the shaded boxes, one per stand-in hit volume, only without
   characters in the pack or with them turned off in the debug menu.
 - **Destructible objects** (`game_core::destructible`, map pack `DST*`): MW2's cars, electric boxes, air conditioners,
   newspaper stands, copiers, fans and the like, placed as the map places them, with MW2's own models, health, effects
@@ -287,8 +318,8 @@ Placeholder until the death cam / killcam flow is ported (ADR 0007): the 3 s res
 
 ## Movement status
 - `pmove` is IW4L's, unchanged; the context uses MW2's MP dvar defaults (190 speed, 800 gravity, jump 39, sprint ×1.5).
-- Traces: world brushes through the BSP plus the triangle mesh (`clipmap_iw4::trace_brush_and_mesh`). Glass is
-  always solid. Not yet: brush models (doors, movers), other players, penetration recovery.
+- Traces: world brushes through the BSP plus the triangle mesh (`clipmap_iw4::trace_brush_and_mesh`). Glass blocks
+  until it shatters (see Glass). Not yet: brush models (doors, movers), penetration recovery.
 - C-stick look speed (200°/s yaw, 140°/s pitch at full tilt, linear past a 12-count dead zone) is a placeholder. It
   must be tuned against the 360 version (`feel-parity` skill) before it is called right.
 
