@@ -1,6 +1,7 @@
 //! The player's options (MW2's Options > Controls on the console): look sensitivity, inverted look, aim assist,
 //! the button layout and the stick layout, vibration (the pad's rumble), and the HUD's safe area (MW2's console
-//! safe-area adjustment, so the HUD stays inside a TV's overscan), kept in the app folder (`options.dat`).
+//! safe-area adjustment, so the HUD stays inside a TV's overscan), and the frame rate (a steady 30 or as fast as the
+//! frame allows), kept in the app folder (`options.dat`).
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -39,6 +40,10 @@ pub struct Options {
     pub safe_area: u8,
     /// MW2's console "Vibration": the pad rumbles on shots and hits.
     pub vibration: bool,
+    /// A new frame every second retrace (30 fps at 60 Hz, 25 at 50 Hz), as the Wii's Call of Duty ports ran; off, a
+    /// frame every retrace the frame is ready for (uneven when frames take 17-33 ms). The simulation's 60 Hz steps
+    /// are the same either way.
+    pub steady_30: bool,
 }
 
 impl Default for Options {
@@ -52,6 +57,7 @@ impl Default for Options {
             southpaw: false,
             safe_area: (crate::hud_mw2::SAFE_AREA_DEFAULT * 100.0 + 0.5) as u8,
             vibration: true,
+            steady_30: true,
         }
     }
 }
@@ -66,10 +72,11 @@ pub enum Item {
     Southpaw,
     SafeArea,
     Vibration,
+    FrameRate,
     Defaults,
 }
 
-pub const ITEMS: [Item; 9] = [
+pub const ITEMS: [Item; 10] = [
     Item::Sensitivity,
     Item::AdsSensitivity,
     Item::Invert,
@@ -78,6 +85,7 @@ pub const ITEMS: [Item; 9] = [
     Item::Southpaw,
     Item::SafeArea,
     Item::Vibration,
+    Item::FrameRate,
     Item::Defaults,
 ];
 
@@ -92,6 +100,7 @@ impl Item {
             Item::Southpaw => "STICK LAYOUT",
             Item::SafeArea => "SAFE AREA",
             Item::Vibration => "VIBRATION",
+            Item::FrameRate => "FRAME RATE",
             Item::Defaults => "RESTORE DEFAULTS",
         }
     }
@@ -113,6 +122,11 @@ impl Options {
             Item::Southpaw => String::from(if self.southpaw { "SOUTHPAW" } else { "DEFAULT" }),
             Item::SafeArea => alloc::format!("{}%", self.safe_area),
             Item::Vibration => on_off(self.vibration),
+            Item::FrameRate => String::from(if self.steady_30 {
+                "STEADY 30"
+            } else {
+                "UNCAPPED"
+            }),
             Item::Defaults => return None,
         })
     }
@@ -152,6 +166,7 @@ impl Options {
                 self.safe_area = step(self.safe_area, SAFE_AREA_MIN, SAFE_AREA_MAX, SAFE_AREA_STEP)
             }
             Item::Vibration => self.vibration = !self.vibration,
+            Item::FrameRate => self.steady_30 = !self.steady_30,
             Item::Defaults => {
                 if dir > 0 && wrap {
                     *self = Options::default()
@@ -188,6 +203,7 @@ impl Options {
             u8::from(self.southpaw),
             self.safe_area,
             u8::from(self.vibration),
+            u8::from(self.steady_30),
         ]
     }
 
@@ -209,6 +225,8 @@ impl Options {
             }),
             // ... and from before vibration keep it on.
             vibration: b.get(8).is_none_or(|&v| v != 0),
+            // ... and from before the frame rate take the steady 30.
+            steady_30: b.get(9).is_none_or(|&v| v != 0),
         })
     }
 }
@@ -255,6 +273,14 @@ mod tests {
         // Left / right never restore the defaults.
         o.adjust(Item::Defaults, 1, false);
         assert_eq!(o.sensitivity, 1);
+        // The frame rate toggles, is kept, and an older file takes the steady 30.
+        o.cycle(Item::FrameRate);
+        assert_eq!(o.value(Item::FrameRate).as_deref(), Some("UNCAPPED"));
+        assert_eq!(
+            Options::decode(&o.encode()).map(|d| d.steady_30),
+            Some(false)
+        );
+        assert!(Options::decode(&o.encode()[..9]).is_some_and(|d| d.steady_30));
         // Vibration toggles and is kept.
         o.cycle(Item::Vibration);
         assert_eq!(o.value(Item::Vibration).as_deref(), Some("DISABLED"));

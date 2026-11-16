@@ -47,6 +47,20 @@ const _: () = assert!(core::mem::size_of::<Pad>() == 12);
 const _: () = assert!(core::mem::size_of::<Mem>() == 16);
 const _: () = assert!(core::mem::size_of::<Vtx>() == 16);
 
+/// `mwf_gpu_metric`: one GPU counter set's last reading (`shim.h`).
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct GpuMetric {
+    pub c0: u32,
+    pub c1: u32,
+    pub frames: u32,
+    pub us: u32,
+    pub taken: u32,
+}
+
+/// `MWF_GPU_METRIC_SETS`.
+pub const GPU_METRIC_SETS: usize = 4;
+
 unsafe extern "C" {
     pub fn mwf_should_exit() -> i32;
     pub fn mwf_ms() -> u32;
@@ -63,6 +77,9 @@ unsafe extern "C" {
     pub fn mwf_gx_draw(mtx: *const [[f32; 4]; 3], v: *const Vtx, n: u32);
     pub fn mwf_gx_end_frame();
     pub fn mwf_gpu_wait_us() -> u32;
+    pub fn mwf_set_frame_interval(retraces: u32);
+    pub fn mwf_pace_wait_us() -> u32;
+    pub fn mwf_gpu_metrics(out: *mut GpuMetric);
     pub fn mwf_gpu_idle();
     pub fn mwf_world_tint(rgba: u32);
     pub fn mwf_view_arrays_indexed(positions: *const u8, attributes: *const u8);

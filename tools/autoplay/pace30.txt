@@ -1,0 +1,57 @@
+# Steady 30 fps pacing (game_core::autoplay syntax; see docs/testing.md): Team Deathmatch on the first map, played
+# uncapped for a few seconds, then with `pace 2` (the FRAME RATE option's STEADY 30: a frame every second retrace),
+# then uncapped again. The match log's S rows should read fps=30 with idle= above 0 in the middle part and fps=60
+# around it; the `pace` events mark the switches. Needs common.wpk and mp_rust.
+wait 90
+# DEBUG: RESET TO DEFAULTS.
+times 3 press DOWN
+press A
+wait 10
+times 18 press DOWN
+press A
+wait 5
+press B
+wait 10
+# Private match, Team Deathmatch.
+times 3 press UP
+press A
+wait 10
+press DOWN
+press A
+wait 10
+press DOWN
+press A
+wait 10
+press DOWN
+press A
+wait 10
+press B
+wait 10
+press UP
+press A
+wait 700
+press A
+wait 90
+# Uncapped: walk and turn for 3 s.
+log pace30 uncapped
+stick 0 100
+cstick 60 0
+wait 180
+shot p01_uncapped
+# Steady 30: the same for 6 s (180 frames at 30 fps).
+pace 2
+log pace30 steady
+wait 180
+shot p02_steady30
+cstick -60 0
+wait 90
+shot p03_steady30_turning
+# Uncapped again for 3 s.
+pace 1
+log pace30 uncapped_again
+wait 180
+stick 0 0
+cstick 0 0
+shot p04_uncapped_again
+log pace30 done
+quit

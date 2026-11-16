@@ -12,6 +12,8 @@ struct State {
     last_held: u16,
     shot: Option<String>,
     warp: Option<[i32; 4]>,
+    /// The script's `pace`, once it gives one.
+    pace: Option<u8>,
     quit: bool,
 }
 
@@ -45,6 +47,7 @@ pub fn init() {
                     last_held: 0,
                     shot: None,
                     warp: None,
+                    pace: None,
                     quit: false,
                 })
             };
@@ -69,8 +72,21 @@ pub fn frame() -> Option<Frame> {
     if f.warp.is_some() {
         s.warp = f.warp;
     }
+    if let Some(p) = f.pace {
+        s.pace = Some(p);
+        unsafe { ffi::mwf_set_frame_interval(u32::from(p)) };
+        crate::PACE.store(u32::from(p), core::sync::atomic::Ordering::Relaxed);
+        devlog::set_pace(u32::from(p));
+        devlog::event(ffi::ms(), "pace", format_args!("retraces={p}"));
+    }
     s.quit |= f.quit;
     Some(f)
+}
+
+/// The frame pacing a script runs with: its `pace`, else a frame every retrace (scripts count frames, so the
+/// FRAME RATE option doesn't apply to them). None without a script.
+pub fn pace() -> Option<u8> {
+    state().map(|s| s.pace.unwrap_or(1))
 }
 
 /// A `warp` the script asked for, once (the match puts the player there).

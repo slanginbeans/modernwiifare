@@ -10,6 +10,8 @@
 //! - `log TEXT`: a line in the match log.
 //! - `warp X Y Z YAW`: in a match, put the player at map position X Y Z (dropped onto the floor below) facing YAW
 //!   degrees, to test a spot (a mantle, a drop).
+//! - `pace N`: from now on a new frame every N retraces (1: as fast as frames are ready, the default for scripts
+//!   whatever the options say, since a script counts frames; 2: the steady 30 fps of the FRAME RATE option).
 //! - `quit`: switch the console off (Dolphin stops and writes the SD folder back).
 //!
 //! Buttons: A B X Y Z L R START UP DOWN LEFT RIGHT. Frames are pad reads: one a frame in the menus and the match,
@@ -31,6 +33,7 @@ enum Cmd {
     Shot(String),
     Log(String),
     Warp([i32; 4]),
+    Pace(u8),
     Quit,
 }
 
@@ -49,6 +52,8 @@ pub struct Frame {
     pub log: Option<String>,
     /// Put the player at (x, y, z) facing yaw degrees.
     pub warp: Option<[i32; 4]>,
+    /// Frame pacing from now on (retraces per frame).
+    pub pace: Option<u8>,
     pub quit: bool,
 }
 
@@ -127,6 +132,13 @@ fn parse_line(line: &str, out: &mut Vec<Cmd>) -> Result<(), String> {
             num(args.next())?,
             num(args.next())?,
         ])),
+        "pace" => {
+            let n: u8 = num(args.next())?;
+            if !(1..=4).contains(&n) {
+                return Err(String::from("pace 1..4"));
+            }
+            out.push(Cmd::Pace(n));
+        }
         "quit" => out.push(Cmd::Quit),
         other => return Err(alloc::format!("unknown command {other}")),
     }
@@ -157,6 +169,7 @@ impl Script {
             shot: None,
             log: None,
             warp: None,
+            pace: None,
             quit: false,
             ..self.pad.clone()
         };
@@ -191,6 +204,8 @@ impl Script {
                     f.warp = Some(w);
                     break;
                 }
+                // Takes effect with this frame; the script goes on.
+                Cmd::Pace(n) => f.pace = Some(n),
                 Cmd::Quit => {
                     f.quit = true;
                     break;
@@ -201,6 +216,7 @@ impl Script {
             shot: f.shot,
             log: f.log,
             warp: f.warp,
+            pace: f.pace,
             quit: f.quit,
             ..self.pad.clone()
         }
@@ -210,6 +226,20 @@ impl Script {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pace_is_requested_without_using_a_frame() {
+        let mut s = Script::parse(
+            "pace 2
+press A 1",
+        )
+        .unwrap();
+        let f = s.frame();
+        assert_eq!(f.pace, Some(2));
+        assert_eq!(f.held, gc::A);
+        assert_eq!(s.frame().pace, None);
+        assert!(Script::parse("pace 0").is_err() && Script::parse("pace 5").is_err());
+    }
 
     #[test]
     fn press_holds_then_releases() {

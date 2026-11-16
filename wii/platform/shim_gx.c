@@ -19,6 +19,25 @@ static u16 issued = 0;
 static int queued_xfb = -1;
 static u32 last_retrace = 0;
 static uint32_t gpu_wait = 0;
+/* Steady pacing: each frame stays on screen `interval` retraces (2: 30 fps at 60 Hz); `shown_at` is the retrace the
+ * last flip took effect at. `pace_wait`: the time this frame waited for its turn (the frame's headroom). */
+static u32 interval = 1;
+static u32 shown_at = 0;
+static uint32_t pace_wait = 0;
+
+/* The GPU's own counters (GX_SetGPMetric): one pair at a time, rotated every ~second (`METRIC_FRAMES` frames), each
+ * pair's last reading kept with the frames and microseconds it covered. */
+#define METRIC_FRAMES 60
+static const u32 METRICS[MWF_GPU_METRIC_SETS][2] = {
+    {GX_PERF0_XF_WAIT_IN, GX_PERF1_CLOCKS},        /* busy = clocks - XF waiting for input */
+    {GX_PERF0_XF_WAIT_OUT, GX_PERF1_TX_MEMSTALL},  /* transform held up by the pixel end; texturing stalled on memory */
+    {GX_PERF0_QUAD_NON0CVG, GX_PERF1_TC_MISS},     /* 2x2 pixel quads drawn (fill); texture cache misses */
+    {GX_PERF0_TRIANGLES_PASSED, GX_PERF1_VC_MISS_REQ}, /* triangles past culling; vertex cache misses (32 B each) */
+};
+static int metric_set = -1;
+static u32 metric_frames = 0;
+static uint32_t metric_t0 = 0;
+static mwf_gpu_metric metric_last[MWF_GPU_METRIC_SETS];
 
 void mwf_gx_init(uint32_t clear_rgba) {
     void *fifo = memalign(32, FIFO_SIZE);
@@ -86,6 +105,39 @@ uint32_t mwf_gpu_wait_us(void) {
     return gpu_wait;
 }
 
+void mwf_set_frame_interval(uint32_t retraces) {
+    interval = retraces < 1 ? 1 : (retraces > 4 ? 4 : retraces);
+}
+
+uint32_t mwf_pace_wait_us(void) {
+    return pace_wait;
+}
+
+void mwf_gpu_metrics(mwf_gpu_metric out[MWF_GPU_METRIC_SETS]) {
+    memcpy(out, metric_last, sizeof metric_last);
+}
+
+/* After the previous frame's token: read the running pair (its commands are processed) and start the next one. */
+static void metric_step(void) {
+    uint32_t now = mwf_us();
+    if (metric_set >= 0 && ++metric_frames < METRIC_FRAMES) return;
+    if (metric_set >= 0) {
+        u32 c0 = 0, c1 = 0;
+        GX_ReadGPMetric(&c0, &c1);
+        mwf_gpu_metric *m = &metric_last[metric_set];
+        m->c0 = c0;
+        m->c1 = c1;
+        m->frames = metric_frames;
+        m->us = now - metric_t0;
+        m->taken += 1;
+    }
+    metric_set = (metric_set + 1) % MWF_GPU_METRIC_SETS;
+    GX_SetGPMetric(METRICS[metric_set][0], METRICS[metric_set][1]);
+    GX_ClearGPMetric();
+    metric_frames = 0;
+    metric_t0 = now;
+}
+
 const void *mwf_last_frame(void) {
     if (queued_xfb < 0) return NULL;
     mwf_gpu_idle();
@@ -150,10 +202,22 @@ void mwf_gx_end_frame(void) {
     if (queued_xfb >= 0) {
         while (GX_GetDrawSync() != issued) {
         }
+        gpu_wait = mwf_us() - t0;
+        /* Its turn: the flip asked for now takes effect at the next retrace, so ask once the retrace before the one it
+         * is due at has passed (a late frame goes at the next retrace). */
+        uint32_t p0 = mwf_us();
+        if (interval > 1) {
+            while ((s32)(mwf_retraces - (shown_at + interval - 1)) < 0) VIDEO_WaitVSync();
+        }
+        pace_wait = mwf_us() - p0;
         VIDEO_SetNextFramebuffer(mwf_xfb[queued_xfb]);
         VIDEO_Flush();
+        shown_at = mwf_retraces + 1;
+        metric_step();
+    } else {
+        gpu_wait = mwf_us() - t0;
+        pace_wait = 0;
     }
-    gpu_wait = mwf_us() - t0;
     /* At most one frame per retrace (so the XFB the next copy reuses has left the screen). */
     if (mwf_retraces == last_retrace) VIDEO_WaitVSync();
     last_retrace = mwf_retraces;

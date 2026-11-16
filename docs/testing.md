@@ -24,14 +24,22 @@ hand-written notes needed for numbers.
 Also say per round: did it crash (the log then has no summary line), did sound play, did any walls vanish.
 
 ## What the log records (`game_core::telemetry`)
-- Header: build, map, bots, class, free MEM1 / MEM2 at start; then the load time and memory after loading.
-- Every second: fps, average / worst frame, CPU time and GPU wait (frames are pipelined: the wait for the *previous* frame's GPU work at the end of this one; near 0 means the CPU is the slower side, large means the GPU is), and the CPU split: input, player movement, gun,
-  bots (all the arena's work; `bai` / `bmv` / `bgun` are the bots' thinking, moving and shooting within it), world draw submit, other players' bodies (characters: pose, CPU skinning and draw submit; or the placeholder boxes), viewmodel, HUD; triangles and draws; free memory (every 5 s).
-- Every frame over 33 ms (up to 20 a minute): its full breakdown.
+- Header: build, map, bots, class, free MEM1 / MEM2 at start, `pace` (retraces a frame: 2 under Options > FRAME RATE
+  STEADY 30, 1 UNCAPPED); then the load time and memory after loading.
+- Every second: fps, average / worst frame, CPU time and GPU wait (frames are pipelined: the wait for the *previous* frame's GPU work at the end of this one; near 0 means the CPU is the slower side, large means the GPU is), `idle` (under STEADY 30, the wait for the frame's turn on screen: the headroom left), and the CPU split: input, player movement, gun,
+  bots (all the arena's work; `bai` / `bmv` / `bgun` are the bots' thinking, moving and shooting within it), world draw submit, other players' bodies (characters: pose, CPU skinning and draw submit; or the placeholder boxes), viewmodel, HUD; triangles and draws; free memory (every 5 s). Then the GPU's own counters (`GX_SetGPMetric`, four pairs taken in
+  turn, each for about a second; zeros or missing under Dolphin, which doesn't count them): `gbusy` (ms a frame the
+  GPU worked: its clocks less those its transform unit waited for input), `gidle` (% of clocks it waited for input:
+  high means the CPU is the slower side), `gxo` (ms a frame the transform unit waited on the pixel end: fill-bound),
+  `gtx` (ms texturing stalled on memory), `quads` (2x2 pixel quads drawn a frame), `tcmiss` (texture cache misses),
+  `gtris` (triangles past culling), `vcmiss` (vertex cache misses, 32 bytes each).
+- Every frame a retrace or more late (over 33 ms at UNCAPPED, over ~51 ms at STEADY 30; up to 20 a minute): its full
+  breakdown with `idle`. A script's `shot` makes one (it waits for the GPU and writes the picture).
 - Events: hits and kills involving you, map load, load failures (with the file error), pause, class change, weapon
   switch, log writes (with their own time), panics (with the message), match end.
-- At the end: frame-time percentiles (p50 / p90 / p95 / p99), share of frames over 16.7 ms and 33 ms, the average
-  CPU split over the match, and event counts.
+- At the end: frame-time percentiles (p50 / p90 / p95 / p99), share of frames over 16.7 ms and 33 ms and `missed`
+  (over the pacing's budget: 16.7 ms, or two retraces plus 1 ms at STEADY 30), the average CPU split and `idle` over
+  the match, the GPU counters over the match, and event counts.
 
 `mwf-convert report <log>...` prints the same summary for any log files (`report.bat X:\path\0007.log`).
 
@@ -40,9 +48,12 @@ Also say per round: did it crash (the log then has no summary line), did sound p
 (`game_core::autoplay`; the Wii side is `wii/game/src/autoplay.rs`): one command a line, `wait N`,
 `press A+UP [N]`, `hold` / `release`, `stick X Y`, `cstick X Y`, `triggers L R`, `times N <command>`,
 `shot NAME` (the next frame as `<app folder>/shots/NAME.bmp`), `log TEXT` (a line in the match log), `warp X Y Z YAW`
-(in a match: the player to that map spot, dropped onto the floor, facing YAW degrees), `quit`
-(switches the console off). Frames are pad reads: one a frame in the menus and the match, none while a map loads,
-so a script runs the same on every machine. Delete `autoplay.txt` afterwards, or the game plays it on every start.
+(in a match: the player to that map spot, dropped onto the floor, facing YAW degrees), `pace N` (a frame every N
+retraces from now on), `quit` (switches the console off). Frames are pad reads: one a frame in the menus and the
+match, none while a map loads, so a script runs the same on every machine. Scripts run a frame every retrace
+whatever Options > FRAME RATE says (they count frames), until they say `pace`. `tools/autoplay/pace30.txt` plays
+a match uncapped, at `pace 2` and uncapped again: its S rows read `fps=29 fr=33.36/33.36` with `idle=` around 22 ms
+in the middle (Dolphin, `mp_rust`). Delete `autoplay.txt` afterwards, or the game plays it on every start.
 
 `tools/autoplay/ks_tour.txt` calls killstreaks from the debug menu's GIVE lines (care package, emergency airdrop with
 its crates' capture, Predator, sentry, precision airstrike); `tools/autoplay/ks_air.txt` the stealth bomber, attack

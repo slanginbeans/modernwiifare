@@ -16,7 +16,7 @@ fn fields(line: &str) -> BTreeMap<&str, &str> {
 
 fn num(v: Option<&&str>) -> f64 {
     v.and_then(|s| s.split('/').next())
-        .and_then(|s| s.trim_end_matches('k').parse().ok())
+        .and_then(|s| s.trim_end_matches(['k', '%']).parse().ok())
         .unwrap_or(0.0)
 }
 

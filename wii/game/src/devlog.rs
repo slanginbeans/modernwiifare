@@ -61,12 +61,28 @@ pub fn start(now_ms: u32, header: core::fmt::Arguments<'_>) {
     };
     let mut h = alloc::string::String::new();
     let _ = core::fmt::write(&mut h, header);
-    let session = Session {
-        t: Telemetry::new(now_ms, &h),
-        path,
-    };
+    let mut t = Telemetry::new(now_ms, &h);
+    t.set_pace(unsafe { PACE });
+    let session = Session { t, path };
     unsafe { LOG = Some(session) };
     flush(now_ms);
+}
+
+/// Retraces a frame from now on (the match log's budget and spike threshold); kept for the next session too.
+static mut PACE: u32 = 1;
+
+pub fn set_pace(retraces: u32) {
+    unsafe { PACE = retraces };
+    if let Some(s) = session() {
+        s.t.set_pace(retraces);
+    }
+}
+
+/// The GPU counters' latest readings (`telemetry::Telemetry::gpu`).
+pub fn gpu(sets: &[game_core::telemetry::GpuCounters; game_core::telemetry::GPU_SETS]) {
+    if let Some(s) = session() {
+        s.t.gpu(sets);
+    }
 }
 
 /// Record a frame.

@@ -175,6 +175,15 @@ Checked in Dolphin (`tools/autoplay/av_fx.txt`, `av_fx_wall.txt`): others' gunfi
 smoke's looping cloud, the knife's wall cue; not on a Wii, and the hit alert not in a scripted run (no scripted hit).
 
 ## Next, performance (ranked by expected milliseconds; measure with the logs first)
+Compared with how shipped Wii games got steady frame rates (2026-11-16): the build already has convert-time display
+lists, quantized indexed vertices, strips, cells and portals, short TEV chains, CMPR, baked lighting, early Z for
+opaque surfaces and CPU/GPU overlap. Done from that comparison: a steady 30 fps (Options > FRAME RATE, as the Wii's
+Call of Duty ports ran) and the GPU's own counters in the match log (`docs/testing.md`), so a hardware log says
+whether a map is GPU-, fill- or CPU-bound. Next from it, in order: per-instance CPU work in world submission
+(GX-indexed matrix loads, fewer array rebinds and vertex-cache flushes), characters on the GX matrix palette with
+frustum / distance culling and a far LOD, paired-singles maths for what stays on the CPU (and `opt-level=3`), the
+built-but-off pack toggles (`--small-dl`, `--tiled-uv`, `--small-props`, `--slim-views`, `--adpcm`) for MEM2 on the
+big maps, then TMEM preloading, CI palettes for UI, a particle coverage cap.
 1. **World vertex load** (~12-25 ms on big maps): draw distance with fog and model LOD scale are in (debug menu),
    with an AUTO draw distance that follows the frame time (shrinks while GPU-bound frames miss 60 fps, grows back
    while they hold it; 2500 units at least) in place of per-map defaults; fixed per-map values can still come from

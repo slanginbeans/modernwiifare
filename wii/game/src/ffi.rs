@@ -84,6 +84,20 @@ type Mtx34 = [[f32; 4]; 3];
 /// `MWF_TEX_GRAB`: the frame `mwf_grab_screen` kept.
 pub const TEX_GRAB: i32 = -2;
 
+/// `mwf_gpu_metric`: one GPU counter set's last reading (`shim.h`).
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct GpuMetric {
+    pub c0: u32,
+    pub c1: u32,
+    pub frames: u32,
+    pub us: u32,
+    pub taken: u32,
+}
+
+/// `MWF_GPU_METRIC_SETS`.
+pub const GPU_METRIC_SETS: usize = 4;
+
 unsafe extern "C" {
     pub fn mwf_should_exit() -> i32;
     pub fn mwf_ms() -> u32;
@@ -176,6 +190,9 @@ unsafe extern "C" {
     pub fn mwf_sky_face(view_rot: *const Mtx34, corners: *const [[f32; 5]; 4], tex: i32);
     pub fn mwf_hud_rects(rects: *const [i16; 4], count: u32, rgba: u32);
     pub fn mwf_frame_end() -> u32;
+    pub fn mwf_set_frame_interval(retraces: u32);
+    pub fn mwf_pace_wait_us() -> u32;
+    pub fn mwf_gpu_metrics(out: *mut GpuMetric);
 }
 
 pub fn ms() -> u32 {

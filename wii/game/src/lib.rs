@@ -51,6 +51,8 @@ static mut WALK_SCRATCH: WalkScratch = WalkScratch::new();
 struct Shim {
     /// Microseconds the CPU waited for the GPU at the end of the last frame.
     gpu_wait_us: u32,
+    /// Microseconds the last frame then waited for its turn on screen (steady pacing): headroom, not work.
+    pace_wait_us: u32,
 }
 
 impl Gfx for Shim {
@@ -128,8 +130,20 @@ impl Gfx for Shim {
     }
     fn frame_end(&mut self) {
         self.gpu_wait_us = unsafe { ffi::mwf_frame_end() };
+        self.pace_wait_us = unsafe { ffi::mwf_pace_wait_us() };
         autoplay::after_frame();
     }
+}
+
+/// Retraces per frame now (1: a frame every retrace it's ready for; 2: steady 30 fps), for the match log's header.
+pub(crate) static PACE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+
+/// Frame pacing from the options (FRAME RATE: steady 30 = a frame every second retrace), or a test script's.
+fn apply_pace(o: &game_core::options::Options) {
+    let r = autoplay::pace().map_or(if o.steady_30 { 2 } else { 1 }, u32::from);
+    PACE.store(r, core::sync::atomic::Ordering::Relaxed);
+    devlog::set_pace(r);
+    unsafe { ffi::mwf_set_frame_interval(r) };
 }
 
 /// Frame timing for the overlay, averaged over half a second.
@@ -916,7 +930,7 @@ fn run_map(
     devlog::start(
         load_start,
         format_args!(
-            "build={} map={name} bots={bots} class={} mem1_free={}k mem2_free={}k widescreen={}",
+            "build={} map={name} bots={bots} class={} mem1_free={}k mem2_free={}k widescreen={} pace={}",
             option_env!("MWF_BUILD_ID").unwrap_or("dev"),
             loadouts
                 .class
@@ -926,6 +940,7 @@ fn run_map(
             unsafe { ffi::mwf_mem1_free_bytes() } / 1024,
             unsafe { ffi::mwf_mem2_free_bytes() } / 1024,
             unsafe { ffi::mwf_widescreen() } != 0,
+            PACE.load(core::sync::atomic::Ordering::Relaxed),
         ),
     );
     let cpath = path.as_ptr();
@@ -1651,6 +1666,7 @@ fn run_map(
                 if let front::Pause::Options = c {
                     front::options_menu(gfx, input, options, true);
                     front::save_options(options);
+                    apply_pace(options);
                     look_settings = options.look();
                     continue;
                 }
@@ -4161,8 +4177,12 @@ fn run_map(
         }
         let end = ffi::us();
         timing.add(end, end.wrapping_sub(frame_start), cpu_us, gfx.gpu_wait_us);
+        // Its budget follows the pacing; the wait for a turn on screen isn't work.
+        auto_distance.budget_us = game_core::auto_distance::ON_TIME_US
+            * PACE.load(core::sync::atomic::Ordering::Relaxed) as f32;
         auto_distance.update(
             end.wrapping_sub(frame_start),
+            gfx.pace_wait_us,
             gfx.gpu_wait_us,
             sections[section::WORLD],
         );
@@ -4226,6 +4246,7 @@ fn run_map(
                 frame_us: end.wrapping_sub(frame_start),
                 cpu_us,
                 gpu_us: gfx.gpu_wait_us,
+                idle_us: gfx.pace_wait_us,
                 sections,
                 triangles: stats.triangles,
                 draws: stats.batches,
@@ -4233,6 +4254,16 @@ fn run_map(
                 mem2_free,
             },
         );
+        // The GPU's own counters (zeros under Dolphin).
+        let mut gm = [ffi::GpuMetric::default(); ffi::GPU_METRIC_SETS];
+        unsafe { ffi::mwf_gpu_metrics(gm.as_mut_ptr()) };
+        devlog::gpu(&gm.map(|m| telemetry::GpuCounters {
+            c0: u64::from(m.c0),
+            c1: u64::from(m.c1),
+            frames: u64::from(m.frames),
+            us: u64::from(m.us),
+            taken: m.taken,
+        }));
         frame_start = end;
     }
 }
@@ -4280,12 +4311,14 @@ pub extern "C" fn mwf_game_main() -> i32 {
     let mut debug_sel = 0usize;
     // The player's options (`options.dat`).
     let mut options = front::load_options();
+    apply_pace(&options);
     loop {
         match front::main_menu(&mut gfx, &mut input, &mut main_sel, catalog.is_some()) {
             front::Main::Quit => return 0,
             front::Main::Options => {
                 front::options_menu(&mut gfx, &mut input, &mut options, false);
                 front::save_options(&options);
+                apply_pace(&options);
             }
             front::Main::Debug => {
                 let cat = catalog.as_ref();

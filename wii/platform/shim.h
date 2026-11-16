@@ -95,6 +95,23 @@ void mwf_gx_draw(const float mtx[3][4], const mwf_vtx *v, uint32_t n);
 void mwf_gx_end_frame(void);
 /* How long the last frame end waited for the GPU, microseconds. */
 uint32_t mwf_gpu_wait_us(void);
+/* Steady frame pacing: each frame stays on screen `retraces` retraces (1: a frame every retrace it is ready for; 2: 30
+ * fps at 60 Hz, 25 at 50 Hz). Clamped to 1..4. */
+void mwf_set_frame_interval(uint32_t retraces);
+/* How long the last frame end waited for its turn on screen (steady pacing), microseconds: the frame's headroom. */
+uint32_t mwf_pace_wait_us(void);
+/* The GPU's own counters (GX_SetGPMetric), one pair per set, rotated every ~60 frames:
+ *   0: XF waiting for input (GPU idle or starved by the CPU), GP clocks
+ *   1: XF waiting to output (held up by the pixel end), texture unit stalled on memory (clocks)
+ *   2: pixel quads with coverage (fill), texture cache misses
+ *   3: triangles past culling, vertex cache misses (32-byte reads)
+ * Each set's last reading: the two counts, the frames and microseconds it covered, and how many readings so far
+ * (0: none yet). Dolphin doesn't count them (zeros). */
+#define MWF_GPU_METRIC_SETS 4
+typedef struct {
+    uint32_t c0, c1, frames, us, taken;
+} mwf_gpu_metric;
+void mwf_gpu_metrics(mwf_gpu_metric out[MWF_GPU_METRIC_SETS]);
 /* Wait until the GPU has drawn everything queued (before memory it may read is released or reused). */
 void mwf_gpu_idle(void);
 
