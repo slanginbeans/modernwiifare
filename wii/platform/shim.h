@@ -284,6 +284,12 @@ void mwf_world_tint(uint32_t rgba);
 void mwf_view_arrays_indexed(const void *pos, const void *attr);
 /* Load a 3x4 position matrix into slot 0..9 (GX_PNMTX0 + 3 x slot). */
 void mwf_pos_matrix_slot(const float m[3][4], uint32_t slot);
+/* shim_ps.c: paired-single skinning kernels (game_core::skin_kernels is the scalar reference). */
+void mwf_ps_concat_each(const float (*a)[3][4], const float (*b)[3][4], float (*out)[3][4], uint32_t n);
+void mwf_ps_skin(const void *verts, uint32_t n, const float (*skin)[3][4], uint32_t bones, float (*out)[3],
+                 uint32_t outs);
+void mwf_ps_load_slots(const float eye[3][4], const float (*skin)[3][4], uint32_t bones, const uint16_t *keys,
+                       uint32_t n, uint16_t *loaded);
 /* Arrays for the model: positions f32x3 (stride 12), and per vertex RGBA8 + UV f32x2 (stride 12). GX_VTXFMT6,
  * display lists index POS, CLR0, TEX0 (u16 each). */
 void mwf_view_arrays(const void *positions, const void *attributes);

@@ -57,6 +57,7 @@ pub mod options;
 pub mod perks;
 pub mod player;
 pub mod shield;
+pub mod skin_kernels;
 pub mod sky;
 pub mod smoke;
 pub mod telemetry;

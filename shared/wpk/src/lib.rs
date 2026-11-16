@@ -23,6 +23,7 @@ pub mod be;
 pub mod classes;
 pub mod clip;
 pub mod destructible;
+pub mod fmath;
 pub mod fx;
 pub mod held;
 pub mod life_rules;

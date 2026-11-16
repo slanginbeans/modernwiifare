@@ -467,13 +467,36 @@ impl Body {
         scratch: &mut Scratch,
         out: &mut Vec<Mtx34>,
     ) {
+        self.pose_bones(
+            anims, rig, model, now, aim_pitch, torso_yaw, prone, None, scratch, out,
+        );
+    }
+
+    /// [`Body::pose`] for the bones `need` marks only (none: all). A bone's transform depends on its ancestors
+    /// alone, so with `need` closed under parents ([`needed_bones`]) the marked bones come out exactly as a full
+    /// pose gives them; the others are left as the identity. A body nobody sees is posed this way for its hit boxes
+    /// and weapon tags.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pose_bones(
+        &self,
+        anims: &PlayerAnims,
+        rig: &Rig,
+        model: &ViewModel,
+        now: u32,
+        aim_pitch: f32,
+        torso_yaw: f32,
+        prone: bool,
+        need: Option<&[bool]>,
+        scratch: &mut Scratch,
+        out: &mut Vec<Mtx34>,
+    ) {
         let n = model.bones.len();
         let s = scratch;
         s.reset(model);
         let sample = |p: &Playing, rot: &mut [[f32; 4]], tr: &mut [[f32; 3]]| {
             if let Some(c) = anims.clips.clip(usize::from(p.clip)) {
                 let f = c.frame_at(p.time(now));
-                apply(&c, f, rig, rot, tr);
+                apply(&c, f, rig, need, rot, tr);
             }
         };
         // Legs over the whole body, fading from the previous legs animation.
@@ -483,7 +506,7 @@ impl Body {
                 s.copy_base_to_b();
                 sample(prev, &mut s.rot, &mut s.tr);
                 sample(cur, &mut s.rot_b, &mut s.tr_b);
-                s.blend_b_into_a(w);
+                s.blend_b_into_a(w, need);
             } else {
                 sample(cur, &mut s.rot, &mut s.tr);
             }
@@ -501,7 +524,7 @@ impl Body {
                 if let Some(prev) = &self.torso.prev {
                     sample(prev, &mut s.rot, &mut s.tr);
                 }
-                s.blend_b_into_a(w);
+                s.blend_b_into_a(w, need);
             } else {
                 core::mem::swap(&mut s.rot, &mut s.rot_b);
                 core::mem::swap(&mut s.tr, &mut s.tr_b);
@@ -530,6 +553,10 @@ impl Body {
         };
         out.clear();
         for i in 0..n {
+            if need.is_some_and(|m| !m.get(i).copied().unwrap_or(false)) {
+                out.push(crate::viewmodel::IDENTITY);
+                continue;
+            }
             let bone = &model.bones[i];
             let t: [f32; 3] = core::array::from_fn(|k| bone.local_trans[k] + s.tr[i][k]);
             let control = rig
@@ -588,15 +615,22 @@ fn set_angles(a: [f32; 3]) -> [f32; 4] {
     ]
 }
 
-/// Apply clip `c` at frame `f` to the model bones its tracks map to.
-fn apply(c: &ClipRef, f: f32, rig: &Rig, rot: &mut [[f32; 4]], tr: &mut [[f32; 3]]) {
+/// Apply clip `c` at frame `f` to the model bones its tracks map to (those `need` marks, when given).
+fn apply(
+    c: &ClipRef,
+    f: f32,
+    rig: &Rig,
+    need: Option<&[bool]>,
+    rot: &mut [[f32; 4]],
+    tr: &mut [[f32; 3]],
+) {
     for k in 0..c.tracks() {
         let Some(t) = c.track(k) else { continue };
         let Some(&b) = rig.map.get(usize::from(t.bone)) else {
             continue;
         };
         let b = usize::from(b);
-        if b >= rot.len() {
+        if b >= rot.len() || need.is_some_and(|m| !m.get(b).copied().unwrap_or(false)) {
             continue;
         }
         if let Some(q) = t.rotation(f) {
@@ -606,6 +640,23 @@ fn apply(c: &ClipRef, f: f32, rig: &Rig, rot: &mut [[f32; 4]], tr: &mut [[f32; 3
             tr[b] = d;
         }
     }
+}
+
+/// The bones `bones` and every ancestor of theirs (a mask for [`Body::pose_bones`]); indices past `model`'s bones
+/// are ignored.
+pub fn needed_bones(model: &ViewModel, bones: impl IntoIterator<Item = usize>) -> Vec<bool> {
+    let mut need = alloc::vec![false; model.bones.len()];
+    for b in bones {
+        let mut i = b;
+        while i < need.len() && !need[i] {
+            need[i] = true;
+            match usize::try_from(model.bones[i].parent) {
+                Ok(p) => i = p,
+                Err(_) => break,
+            }
+        }
+    }
+    need
 }
 
 /// Working buffers for [`Body::pose`] (kept between frames: no allocation per frame).
@@ -637,8 +688,12 @@ impl Scratch {
     }
 
     /// a = a â†’ b by `w`.
-    fn blend_b_into_a(&mut self, w: f32) {
+    /// (Only the bones `need` marks, when given.)
+    fn blend_b_into_a(&mut self, w: f32, need: Option<&[bool]>) {
         for i in 0..self.rot.len() {
+            if need.is_some_and(|m| !m.get(i).copied().unwrap_or(false)) {
+                continue;
+            }
             self.rot[i] = nlerp(self.rot[i], self.rot_b[i], w);
             self.tr[i] =
                 core::array::from_fn(|k| self.tr[i][k] + (self.tr_b[i][k] - self.tr[i][k]) * w);
@@ -936,6 +991,56 @@ mod tests {
         assert!(b.event(&anims, 1, 10, &d, 4000, true));
         b.moves(&anims, 1, &c, 4100);
         assert_eq!(b.legs.cur.map(|p| p.clip), Some(3));
+    }
+
+    /// A pose of some bones only gives those bones exactly as the full pose does (mid fade, aimed, torso turned);
+    /// the bones left out are the identity.
+    #[test]
+    fn partial_pose_matches_the_full_pose() {
+        let bytes = anims_bytes();
+        let anims = PlayerAnims {
+            speeds: &[],
+            clips: Anims::parse(&bytes).unwrap(),
+            script: script(),
+        };
+        let (mut vm, mut names) = model();
+        names[1] = "back_low".into();
+        // A fourth bone beside the spine, on the root.
+        vm.bones.push(vm.bones[1]);
+        names.push("j_b".into());
+        names[2] = "j_a".into();
+        let rig = Rig::new(&names, &["j_a".into(), "j_b".into(), "back_low".into()]);
+        let ps = playerstate_iw4::PlayerState::ZERO;
+        let rifle = Some(Held {
+            anim_type: 4,
+            class: 0,
+        });
+        let mut b = Body::new(0);
+        b.moves(&anims, 1, &conditions(&ps, rifle, 1, 0, false), 0);
+        let c = conditions(&ps, rifle, 10, 0, false);
+        b.moves(&anims, 10, &c, 1000);
+        assert!(b.event(&anims, 2, 10, &c, 1050, false));
+        let need = needed_bones(&vm, [2]);
+        assert_eq!(need, [true, true, true, false]);
+        let (mut s, mut full, mut part) = (Scratch::default(), Vec::new(), Vec::new());
+        for now in [1060, 1100, 1180] {
+            b.pose(&anims, &rig, &vm, now, 30.0, 25.0, false, &mut s, &mut full);
+            b.pose_bones(
+                &anims,
+                &rig,
+                &vm,
+                now,
+                30.0,
+                25.0,
+                false,
+                Some(&need),
+                &mut s,
+                &mut part,
+            );
+            assert_eq!(full[..3], part[..3]);
+            assert_eq!(part[3], crate::viewmodel::IDENTITY);
+            assert_ne!(full[3], crate::viewmodel::IDENTITY);
+        }
     }
 
     #[test]

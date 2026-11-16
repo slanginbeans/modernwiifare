@@ -18,6 +18,7 @@ mod effects;
 mod ffi;
 mod front;
 mod objects;
+mod ps;
 mod replay;
 mod rt;
 mod sound;
@@ -1002,7 +1003,8 @@ fn run_map(
     // Time the world's stages (telemetry `wvis` / `wcul` / `wsrt` / `wsub`).
     world.clock = Some(clock_us);
     // The players' bodies (none with an older pack: placeholder boxes then).
-    let mut characters = character::Characters::load(bytes, common, |i| world.texture(i), gfx);
+    let mut characters =
+        character::Characters::load(bytes, common, bots + 1, |i| world.texture(i), gfx);
     // MW2's effects (none with an older pack: placeholder flashes then).
     let mut effects = effects::Effects::load(common, gfx);
     // The map's destructible objects and the effects they play (none with an older pack).
@@ -1048,6 +1050,19 @@ fn run_map(
             character::CORPSES * body_verts * 12 / 1024,
         ),
     );
+    // The bodies' skinning: vertices the CPU skins per team model, display lists, position buffers taken at load,
+    // and the paired-single kernels against the scalar ones (largest difference, matrix entry / position).
+    if let Some(c) = characters.as_ref() {
+        let (blended, verts, draws, unseen_bones, buffer_kb) = c.skin_summary();
+        let (dm, dp) = c.kernel_check();
+        devlog::event(
+            ffi::ms(),
+            "body_skin",
+            format_args!(
+                "blended={blended:?} verts={verts:?} draws={draws:?} unseen_bones={unseen_bones:?} buffers_kb={buffer_kb} ps_check={dm:.2e}/{dp:.2e}"
+            ),
+        );
+    }
     devlog::event(
         ffi::ms(),
         "hitboxes",
@@ -3315,6 +3330,10 @@ fn run_map(
         sections[section::WLD_CULL] = world.cost.cull_us;
         sections[section::WLD_SORT] = world.cost.sort_us;
         sections[section::WLD_SUBMIT] = world.cost.submit_us;
+        // Bodies outside the view or past the far plane are posed for their hit boxes but not drawn.
+        if let Some(ch) = characters.as_mut() {
+            ch.frustum = Some(cam.frustum(1.0, world.far()));
+        }
         // The other players' bodies (timed with the placeholder boxes as `bod`).
         if let (Some(k), Some(r)) = (watching.as_ref(), replay.as_mut()) {
             r.draw(
@@ -4226,6 +4245,27 @@ fn run_map(
                         format_args!(
                             "bodies={} bones={} boxes={} us={}",
                             c.bodies, c.bone_bodies, c.boxes, c.us
+                        ),
+                    );
+                }
+            }
+            // What the bodies cost over those 5 s (`Characters::take_cost`).
+            if let Some(c) = characters.as_mut() {
+                let b = c.take_cost();
+                let per = |us: u32| us.checked_div(b.frames).unwrap_or(0);
+                if b.frames > 0 {
+                    devlog::event(
+                        now,
+                        "bodcost",
+                        format_args!(
+                            "pose={} skin={} submit={} posed={} drawn={} culled={} frames={}",
+                            per(b.pose_us),
+                            per(b.skin_us),
+                            per(b.submit_us),
+                            b.posed,
+                            b.drawn,
+                            b.culled,
+                            b.frames
                         ),
                     );
                 }

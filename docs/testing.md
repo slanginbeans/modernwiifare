@@ -37,6 +37,13 @@ Also say per round: did it crash (the log then has no summary line), did sound p
   breakdown with `idle`. A script's `shot` makes one (it waits for the GPU and writes the picture).
 - Events: hits and kills involving you, map load, load failures (with the file error), pause, class change, weapon
   switch, log writes (with their own time), panics (with the message), match end.
+- `bodcost` (every 5 s, `Characters::take_cost`): the other players' bodies (`bod`) split per frame in µs: `pose`
+  (animation, posing, hit boxes), `skin` (skin matrices and blended vertices), `submit` (draws, held weapons,
+  corpses); `posed` bodies, of them `drawn` and `culled` (outside the view or past the far plane: posed for the hit
+  boxes only), `frames`. At load, `body_skin`: per team model the vertices the CPU skins (`blended`), all vertices,
+  display lists, `unseen_bones` (bones posed for a body outside the view, of all), the position buffers' MEM2
+  (`buffers_kb`), and `ps_check` (largest difference between the paired-single kernels and the scalar ones: matrix
+  entry / position; around 1e-5 is right).
 - At the end: frame-time percentiles (p50 / p90 / p95 / p99), share of frames over 16.7 ms and 33 ms and `missed`
   (over the pacing's budget: 16.7 ms, or two retraces plus 1 ms at STEADY 30), the average CPU split and `idle` over
   the match, the GPU counters over the match, and event counts.

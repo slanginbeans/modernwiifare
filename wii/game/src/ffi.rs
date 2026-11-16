@@ -149,6 +149,24 @@ unsafe extern "C" {
     pub fn mwf_world_tint(rgba: u32);
     pub fn mwf_view_arrays_indexed(positions: *const u8, attributes: *const u8);
     pub fn mwf_pos_matrix_slot(m: *const Mtx34, slot: u32);
+    /// `shim_ps.c`: paired-single kernels (`game_core::skin_kernels` is the scalar reference; `crate::ps`).
+    pub fn mwf_ps_concat_each(a: *const Mtx34, b: *const Mtx34, out: *mut Mtx34, n: u32);
+    pub fn mwf_ps_skin(
+        verts: *const u8,
+        n: u32,
+        skin: *const Mtx34,
+        bones: u32,
+        out: *mut [f32; 3],
+        outs: u32,
+    );
+    pub fn mwf_ps_load_slots(
+        eye: *const Mtx34,
+        skin: *const Mtx34,
+        bones: u32,
+        keys: *const u16,
+        n: u32,
+        loaded: *mut u16,
+    );
     pub fn mwf_fog(on: i32, start: f32, end: f32, rgba: u32);
     /// Effect sprites, 4 vertices a quad (`mwf_sprite_vert`).
     pub fn mwf_sprites(

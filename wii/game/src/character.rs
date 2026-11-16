@@ -16,6 +16,7 @@ use game_core::character::{
 };
 use game_core::damage::HitBox;
 use game_core::gfx::{DrawState, Gfx, Mtx34};
+use game_core::skin_kernels::SkinVert;
 use game_core::viewmodel as vmod;
 use wpk::anim_script::{Conditions, Script};
 use wpk::held::Guns;
@@ -57,15 +58,26 @@ const THROWN: HeldType = HeldType {
 struct Draw {
     dl: &'static [u8],
     state: DrawState,
+    /// The matrix of each GX position-matrix slot this draw's vertices use (`vmod::matrix_key`: a bone, or
+    /// `vmod::BLENDED` for the vertices the CPU skins).
+    slots: Vec<u16>,
 }
 
 struct Team {
+    /// Its vertices reordered at load: those on more than one bone first (`blended`), then the rigid ones.
     vm: ViewModel,
     rig: Rig,
     attributes: *const u8,
     draws: Vec<Draw>,
+    /// The vertices the CPU skins (the first `blended.len()`); GX places the rest with their bone's matrix.
+    blended: Vec<SkinVert>,
+    /// Each bone's inverse bind matrix, contiguous for `ps::concat_each`.
+    inv_bind: Vec<Mtx34>,
     /// Its bones' hit boxes (`CHHB`; none with an older pack).
     hitboxes: Vec<records::BoneHitRecord>,
+    /// The bones a body nobody sees is still posed for: its hit boxes', the weapon and shield tags, and their
+    /// ancestors (`character::needed_bones`).
+    hit_need: Vec<bool>,
 }
 
 /// What the animation saw of one player last frame.
@@ -146,9 +158,14 @@ pub struct Characters {
     held: Option<Held>,
     anims: PlayerAnims<'static>,
     seen: Vec<Seen>,
-    /// Skinned positions per drawn player (MEM2; the GPU reads them after the CPU moved on, so each player has its
-    /// own, and two of them: frames are pipelined, so the GPU may still be drawing last frame's).
-    buffers: Vec<(usize, &'static mut [[f32; 3]])>,
+    /// Positions per drawn player, by its place in the list drawn (not its slot: the killcam's replayed bodies
+    /// animate in slots of their own), MEM2 taken at load, two each: frames are pipelined, so the GPU may still be
+    /// drawing last frame's. Each holds a team model's rigid vertices in model space (written when the team
+    /// changes) and the blended ones skinned each frame it is drawn. The team it holds, or `usize::MAX`.
+    buffers: Vec<[Positions; 2]>,
+    /// The view this frame (none: everything in front of the camera is drawn). Bodies outside it are posed for
+    /// their hit boxes but neither skinned nor drawn.
+    pub frustum: Option<game_core::camera::Frustum>,
     /// Which of each player's two buffers this frame writes.
     parity: usize,
     scratch: Scratch,
@@ -163,11 +180,36 @@ pub struct Characters {
     pub shock_anims: u32,
     /// Corpse draws so far (for the log).
     pub corpse_draws: u32,
+    /// Where the body time went since the log last took it ([`Characters::take_cost`]).
+    cost: BodyCost,
+}
+
+/// What drawing the bodies cost (the match log's `bodcost`, every 5 s): microseconds animating and posing (with the
+/// hit boxes), skinning, and submitting the draws (guns and corpses too); bodies posed, drawn, and posed but not drawn
+/// (outside the view or past the far plane); frames.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct BodyCost {
+    pub pose_us: u32,
+    pub skin_us: u32,
+    pub submit_us: u32,
+    pub posed: u32,
+    pub drawn: u32,
+    pub culled: u32,
+    pub frames: u32,
 }
 
 fn mem2(count: usize) -> Option<&'static mut [u8]> {
     let p = unsafe { ffi::mwf_mem2_alloc(count as u32, 32) };
     (!p.is_null()).then(|| unsafe { core::slice::from_raw_parts_mut(p, count) })
+}
+
+/// A player's position buffer and the team model whose rigid vertices it holds (`usize::MAX`: none yet).
+type Positions = (usize, &'static mut [[f32; 3]]);
+
+/// `n` positions in MEM2.
+fn positions(n: usize) -> Option<&'static mut [[f32; 3]]> {
+    let b = mem2(n * 12)?;
+    Some(unsafe { core::slice::from_raw_parts_mut(b.as_mut_ptr().cast::<[f32; 3]>(), n) })
 }
 
 /// What one player looks like and does this frame.
@@ -249,10 +291,12 @@ impl Pose {
 impl Characters {
     /// The map's characters (`map`'s `CHAR`) with the common pack's player animations and held weapons (their
     /// textures created through `gfx`); `texture` turns a map texture index into its handle. `None` without
-    /// characters or animations.
+    /// characters or animations. `slots`: the match's players (you and the bots): position buffers for that many
+    /// bodies drawn at once are taken now; a body past them takes its own when first drawn.
     pub fn load(
         map: &'static [u8],
         common: &'static [u8],
+        slots: usize,
         texture: impl Fn(u16) -> i32,
         gfx: &mut impl Gfx,
     ) -> Option<Characters> {
@@ -281,8 +325,29 @@ impl Characters {
             .and_then(|s| wpk::view::decode_names(s.data))
             .unwrap_or_default();
         let mut out = Vec::new();
-        for (vm, names) in teams {
+        for (mut vm, names) in teams {
             let rig = Rig::new(&names, &anim_names);
+            // The vertices on more than one bone first: the CPU skins and flushes that front part only.
+            let n = vm.verts.len().min(usize::from(u16::MAX));
+            let rigid = |v: &wpk::view::SkinVertex| vmod::matrix_key(v) != vmod::BLENDED;
+            let mut order: Vec<usize> = (0..n).collect();
+            order.sort_by_key(|&i| rigid(&vm.verts[i]));
+            let mut remap = alloc::vec![0u16; n];
+            for (new, &old) in order.iter().enumerate() {
+                remap[old] = new as u16;
+            }
+            vm.verts = order.iter().map(|&i| vm.verts[i]).collect();
+            for i in vm.indices.iter_mut() {
+                *i = remap.get(usize::from(*i)).copied().unwrap_or(0);
+            }
+            let blended: Vec<SkinVert> = vm
+                .verts
+                .iter()
+                .take_while(|v| !rigid(v))
+                .enumerate()
+                .map(|(i, v)| SkinVert::of(v, i as u16))
+                .collect();
+            let inv_bind: Vec<Mtx34> = vm.bones.iter().map(|b| b.inv_bind).collect();
             let attr = mem2(vm.verts.len() * 12)?;
             for (i, v) in vm.verts.iter().enumerate() {
                 let at = i * 12;
@@ -298,48 +363,66 @@ impl Characters {
                 if idx.is_empty() {
                     continue;
                 }
-                let len = (3 + idx.len() * 6).div_ceil(32) * 32;
-                let dl = mem2(len)?;
-                dl.fill(0);
-                dl[0] = records::gx_triangles(VTXFMT);
-                dl[1..3].copy_from_slice(&(idx.len() as u16).to_be_bytes());
-                for (k, &i) in idx.iter().enumerate() {
-                    for a in 0..3 {
-                        let at = 3 + k * 6 + a * 2;
-                        dl[at..at + 2].copy_from_slice(&i.to_be_bytes());
+                // Cut into groups of at most ten matrices (as the first-person model): GX_TRIANGLES, each vertex a
+                // position-matrix index (slot x 3) then three u16 indices.
+                for (slots, tris) in vmod::matrix_groups(&vm, idx) {
+                    const VERTEX: usize = 7;
+                    let len = (3 + tris.len() * VERTEX).div_ceil(32) * 32;
+                    let dl = mem2(len)?;
+                    dl.fill(0);
+                    dl[0] = records::gx_triangles(VTXFMT);
+                    dl[1..3].copy_from_slice(&(tris.len() as u16).to_be_bytes());
+                    for (k, &i) in tris.iter().enumerate() {
+                        let at = 3 + k * VERTEX;
+                        let key = vmod::matrix_key(&vm.verts[usize::from(i)]);
+                        let slot = slots.iter().position(|&s| s == key).unwrap_or(0);
+                        dl[at] = (slot * 3) as u8;
+                        for a in 0..3 {
+                            dl[at + 1 + a * 2..at + 3 + a * 2].copy_from_slice(&i.to_be_bytes());
+                        }
                     }
-                }
-                unsafe { ffi::mwf_flush(dl.as_ptr(), len as u32) };
-                draws.push(Draw {
-                    dl,
-                    state: DrawState {
-                        tex: if s.texture == NONE {
-                            -1
-                        } else {
-                            texture(s.texture)
+                    unsafe { ffi::mwf_flush(dl.as_ptr(), len as u32) };
+                    draws.push(Draw {
+                        dl,
+                        state: DrawState {
+                            tex: if s.texture == NONE {
+                                -1
+                            } else {
+                                texture(s.texture)
+                            },
+                            lightmap: -1,
+                            blend: s.blend,
+                            alpha_ref: s.alpha_ref,
+                            cull: 0,
+                            tint: 0,
                         },
-                        lightmap: -1,
-                        blend: s.blend,
-                        alpha_ref: s.alpha_ref,
-                        cull: 0,
-                        tint: 0,
-                    },
-                });
+                        slots,
+                    });
+                }
             }
             let team = out.len() as u8;
+            let hitboxes: Vec<records::BoneHitRecord> = hitboxes
+                .iter()
+                // No location ("none", the head model's own bones in packs from before the converter left
+                // them out): not a hit volume.
+                .filter(|h| h.team == team && h.loc != 0 && usize::from(h.bone) < vm.bones.len())
+                .copied()
+                .collect();
+            let hit_need = game_core::character::needed_bones(
+                &vm,
+                hitboxes
+                    .iter()
+                    .map(|h| usize::from(h.bone))
+                    .chain([rig.weapon, rig.weapon_left, rig.shield_back].map(usize::from)),
+            );
             out.push(Team {
                 attributes: attr.as_ptr(),
                 draws,
+                blended,
+                inv_bind,
                 rig,
-                hitboxes: hitboxes
-                    .iter()
-                    // No location ("none", the head model's own bones in packs from before the converter left
-                    // them out): not a hit volume.
-                    .filter(|h| {
-                        h.team == team && h.loc != 0 && usize::from(h.bone) < vm.bones.len()
-                    })
-                    .copied()
-                    .collect(),
+                hitboxes,
+                hit_need,
                 vm,
             });
         }
@@ -362,6 +445,14 @@ impl Characters {
                 used: false,
             });
         }
+        // The players' position buffers now too (same reason).
+        let mut buffers = Vec::with_capacity(slots);
+        for _ in 0..slots {
+            let (Some(a), Some(b)) = (positions(most), positions(most)) else {
+                break;
+            };
+            buffers.push([(usize::MAX, a), (usize::MAX, b)]);
+        }
         (!out.is_empty()).then(|| Characters {
             lattice: None,
             teams: out,
@@ -372,7 +463,8 @@ impl Characters {
                 speeds,
             },
             seen: Vec::new(),
-            buffers: Vec::new(),
+            buffers,
+            frustum: None,
             parity: 0,
             scratch: Scratch::default(),
             world: Vec::new(),
@@ -382,6 +474,7 @@ impl Characters {
             corpses,
             shock_anims: 0,
             corpse_draws: 0,
+            cost: BodyCost::default(),
         })
     }
 
@@ -401,6 +494,76 @@ impl Characters {
             .zip(self.held.as_ref())
             .is_some_and(|(w, h)| h.model(w).is_some());
         (verts, left, back, shield)
+    }
+
+    /// The position buffer of the `k`th body drawn, for this frame, holding team model `t`'s rigid vertices
+    /// (written and flushed when it held another team's). None when MEM2 is short.
+    fn buffer(&mut self, k: usize, t: usize) -> Option<&'static mut [[f32; 3]]> {
+        while self.buffers.len() <= k {
+            let most = self.teams.iter().map(|t| t.vm.verts.len()).max()?;
+            let (a, b) = (positions(most)?, positions(most)?);
+            self.buffers.push([(usize::MAX, a), (usize::MAX, b)]);
+        }
+        let verts = &self.teams[t].vm.verts;
+        let (held, buf) = &mut self.buffers[k][self.parity];
+        if *held != t {
+            for (o, v) in buf.iter_mut().zip(verts) {
+                *o = v.pos;
+            }
+            unsafe { ffi::mwf_flush(buf.as_ptr().cast(), (buf.len() * 12) as u32) };
+            *held = t;
+        }
+        let n = verts.len().min(buf.len());
+        // SAFETY: the buffer lives for the program (MEM2, never freed); this frame's drawing is its only user.
+        Some(unsafe { core::slice::from_raw_parts_mut(buf.as_mut_ptr(), n) })
+    }
+
+    /// The paired-single kernels against the scalar ones on team 0's model, turned away from its bind pose
+    /// (`ps::self_check`): the largest difference in a skin matrix entry and in a skinned position.
+    pub fn kernel_check(&self) -> (f32, f32) {
+        let Some(t) = self.teams.first() else {
+            return (0.0, 0.0);
+        };
+        let turn = vmod::mtx([0.0, 0.2, 0.3, 0.93], [4.0, -2.0, 1.0]);
+        let world: Vec<Mtx34> = t
+            .inv_bind
+            .iter()
+            .map(|b| vmod::mul(&turn, &vmod::inverse_rigid(b)))
+            .collect();
+        crate::ps::self_check(&world, &t.inv_bind, &t.blended)
+    }
+
+    /// The body cost since the last call (for the log).
+    pub fn take_cost(&mut self) -> BodyCost {
+        core::mem::take(&mut self.cost)
+    }
+
+    /// For the load log, per team model: the vertices the CPU skins, all vertices, display lists, and bones posed
+    /// for a body nobody sees of all bones; and the position buffers' MEM2 (KiB).
+    #[allow(clippy::type_complexity)]
+    pub fn skin_summary(
+        &self,
+    ) -> (
+        Vec<usize>,
+        Vec<usize>,
+        Vec<usize>,
+        Vec<(usize, usize)>,
+        usize,
+    ) {
+        (
+            self.teams.iter().map(|t| t.blended.len()).collect(),
+            self.teams.iter().map(|t| t.vm.verts.len()).collect(),
+            self.teams.iter().map(|t| t.draws.len()).collect(),
+            self.teams
+                .iter()
+                .map(|t| (t.hit_need.iter().filter(|&&b| b).count(), t.hit_need.len()))
+                .collect(),
+            self.buffers
+                .iter()
+                .map(|b| (b[0].1.len() + b[1].1.len()) * 12)
+                .sum::<usize>()
+                / 1024,
+        )
     }
 
     /// Bodies lying after a respawn now.
@@ -472,13 +635,16 @@ impl Characters {
             }
             let team = &self.teams[c.team.min(self.teams.len() - 1)];
             self.corpse_draws = self.corpse_draws.wrapping_add(1);
+            // Skinned whole when it fell: every slot of the indexed lists takes the model-to-eye matrix.
             unsafe {
                 ffi::mwf_world_view();
-                ffi::mwf_view_arrays(c.buf.as_ptr().cast(), team.attributes);
+                ffi::mwf_view_arrays_indexed(c.buf.as_ptr().cast(), team.attributes);
             }
-            gfx.pos_matrix(&vmod::mul(view, &c.model));
+            let eye = vmod::mul(view, &c.model);
+            let mut loaded = crate::ps::UNLOADED;
             let mut last: Option<DrawState> = None;
             for d in &team.draws {
+                crate::ps::load_slots(&eye, &[], &d.slots, &mut loaded);
                 let state = DrawState {
                     tint: c.tint,
                     ..d.state
@@ -748,6 +914,14 @@ impl Characters {
     /// at `now_ms`.
     pub fn draw(&mut self, gfx: &mut impl Gfx, view: &Mtx34, players: &[Pose], now_ms: u32) {
         self.parity ^= 1;
+        self.cost.frames += 1;
+        let mut mark = ffi::us();
+        let lap = |mark: &mut u32| {
+            let t = ffi::us();
+            let d = t.wrapping_sub(*mark);
+            *mark = t;
+            d
+        };
         for p in players {
             // A respawn leaves the old body where it lay.
             if p.alive
@@ -762,32 +936,22 @@ impl Characters {
         }
         for (k, p) in players.iter().enumerate() {
             let (legs_yaw, torso_yaw) = self.animate(p, now_ms);
-            // This player's buffer for this frame (two per drawn player, alternating).
-            let k = k * 2 + self.parity;
-            // Behind the camera (the eye looks down -z): not posed or drawn.
+            // Behind the camera (the eye looks down -z): not posed or drawn (no bone hit boxes: shots use the
+            // stand-in volume, as before culling existed).
             let o = p.origin;
             if vmod::apply(view, [o[0], o[1], o[2] + 36.0])[2] > 48.0 {
                 continue;
             }
+            // Outside the view or past the far plane: posed for the hit boxes and weapon tags only (those bones
+            // come out exactly as a full pose gives them), not skinned or drawn. The sphere holds a standing or
+            // prone body with what it carries, and a dying one wherever its animation throws it.
+            let centre = [o[0], o[1], o[2] + 32.0];
+            let radius = if p.alive { 80.0 } else { 112.0 };
+            let seen = self
+                .frustum
+                .as_ref()
+                .is_none_or(|f| f.sees_sphere(centre, radius));
             let t = p.team.min(self.teams.len() - 1);
-            let n = self.teams[t].vm.verts.len();
-            while self.buffers.len() <= k {
-                let Some(b) = mem2(n * 12) else {
-                    return;
-                };
-                let s = unsafe {
-                    core::slice::from_raw_parts_mut(b.as_mut_ptr().cast::<[f32; 3]>(), n)
-                };
-                self.buffers.push((t, s));
-            }
-            if self.buffers[k].0 != t || self.buffers[k].1.len() != n {
-                let Some(b) = mem2(n * 12) else {
-                    return;
-                };
-                self.buffers[k] = (t, unsafe {
-                    core::slice::from_raw_parts_mut(b.as_mut_ptr().cast::<[f32; 3]>(), n)
-                });
-            }
             let team = &self.teams[t];
             let body = &self.seen[p.slot].body;
             let mut rel = torso_yaw - legs_yaw;
@@ -797,7 +961,7 @@ impl Characters {
                 rel += 360.0;
             }
             let pitch = if p.alive { p.pitch } else { 0.0 };
-            body.pose(
+            body.pose_bones(
                 &self.anims,
                 &team.rig,
                 &team.vm,
@@ -805,19 +969,19 @@ impl Characters {
                 pitch,
                 rel,
                 p.prone,
+                (!seen).then_some(team.hit_need.as_slice()),
                 &mut self.scratch,
                 &mut self.world,
             );
-            vmod::skin_matrices(&team.vm, &self.world, &mut self.skin);
-            let buf = &mut self.buffers[k].1;
-            vmod::skin_into(&team.vm, &self.skin, buf);
+            self.cost.posed += 1;
             // Model (IW4 axes: x forward, z up) to world: turned with the legs, at the feet.
             let (s, c) = (
                 libm::sinf(legs_yaw.to_radians()),
                 libm::cosf(legs_yaw.to_radians()),
             );
             let model: Mtx34 = [[c, -s, 0.0, o[0]], [s, c, 0.0, o[1]], [0.0, 0.0, 1.0, o[2]]];
-            // The bones' hit boxes as drawn (IW4L poses its collision bones the same way).
+            // The bones' hit boxes as drawn (IW4L poses its collision bones the same way). Every body in front of
+            // the camera is posed for them, whether it is drawn or not.
             if p.alive && !team.hitboxes.is_empty() {
                 while self.hits.len() <= p.slot {
                     self.hits.push((0, Vec::new()));
@@ -830,28 +994,10 @@ impl Characters {
                     game_core::damage::bone_box(&model, bone, h)
                 }));
             }
-            unsafe {
-                ffi::mwf_flush(buf.as_ptr().cast(), (n * 12) as u32);
-                ffi::mwf_world_view();
-                ffi::mwf_view_arrays(buf.as_ptr().cast(), team.attributes);
-            }
-            gfx.pos_matrix(&vmod::mul(view, &model));
-            let tint = game_core::light::tint_at(
-                self.lattice.as_ref(),
-                [o[0], o[1], o[2] + game_core::light::CHARACTER_LIGHT_HEIGHT],
-            );
-            let mut last: Option<DrawState> = None;
-            for d in &team.draws {
-                let state = DrawState { tint, ..d.state };
-                if last != Some(state) {
-                    gfx.world_state(&state);
-                    last = Some(state);
-                }
-                gfx.call_dl(d.dl);
-            }
             // The weapon in the hand: its model's origin on `tag_weapon_right` (living players only: MW2 drops it).
             // A riot shield in the hands goes on `tag_weapon_left` instead, and one carried as the other weapon on
-            // `tag_shield_back` (MW2's attach tags; `game_core::shield` blocks with the same carry).
+            // `tag_shield_back` (MW2's attach tags; `game_core::shield` blocks with the same carry). The muzzle is
+            // kept for the flashes and tracers whether the body is drawn or not.
             let rig = &team.rig;
             let front = p.shield == game_core::shield::Carry::Front && rig.weapon_left != NO_BONE;
             let hand = if front { rig.weapon_left } else { rig.weapon };
@@ -859,35 +1005,74 @@ impl Characters {
                 .held
                 .as_ref()
                 .zip(p.weapon)
-                .and_then(|(h, w)| h.model(w));
-            if let (Some(gun), true) = (gun, p.alive && hand != NO_BONE)
-                && let Some(bone) = self.world.get(usize::from(hand))
+                .and_then(|(h, w)| h.model(w))
+                .filter(|_| p.alive && hand != NO_BONE)
+                .and_then(|g| Some((g, vmod::mul(&model, self.world.get(usize::from(hand))?))));
+            if let Some((gun, gun_world)) = &gun
+                && !front
             {
-                let gun_world = vmod::mul(&model, bone);
-                if !front {
-                    let [o, f] = gun.flash;
-                    let dir = core::array::from_fn(|r| {
-                        gun_world[r][0] * f[0] + gun_world[r][1] * f[1] + gun_world[r][2] * f[2]
-                    });
-                    self.seen[p.slot].flash = Some((vmod::apply(&gun_world, o), dir));
+                let [o, f] = gun.flash;
+                let dir = core::array::from_fn(|r| {
+                    gun_world[r][0] * f[0] + gun_world[r][1] * f[1] + gun_world[r][2] * f[2]
+                });
+                self.seen[p.slot].flash = Some((vmod::apply(gun_world, o), dir));
+            }
+            let back_bone = (p.alive
+                && p.shield == game_core::shield::Carry::Back
+                && rig.shield_back != NO_BONE)
+                .then(|| self.world.get(usize::from(rig.shield_back)).copied())
+                .flatten();
+            self.cost.pose_us += lap(&mut mark);
+            if !seen {
+                self.cost.culled += 1;
+                continue;
+            }
+            let Some(buf) = self.buffer(k, t) else {
+                continue;
+            };
+            let team = &self.teams[t];
+            // Skin matrices, then only the vertices on more than one bone (the load put them first); GX places the
+            // rest with their bone's matrix.
+            crate::ps::concat_each(&self.world, &team.inv_bind, &mut self.skin);
+            crate::ps::skin(&team.blended, &self.skin, buf);
+            unsafe { ffi::mwf_flush(buf.as_ptr().cast(), (team.blended.len() * 12) as u32) };
+            self.cost.skin_us += lap(&mut mark);
+            self.cost.drawn += 1;
+            let eye = vmod::mul(view, &model);
+            unsafe {
+                ffi::mwf_world_view();
+                ffi::mwf_view_arrays_indexed(buf.as_ptr().cast(), team.attributes);
+            }
+            let tint = game_core::light::tint_at(
+                self.lattice.as_ref(),
+                [o[0], o[1], o[2] + game_core::light::CHARACTER_LIGHT_HEIGHT],
+            );
+            let mut last: Option<DrawState> = None;
+            let mut loaded = crate::ps::UNLOADED;
+            for d in &team.draws {
+                crate::ps::load_slots(&eye, &self.skin, &d.slots, &mut loaded);
+                let state = DrawState { tint, ..d.state };
+                if last != Some(state) {
+                    gfx.world_state(&state);
+                    last = Some(state);
                 }
-                if let Some(w) = p.weapon {
-                    self.draw_gun(gfx, &gun, w, view, &gun_world, tint);
-                }
+                gfx.call_dl(d.dl);
+            }
+            if let (Some((gun, gun_world)), Some(w)) = (gun, p.weapon) {
+                self.draw_gun(gfx, &gun, w, view, &gun_world, tint);
             }
             let back = self
                 .shield_weapon
                 .zip(self.held.as_ref())
                 .and_then(|(w, h)| Some((w, h.model(w)?)));
-            if let (Some((shield_w, shield)), true) = (
-                back,
-                p.alive && p.shield == game_core::shield::Carry::Back && rig.shield_back != NO_BONE,
-            ) && let Some(bone) = self.world.get(usize::from(rig.shield_back))
-            {
-                let at = vmod::mul(&model, bone);
+            if let (Some((shield_w, shield)), Some(bone)) = (back, back_bone) {
+                let at = vmod::mul(&model, &bone);
                 self.draw_gun(gfx, &shield, shield_w, view, &at, tint);
             }
+            self.cost.submit_us += lap(&mut mark);
         }
+        self.cost.pose_us += lap(&mut mark);
         self.draw_corpses(gfx, view);
+        self.cost.submit_us += lap(&mut mark);
     }
 }

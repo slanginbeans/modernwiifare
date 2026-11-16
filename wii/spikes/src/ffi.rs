@@ -87,6 +87,28 @@ unsafe extern "C" {
     pub fn mwf_world_tint(rgba: u32);
     pub fn mwf_view_arrays_indexed(positions: *const u8, attributes: *const u8);
     pub fn mwf_pos_matrix_slot(m: *const [[f32; 4]; 3], slot: u32);
+    pub fn mwf_ps_concat_each(
+        a: *const [[f32; 4]; 3],
+        b: *const [[f32; 4]; 3],
+        out: *mut [[f32; 4]; 3],
+        n: u32,
+    );
+    pub fn mwf_ps_skin(
+        verts: *const u8,
+        n: u32,
+        skin: *const [[f32; 4]; 3],
+        bones: u32,
+        out: *mut [f32; 3],
+        outs: u32,
+    );
+    pub fn mwf_ps_load_slots(
+        eye: *const [[f32; 4]; 3],
+        skin: *const [[f32; 4]; 3],
+        bones: u32,
+        keys: *const u16,
+        n: u32,
+        loaded: *mut u16,
+    );
     pub fn mwf_fog(on: i32, start: f32, end: f32, rgba: u32);
     /// Effect sprites (`mwf_sprite_vert`: x, y, z, rgba, s, t), 4 vertices a quad.
     pub fn mwf_sprites(
