@@ -348,6 +348,14 @@ mod tests {
                 ));
             }
         }
+        airdrop.push_str(
+            "\taddCrateType( \"airdrop_mega\", \"ammo\", getDvarInt( \"scr_airdrop_mega_ammo\", 9 ), ::a );\n",
+        );
+        for n in NAMES.iter().filter(|n| !n.starts_with("airdrop")) {
+            airdrop.push_str(&format!(
+                "\taddCrateType( \"airdrop_mega\", \"{n}\", getDvarInt( \"scr_airdrop_mega_{n}\", 2 ), ::k );\n"
+            ));
+        }
         airdrop.push_str("\taddCrateType( \"nuke_drop\", \"nuke\", 100, ::nukeCrateThink );\n}\n");
         airdrop.push_str(
             "crateOwnerCaptureThink()\n{\n\tif ( !useHoldThink( player, 400 ) )\n\t\tcontinue;\n}\n\
@@ -395,6 +403,7 @@ mod tests {
         let r = read(&s);
         assert_eq!(missing(&r), Vec::<&str>::new());
         assert_eq!(r.crate_ammo, 20.0);
+        assert_eq!((r.mega_ammo, r.mega_odds[0]), (9.0, 2.0));
         assert_eq!(r.crate_odds[wpk::streaks::index("sentry").unwrap()], 3.0);
         assert_eq!(r.crate_odds[wpk::streaks::index("airdrop").unwrap()], 0.0);
         assert_eq!((r.crate_owner_use_s, r.crate_other_use_s), (0.4, 2.5));
