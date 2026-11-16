@@ -25,13 +25,48 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
   turn acceleration) and aim assist (slowdown, lock-on, ADS snap) with each weapon's ranges (`WAIM`); stick range
   learned from use (full forward reaches the sprint threshold); ADS zoom with `hud_iw4::calc_fov_from_ads`.
 
+## Audit against IW4L acc57a5 (2026-11-15)
+Three read-only reviews (gameplay, presentation, network / input) against the pinned IW4L. IW4L runs MW2's scripts
+for modes, killstreaks, last stand and deathstreaks; we don't (ADR 0007), so for those it offers primitives only.
+Feel changes in this round take IW4L's code as the reference (host tests against its values); a trace against MW2
+is still to do for each.
+
+Bugs: **mantle** moves nothing (`player.rs` passes `ZeroMantleRootDelta`; IW4L has `CreateAnimsMantleRootDelta`);
+**launchers** (RPG, AT4, Javelin, Stinger, Thumper) fire hitscan bullets (no projectile code; IW4L `sim` missile,
+`think_projectile`, guidance, lock-on).
+
+Gameplay, IW4L has code: camera view bob / landing dip / hit view kick / idle sway and hold breath
+(`weapon_iw4::view_bob`; the breath button isn't sent); riot shield blocking (`sim` shield, `is_shield`); weapon drops
+and pickups, Scavenger (`sim` item); underbarrel grenade launcher / shotgun (`weapon_iw4::weapon_change` alternate)
+and akimbo (dual-wield ammo, two hands); hit boxes turned with the body and bullets through players (`sim`
+bullet_collision, `fire_extended`); glass (`entity_iw4::glass`); killcam (`killcam_iw4` timing; we need a pose ring);
+killstreak primitives (sentry turrets, Predator `remote_missile`, helicopters, care package marker; the flow is
+hand-written from MW2's scripts); perks and deathstreaks with no effect yet (Cold-Blooded, Scrambler, Ninja,
+Hardline, One Man Army, Last Stand, Copycat, Painkiller, Martyrdom, Final Stand); silenced weapons off the radar;
+bot upgrades from IW4L `bots` (memory confidence, weapon switching, low-health recover, varied loadouts, perks).
+
+Presentation, IW4L has code: other players' gunfire, `MP_hit_alert`, melee sounds; looping effect elements
+(`fx_iw4::looping_spawn_schedule`: lingering smoke, fire) and tracers (`fx_iw4::beam`); light-grid lighting for the
+viewmodel and characters (`lighting_iw4` atapoint, viewmodel origin); HUD: sniper scope overlay (`hud_iw4::iris`),
+MW2's crosshair (`hud_iw4::crosshair`), damage direction, blood / pain (`hud_iw4::blood`), overhead names, kill-feed
+weapon icons, EMP static; bullet marks (`marks_iw4`); rumble. Not on the Wii's GPU: shadow maps, depth of field,
+glow, colour grading, glass shatter.
+
+Network: IW4L has no LAN transport (internet relay over QUIC); its snapshot deltas (`PS_NETFIELDS`), acked
+baselines, prediction / reconcile, remote interpolation and lag compensation are logic to port into `wii/syslink`
+when system link is next (not in this round).
+
+We have and IW4L lacks: native Domination capture, bots that throw grenades / melee / strafe, native UAV /
+Counter-UAV / EMP / nuke, destructibles with chain explosions, LAN discovery, GameCube and 360 pad drivers,
+scripted Dolphin runs, the PC menu preview.
+
 ## Next, gameplay (ranked)
 1. ~~Viewmodel ADS pose~~ done with the full viewmodel anim tree (every slot, timer-fitted rates, ADS overlay,
    per-bone blend) and MW2's weapon placement (view sway, bob, idle sway, movement offsets). Still to confirm: the
    stick range from the logs; the first-person lighting from the light grid.
 2. ~~Weapon switching through IW4L~~ done: the gun asks for the other weapon (`usercmd.weapon`), IW4L drops it,
    the other takes the hand and raises (first raise once a life); refused mid-melee, cancelled by asking again.
-3. **Melee**: done without the lunge. The melee button goes through IW4L's hand driver (`weapon_hands`:
+3. **Melee**: done, lunge included. The melee button goes through IW4L's hand driver (`weapon_hands`:
    `weapon_try_melee`, swing and hit times); the hit is IW4L `fire_weapon_melee`'s nine traces (64 units) against
    the players' boxes, melee damage plus 0..4. Bots swing when you're within reach. The lunge: done (IW4L's client `melee_charge_target`,
    the weapon step's charge start, pmove's `melee_charge_move`).
@@ -58,16 +93,16 @@ done, and what is next. Priority: gameplay feel and frame rate first, looks last
     danger indicator; Danger Close.
 11. **Minimap and killstreaks**: the HUD minimap (map pack `MINI`: MW2's `setupMiniMap` frame, the script's
     `compassmaxrange`; turned with the view; firing pings), kill streaks with your class's streak costs, the UAV
-    (radar sweep and ping fade from IW4L's compass, duration from `_uav.gsc`), bots' UAVs. Counter-UAV: done (``_uav.gsc``: as long as a UAV, jams the enemies' radar: your minimap dims and shows nothing but you; bots under it lose their UAV's knowledge). Not yet: the other
-    streaks (care package, predator, sentry, harrier, airstrike, helicopters, AC-130), EMP's HUD blackout, bots calling Counter-UAVs / EMPs / nukes; EMP and the nuke: done,
+    (radar sweep and ping fade from IW4L's compass, duration from `_uav.gsc`), bots' UAVs. EMP and the nuke: done. Counter-UAV: done (``_uav.gsc``: as long as a UAV, jams the enemies' radar: your minimap dims and shows nothing but you; bots under it lose their UAV's knowledge). Not yet: the other
+    streaks (care package, predator, sentry, harrier, airstrike, helicopters, AC-130), EMP's HUD blackout, bots calling Counter-UAVs / EMPs / nukes,
     Cold-Blooded / Scrambler on the radar, the minimap's fading edge and scan-line pass order.
 10. **Perks** (`game_core::perks`): a class's three perks and their Pro perks (perkTable's upgrade column;
     everything unlocked) become IW4's `ps.perks` bits that IW4L's movement and weapon code read (Marathon,
     Sleight of Hand, Steady Aim and their Pros, Commando's flag, ...); move speed by the primary's class and
     Lightweight's scaler come from the user's `_weapons.gsc` / `_perkfunctions.gsc` (`RULE`); Stopping Power and Danger Close add `_perks.gsc`'s
     `perk_bulletDamage` / `perk_explosiveDamage` percent to bullet / explosive damage. Not yet: Scavenger packs, Hardline and the killstreak perks, Cold-Blooded /
-    Scrambler / Ninja against radar and sound (no UAV or footstep audio yet), Last Stand (no
-    explosives or last stand yet), One Man Army, deathstreaks.
+    Scrambler / Ninja against radar and sound, Last Stand, One Man Army, deathstreaks (the bits are set; nothing
+    reads them).
 
 **Destructible objects**: the main body of each (states, damage rules, effects, repeating effects, health drain,
 explosions with chain reactions, model swaps, collision boxes) is done (`game_core::destructible`, map pack `DST*`).
