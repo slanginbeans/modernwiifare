@@ -367,9 +367,11 @@ mod tests {
 
     #[test]
     fn round_trips_and_old_packs_keep_defaults() {
-        let mut r = StreakRules::default();
-        r.found = found::SENTRY | found::AC130;
-        r.sentry_timeout_s = 77.0;
+        let mut r = StreakRules {
+            found: found::SENTRY | found::AC130,
+            sentry_timeout_s: 77.0,
+            ..StreakRules::default()
+        };
         r.ac130_reload_s[2] = 1.25;
         r.mega_odds[14] = 3.0;
         assert_eq!(StreakRules::decode(&r.encode()), Some(r));

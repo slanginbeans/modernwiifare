@@ -1052,22 +1052,46 @@ fn run_map(
             dm
         }
     };
-    // Bot i carries the primary of MW2's default class i (Grenadier, First Recon ...), else the fallback.
-    let bot_gun = |i: usize| -> Option<Gun> {
+    // Each life a bot takes one of MW2's default classes at random (Grenadier, First Recon ...): its primary in hand,
+    // its secondary in the holster (`Arena::arm_holster`); without the class tables, the fallback rifle.
+    let bot_class: Vec<core::cell::Cell<usize>> = (0..=bots).map(core::cell::Cell::new).collect();
+    let class_rng = core::cell::Cell::new(ffi::ms() | 1);
+    let class_gun = |i: usize, secondary: bool| -> Option<Gun> {
         let names = loadouts
             .catalog
             .and_then(|c| {
-                let l = c
-                    .defaults
-                    .get((i + c.defaults.len().max(1) - 1) % c.defaults.len().max(1))?;
-                let mut n = c.weapon_names(l.primary, l.primary_attachments);
-                n.push(alloc::format!(
-                    "{}_mp",
-                    c.weapons.get(usize::from(l.primary))?.name
-                ));
-                Some(n)
+                let n = c.defaults.len().max(1);
+                let k = if secondary {
+                    bot_class.get(i)?.get()
+                } else {
+                    let mut x = class_rng.get();
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    class_rng.set(x);
+                    let k = (x >> 8) as usize % n;
+                    if let Some(b) = bot_class.get(i) {
+                        b.set(k);
+                    }
+                    k
+                };
+                let l = c.defaults.get(k % n)?;
+                let (w, att) = if secondary {
+                    (l.secondary, l.secondary_attachments)
+                } else {
+                    (l.primary, l.primary_attachments)
+                };
+                let mut names = c.weapon_names(w, att);
+                names.push(alloc::format!("{}_mp", c.weapons.get(usize::from(w))?.name));
+                Some(names)
             })
-            .unwrap_or_else(|| alloc::vec![alloc::string::String::from("m4_mp")]);
+            .unwrap_or_else(|| {
+                if secondary {
+                    Vec::new()
+                } else {
+                    alloc::vec![alloc::string::String::from("m4_mp")]
+                }
+            });
         names.iter().find_map(|n| {
             let (index, rec) = wpk::weapon::find_indexed(weapons, n)?;
             let mut g = Gun::with_index(&rec, index)?;
@@ -1084,12 +1108,15 @@ fn run_map(
                 pen_table,
             };
             g.set_penetration(arsenal::penetration(&tables, index));
-            if let Some(row) = arsenal::offhand_row(&tables, "frag_grenade_mp") {
+            if let Some(row) = arsenal::offhand_row(&tables, "frag_grenade_mp")
+                && !secondary
+            {
                 g.set_offhands(&[row], arsenal::OFFHAND_CLASS_FRAG, 2);
             }
             Some(g)
         })
     };
+    let bot_gun = |i: usize| class_gun(i, false);
     let mut arena = match (&clip, &player) {
         (Some(c), Some(p)) if !spawn_list.is_empty() => {
             Some(Arena::new(c, &spawn_list, bots, p.clone(), rules, |i| {
@@ -1115,13 +1142,15 @@ fn run_map(
         // Time the bots (telemetry `bai` / `bmv` / `bgun`).
         a.clock = Some(clock_us);
     }
-    // Bots call in a UAV at its killstreakTable cost.
+    // Bots call in a UAV at its killstreakTable cost; each bot also has a set of three killstreaks
+    // (`streaks::bot_sets`), MW2's default set first.
     if let (Some(a), Some(c)) = (arena.as_mut(), loadouts.catalog) {
         a.bot_uav_kills = c
             .killstreaks
             .iter()
             .find(|k| k.name == "uav")
             .map_or(0, |k| u32::from(k.kind));
+        streaks::bot_sets(a, &c.killstreaks);
     }
     let mut events: Vec<Event> = Vec::with_capacity(32);
     let mut feed: [(Option<(usize, usize)>, u32); 4] = [(None, 0); 4];
@@ -2014,6 +2043,11 @@ fn run_map(
                 bot_gun,
                 &mut events,
             );
+            for i in 1..a.fighters.len() {
+                if a.holster_due.get(i).copied().unwrap_or(false) {
+                    a.arm_holster(i, class_gun(i, true));
+                }
+            }
             a.regen(now);
             a.update_grenades(c, dt, now, &mut events);
             a.update_objects(c, now, &mut events);
@@ -2225,6 +2259,7 @@ fn run_map(
             world.draw_distance = 0.0;
             world.map_fog = false;
         }
+        world.skip_vis = remote_cam.is_some();
         let stats = world.draw(gfx, &cam, scratch);
         // Destructible objects, as part of the world.
         if let (Some(p), Some(a)) = (props.as_ref(), arena.as_ref()) {

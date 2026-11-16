@@ -327,6 +327,10 @@ pub struct Arena {
     object_out: Vec<crate::destructible::Out>,
     /// The killstreaks in play (`crate::killstreaks`).
     pub streaks: crate::killstreaks::Streaks,
+    /// Each bot's other gun (its class's secondary), swapped in by IW4L's reload-or-switch choice; and which bots
+    /// respawned without theirs yet (the game shell arms them: [`Arena::arm_holster`]).
+    pub holsters: Vec<Option<Gun>>,
+    pub holster_due: Vec<bool>,
 }
 
 fn dist2(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -493,6 +497,8 @@ impl Arena {
             objects: crate::destructible::Objects::default(),
             object_out: Vec::new(),
             streaks: crate::killstreaks::Streaks::default(),
+            holsters: Vec::new(),
+            holster_due: Vec::new(),
         };
         a.fighters.push(Fighter::new(human, gun(0), None, &rules));
         for i in 1..=bots {
@@ -504,6 +510,9 @@ impl Arena {
                 &rules,
             ));
         }
+        // Bots' other guns are handed out by the game shell ([`Arena::arm_holster`]).
+        a.holsters.resize_with(bots + 1, || None);
+        a.holster_due = (0..=bots).map(|i| i > 0).collect();
         a
     }
 
@@ -581,6 +590,23 @@ impl Arena {
         if let Some(b) = f.brain.as_mut() {
             b.respawned();
         }
+        // A new life: the other gun is handed out again.
+        if self.holsters.len() <= i {
+            self.holsters.resize_with(i + 1, || None);
+            self.holster_due.resize(i + 1, false);
+        }
+        self.holsters[i] = None;
+        self.holster_due[i] = true;
+    }
+
+    /// Give bot `i` its other gun for this life.
+    pub fn arm_holster(&mut self, i: usize, gun: Option<Gun>) {
+        if self.holsters.len() <= i {
+            self.holsters.resize_with(i + 1, || None);
+            self.holster_due.resize(i + 1, false);
+        }
+        self.holsters[i] = gun;
+        self.holster_due[i] = false;
     }
 
     /// Set the game type and limits before play: in team deathmatch the human and every second bot are allies, the
@@ -1729,6 +1755,20 @@ impl Arena {
                     let f = &self.fighters[i];
                     d.goal_for(f.team, f.player.ps.origin)
                 });
+                // Health out of 100, and the guns for IW4L's reload-or-switch choice.
+                let me = {
+                    let f = &self.fighters[i];
+                    let other = self.holsters.get(i).and_then(Option::as_ref);
+                    let held = f.gun.as_ref();
+                    bot::SelfState {
+                        health: f.life.health * 100 / f.life.max_health.max(1),
+                        stock: held.map_or(0, |g| g.ammo().1),
+                        reload_ms: held.map_or(2000, |g| g.facts().reload_empty_time_ms),
+                        switch_ms: other.filter(|g| g.ammo().0 > 0).map(|g| {
+                            held.map_or(0, |h| h.facts().drop_time_ms) + g.facts().raise_time_ms
+                        }),
+                    }
+                };
                 let f = &mut self.fighters[i];
                 let senses = Senses {
                     now_ms: now,
@@ -1739,9 +1779,24 @@ impl Arena {
                     enemies: &contacts,
                     clip: f.gun.as_ref().map_or(0, |g| g.ammo().0),
                     objective,
+                    me,
                 };
                 if let Some(brain) = f.brain.as_mut() {
                     f.act = brain.think(nav.as_deref_mut(), &senses);
+                }
+                // The switch: the other gun comes up (its raise plays out in the gun's own state machine).
+                if f.act.switch
+                    && let Some(h) = self.holsters.get_mut(i)
+                    && h.is_some()
+                {
+                    core::mem::swap(&mut f.gun, h);
+                    if let Some(g) = f.gun.as_mut() {
+                        // The grenades go with the bot, not the gun.
+                        if let Some(old) = h.as_ref() {
+                            g.take_offhands(old);
+                        }
+                        g.raise();
+                    }
                 }
             }
             // A melee swing lunges at the enemy in reach (IW4L's charge target).

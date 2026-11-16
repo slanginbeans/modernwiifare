@@ -80,6 +80,39 @@ pub fn setup(
     );
 }
 
+/// The killstreak sets bots pick from (by bot number): MW2's default set (UAV, care package, Predator) first, then
+/// others across the killstreak table. Costs come from the user's `killstreakTable`; a name the table lacks is left
+/// out.
+pub const BOT_SETS: [[&str; 3]; 6] = [
+    ["uav", "airdrop", "predator_missile"],
+    ["uav", "sentry", "helicopter"],
+    ["counter_uav", "precision_airstrike", "harrier_airstrike"],
+    ["uav", "predator_missile", "stealth_airstrike"],
+    ["airdrop", "helicopter_flares", "helicopter_minigun"],
+    ["counter_uav", "sentry", "ac130"],
+];
+
+/// Give every bot its killstreak set (bot `i` takes [`BOT_SETS`]`[(i - 1) % 6]`).
+pub fn bot_sets(a: &mut Arena, table: &[wpk::classes::Item]) {
+    let n = a.fighters.len();
+    a.streaks
+        .sets
+        .resize(n.max(a.streaks.sets.len()), [None; 3]);
+    a.streaks
+        .rewards
+        .resize_with(n.max(a.streaks.rewards.len()), Vec::new);
+    a.streaks
+        .capture
+        .resize(n.max(a.streaks.capture.len()), None);
+    for i in 1..n {
+        let set = BOT_SETS[(i - 1) % BOT_SETS.len()];
+        a.streaks.sets[i] = core::array::from_fn(|k| {
+            let item = table.iter().find(|t| t.name == set[k])?;
+            Some((Streak::from_name(set[k])?, u32::from(item.kind)))
+        });
+    }
+}
+
 impl Shell {
     fn say(&mut self, text: &str, now: u32) {
         self.note = Some((String::from(text), now));
@@ -347,6 +380,16 @@ impl Shell {
                     self.say("AMMO", now);
                     crate::devlog::event(now, "crate", format_args!("ammo"));
                 }
+                Note::Called { fighter, streak } if fighter > 0 => crate::devlog::event(
+                    now,
+                    "killstreak",
+                    format_args!("bot={fighter} used={}", streak.name()),
+                ),
+                Note::Reward { fighter, streak } if fighter > 0 => crate::devlog::event(
+                    now,
+                    "crate",
+                    format_args!("bot={fighter} reward={}", streak.name()),
+                ),
                 Note::CrateLanded { origin } => crate::devlog::event(
                     now,
                     "crate_landed",

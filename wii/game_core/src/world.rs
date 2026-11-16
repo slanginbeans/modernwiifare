@@ -205,6 +205,9 @@ pub struct World<'a> {
     pub lod_scale: f32,
     /// Draw the map's own fog (MW2's `setExpFog`, when the pack has one).
     pub map_fog: bool,
+    /// Draw every cell, skipping the portal walk (the killstreaks' views from high above the map, where the eye's
+    /// cell sees nothing below).
+    pub skip_vis: bool,
     fog: Option<records::Fog>,
 }
 
@@ -445,6 +448,7 @@ impl<'a> World<'a> {
             draw_distance: 0.0,
             lod_scale: LOD_SCALE,
             map_fog: true,
+            skip_vis: false,
             fog: pack
                 .section(tag::FOG)
                 .and_then(|s| records::get::<records::Fog>(s.data, 0)),
@@ -545,7 +549,7 @@ impl<'a> World<'a> {
         let mut stats = FrameStats::default();
         let far = self.far();
         let frustum = cam.frustum(ZNEAR, far);
-        if let Some(v) = self.vis.as_mut() {
+        if let Some(v) = self.vis.as_mut().filter(|_| !self.skip_vis) {
             stats.in_cell = v.update(cam, &frustum.planes, scratch);
             stats.cells_visible = v
                 .words
@@ -570,10 +574,11 @@ impl<'a> World<'a> {
         for &i in &self.batch_order {
             let i = i as usize;
             let b = &self.batches[i];
-            let in_view = self
-                .vis
-                .as_ref()
-                .is_none_or(|v| v.visible(cell_of(&self.batch_cells, i)));
+            let in_view = self.skip_vis
+                || self
+                    .vis
+                    .as_ref()
+                    .is_none_or(|v| v.visible(cell_of(&self.batch_cells, i)));
             if !in_view || !frustum.sees_box(b.bounds_min, b.bounds_max) {
                 stats.culled += 1;
                 continue;
@@ -601,10 +606,11 @@ impl<'a> World<'a> {
             .enumerate()
             .filter(|_| self.draw_models)
         {
-            if self
-                .vis
-                .as_ref()
-                .is_some_and(|v| !v.visible(cell_of(&self.instance_cells, ii)))
+            if !self.skip_vis
+                && self
+                    .vis
+                    .as_ref()
+                    .is_some_and(|v| !v.visible(cell_of(&self.instance_cells, ii)))
             {
                 stats.instances_culled += 1;
                 continue;

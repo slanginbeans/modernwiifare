@@ -7,6 +7,7 @@
 //!   falling, their random reward or ammo, capture by holding use.
 //! - [`predator`]: the Predator missile, steered from above (IW4L `remote_missile`).
 //! - [`strikes`]: the precision airstrike, the Harrier strike's runs and the stealth bomber.
+//! - [`bots`]: bots calling what they earn.
 //! - [`air`]: the attack helicopter, Pave Low, the Harrier's hover, the Chopper Gunner and the AC-130.
 //! - [`sentry`]: the sentry gun, carried, placed (IW4L sentry placement) and firing (IW4L turret aim).
 //!
@@ -21,6 +22,7 @@ use crate::arena::Arena;
 
 pub mod air;
 pub mod airdrop;
+pub mod bots;
 pub mod placement;
 pub mod predator;
 pub mod sentry;
@@ -236,6 +238,8 @@ pub struct Streaks {
     pub capture: Vec<Option<(u32, u32)>>,
     /// Per fighter: earned and not yet used (bots; the player's list is the game shell's).
     pub rewards: Vec<Vec<Streak>>,
+    /// Per bot: when its oldest reward gets called.
+    pub bot_next_ms: Vec<Option<u32>>,
     /// Per fighter: the three killstreaks and their kill costs (bots).
     pub sets: Vec<[Option<(Streak, u32)>; 3]>,
     /// Since the last [`Streaks::take_notes`].
@@ -314,6 +318,7 @@ impl Arena {
         now: u32,
         out: &mut Vec<crate::arena::Event>,
     ) {
+        self.bots_use_killstreaks(clip, now);
         let mut s = core::mem::take(&mut self.streaks);
         s.fit(self.fighters.len());
         airdrop::update(self, &mut s, clip, dt, now, out);

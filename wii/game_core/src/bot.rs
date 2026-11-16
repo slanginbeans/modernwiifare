@@ -5,6 +5,15 @@
 //! for the Wii in IW4L's shape (sense → intent → motor): pick the nearest enemy in view, react after a delay, track
 //! with an aim error that settles, fire inside the cone, strafe while fighting; otherwise chase where an enemy was
 //! last seen or heard, or roam the walk graph; jump and pick a new goal when stuck.
+//!
+//! Ported from IW4L's `bots` crate (logic only; it is bevy-bound): the contact memory ([`Memory`], `memory.rs`: a
+//! contact seen this think, last seen, forgotten after 80 ticks, "fresh" for 40), the personality drawn from the seed
+//! (`HostController::new`: aggression and self-preservation), the wounded back-off (`pick_task`'s Recover: at or below
+//! `20 + 20 x self_preserve` health, or with an empty magazine in a fight, back away 192 units from the threat,
+//! crouched), crouching to fight under 60 health, and the reload-or-switch choice ([`choose_weapon`], `weapon.rs`
+//! `choose`: with the magazine empty, switch to the loaded other gun when it is quicker than a reload and an enemy is
+//! in sight, or when nothing is left to load). The contact's confidence fading with its age, and heard contacts at
+//! half confidence, are ours (IW4L marks a seen contact 1.0 and has no hearing).
 
 use alloc::vec::Vec;
 
@@ -25,8 +34,153 @@ const PITCH_LIMIT: f32 = 70.0;
 const SNAP: f32 = 256.0;
 /// A* expansions per route.
 const ROUTE_BUDGET: usize = 4000;
-/// How long an enemy stays worth chasing after it was last seen or heard.
-const MEMORY_MS: u32 = 6000;
+/// IW4L `bots::memory` / `controller`, in its 50 ms ticks: how long a contact is remembered, and how long a lost one
+/// is fresh enough to go and look for.
+pub const MEMORY_TTL_MS: u32 = 80 * 50;
+pub const LAST_SEEN_FRESH_MS: u32 = 40 * 50;
+/// Heard, not seen: half as sure.
+const HEARD_CONFIDENCE: f32 = 0.5;
+/// IW4L `SeekKind::BackOff`: how far a wounded bot backs away from the threat.
+pub const BACK_OFF: f32 = 192.0;
+/// IW4L: crouch to fight under this much health (of 100).
+const CROUCH_FIGHT_HEALTH: i32 = 60;
+
+/// Where a remembered contact came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    Seen,
+    LastSeen,
+    Heard,
+}
+
+/// One enemy as a bot remembers it (IW4L `observation::Contact`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Remembered {
+    pub id: usize,
+    pub origin: [f32; 3],
+    pub source: Source,
+    pub seen_ms: u32,
+    pub confidence: f32,
+}
+
+/// IW4L `bots::memory::Memory`: what a bot knows about its enemies across thinks.
+#[derive(Clone, Debug, Default)]
+pub struct Memory {
+    pub contacts: Vec<Remembered>,
+}
+
+impl Memory {
+    /// Fold one think's senses in: seen contacts are current (confidence 1), current ones no longer seen become last
+    /// seen, heard ones are remembered at half confidence, and anything older than [`MEMORY_TTL_MS`] is forgotten.
+    pub fn ingest(&mut self, now: u32, enemies: &[Contact]) {
+        self.contacts
+            .retain(|c| now.wrapping_sub(c.seen_ms) <= MEMORY_TTL_MS);
+        for row in &mut self.contacts {
+            if row.source == Source::Seen && !enemies.iter().any(|e| e.id == row.id && e.visible) {
+                row.source = Source::LastSeen;
+            }
+        }
+        for e in enemies.iter().filter(|e| e.visible || e.heard) {
+            let fresh = Remembered {
+                id: e.id,
+                origin: e.feet,
+                source: if e.visible {
+                    Source::Seen
+                } else {
+                    Source::Heard
+                },
+                seen_ms: now,
+                confidence: if e.visible { 1.0 } else { HEARD_CONFIDENCE },
+            };
+            match self.contacts.iter_mut().find(|c| c.id == e.id) {
+                // A sound doesn't overwrite a sighting this think.
+                Some(row) if !e.visible && row.source == Source::Seen => {}
+                Some(row) => *row = fresh,
+                None => self.contacts.push(fresh),
+            }
+        }
+    }
+
+    /// How sure the bot is of `c` at `now`: its confidence, fading out over the memory's span once out of sight.
+    pub fn confidence(c: &Remembered, now: u32) -> f32 {
+        if c.source == Source::Seen {
+            return c.confidence;
+        }
+        let age = now.wrapping_sub(c.seen_ms) as f32 / MEMORY_TTL_MS as f32;
+        c.confidence * (1.0 - age).max(0.0)
+    }
+
+    pub fn currently_seen(&self) -> impl Iterator<Item = &Remembered> {
+        self.contacts.iter().filter(|c| c.source == Source::Seen)
+    }
+
+    /// The best lead to go and look at: the surest fresh contact out of sight (IW4L's Investigate).
+    pub fn lead(&self, now: u32) -> Option<&Remembered> {
+        self.contacts
+            .iter()
+            .filter(|c| {
+                c.source != Source::Seen && now.wrapping_sub(c.seen_ms) <= LAST_SEEN_FRESH_MS
+            })
+            .max_by(|a, b| Self::confidence(a, now).total_cmp(&Self::confidence(b, now)))
+    }
+
+    /// Forget every lead out of sight (a bot stuck on its way to one).
+    pub fn drop_leads(&mut self) {
+        self.contacts.retain(|c| c.source == Source::Seen);
+    }
+}
+
+/// A weapon decision (IW4L `weapon::WeaponAct`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeaponAct {
+    Switch,
+    Reload,
+}
+
+/// IW4L `weapon::choose`: with the magazine empty, reload or switch to the other gun. `reload_ms` is the reload's
+/// time (None: nothing left to load), `switch_ms` the switch's (None: the other gun is empty or missing); with an enemy
+/// in sight the quicker wins, otherwise the bot keeps its gun and reloads.
+pub fn choose_weapon(
+    clip: i32,
+    reload_ms: Option<i32>,
+    switch_ms: Option<i32>,
+    threatened: bool,
+) -> Option<WeaponAct> {
+    if clip > 0 {
+        return None;
+    }
+    match (switch_ms, reload_ms) {
+        (Some(s), Some(r)) => Some(if threatened && s < r {
+            WeaponAct::Switch
+        } else {
+            WeaponAct::Reload
+        }),
+        (Some(_), None) => Some(WeaponAct::Switch),
+        (None, Some(_)) => Some(WeaponAct::Reload),
+        (None, None) => None,
+    }
+}
+
+/// What a bot knows of itself beyond its eyes: health (out of 100), and its guns' state for [`choose_weapon`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfState {
+    pub health: i32,
+    pub stock: i32,
+    pub reload_ms: i32,
+    /// The time to switch to the other gun, when it is there and loaded.
+    pub switch_ms: Option<i32>,
+}
+
+impl Default for SelfState {
+    fn default() -> Self {
+        SelfState {
+            health: 100,
+            stock: 90,
+            reload_ms: 2000,
+            switch_ms: None,
+        }
+    }
+}
 
 /// How good a bot is: reaction time and aim error.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -69,6 +223,8 @@ pub struct Senses<'a> {
     /// Where the game mode wants this bot (a Domination flag to take or hold); it goes there when it has no
     /// enemy to chase and waits once inside.
     pub objective: Option<([f32; 3], f32)>,
+    /// Health and guns.
+    pub me: SelfState,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -80,6 +236,8 @@ pub struct Act {
     pub melee: bool,
     /// Throw the lethal grenade (an enemy seen at grenade range).
     pub frag: bool,
+    /// Change to the other gun ([`choose_weapon`]).
+    pub switch: bool,
 }
 
 /// A bot throws a grenade at an enemy it sees between these distances, at most once per [`FRAG_COOLDOWN_MS`], and
@@ -105,7 +263,11 @@ pub struct Brain {
     react_at_ms: u32,
     /// No grenade before this time.
     next_frag_ms: u32,
-    last_known: Option<([f32; 3], u32)>,
+    /// What it knows of its enemies (IW4L memory).
+    pub memory: Memory,
+    /// IW4L personality: 0..1 each, from the seed.
+    pub aggression: f32,
+    pub self_preserve: f32,
     route: Vec<u16>,
     route_goal: Option<[f32; 3]>,
     next_repath_ms: u32,
@@ -185,7 +347,9 @@ impl Brain {
             target: None,
             react_at_ms: 0,
             next_frag_ms: 0,
-            last_known: None,
+            memory: Memory::default(),
+            aggression: (seed & 0xff) as f32 / 255.0,
+            self_preserve: ((seed >> 8) & 0xff) as f32 / 255.0,
             route: Vec::new(),
             route_goal: None,
             next_repath_ms: 0,
@@ -282,20 +446,19 @@ impl Brain {
             let jitter = self.random() * 0.5 + 0.75;
             self.react_at_ms = now + (self.skill.reaction_ms as f32 * jitter) as u32;
         }
-        for c in s.enemies.iter().filter(|c| c.visible || c.heard) {
-            if self
-                .last_known
-                .is_none_or(|(p, _)| c.visible || dist2(c.feet, s.feet) < dist2(p, s.feet))
-            {
-                self.last_known = Some((c.feet, now));
-            }
-        }
-        if self
-            .last_known
-            .is_some_and(|(_, t)| now.wrapping_sub(t) > MEMORY_MS)
-        {
-            self.last_known = None;
-        }
+        self.memory.ingest(now, s.enemies);
+        // IW4L `pick_task`: wounded (or out of rounds in a fight) the bot backs off from the threat.
+        let wounded = s.me.health > 0 && (s.me.health as f32) <= 20.0 + 20.0 * self.self_preserve;
+        let seen = target.is_some();
+        let recover = (wounded && !seen) || (seen && s.clip == 0 && s.me.switch_ms.is_none());
+        let threat = self
+            .memory
+            .contacts
+            .iter()
+            .filter(|c| c.source != Source::Seen)
+            .max_by_key(|c| c.seen_ms)
+            .or_else(|| self.memory.currently_seen().next())
+            .map(|c| c.origin);
         // Aim error: re-drawn every 400 ms.
         if now >= self.next_err_ms {
             self.next_err_ms = now + 400;
@@ -315,8 +478,22 @@ impl Brain {
                 move_goal = Some(t.feet);
             }
             act.steer.ads = d2 > 500.0 * 500.0;
-        } else if let Some((p, _)) = self.last_known {
-            move_goal = Some(p);
+        } else if let Some(c) = self.memory.lead(now) {
+            move_goal = Some(c.origin);
+        }
+        if recover && let Some(t) = threat {
+            // Back off 192 units from it, crouched, still facing it (`SeekKind::BackOff`).
+            let (dx, dy) = (s.feet[0] - t[0], s.feet[1] - t[1]);
+            let len = libm::sqrtf(dx * dx + dy * dy).max(1.0);
+            move_goal = Some([
+                s.feet[0] + dx / len * BACK_OFF,
+                s.feet[1] + dy / len * BACK_OFF,
+                s.feet[2],
+            ]);
+            if look_at.is_none() {
+                look_at = Some([t[0], t[1], t[2] + 45.0]);
+            }
+            act.steer.crouch = true;
         }
         let mut wander = false;
         let mut holding = false;
@@ -443,10 +620,20 @@ impl Brain {
             self.stuck_from = (s.feet, now);
             self.route.clear();
             self.route_goal = None;
-            self.last_known = None;
+            self.memory.drop_leads();
         }
         act.steer.jump = now < self.jump_until_ms;
         act.reload = s.clip == 0 || (target.is_none() && s.clip < 5);
+        // IW4L `weapon::choose` with the magazine empty.
+        let reload_ms = (s.me.stock > 0).then_some(s.me.reload_ms);
+        if choose_weapon(s.clip, reload_ms, s.me.switch_ms, seen) == Some(WeaponAct::Switch) {
+            act.switch = true;
+            act.reload = false;
+        }
+        // Hurt in a fight: crouch (IW4L, under 60 health, firing).
+        if act.fire && s.me.health < CROUCH_FIGHT_HEALTH {
+            act.steer.crouch = true;
+        }
         act
     }
 }
@@ -478,6 +665,7 @@ mod tests {
         for f in 0..120u32 {
             let s = Senses {
                 objective: None,
+                me: SelfState::default(),
                 now_ms: f * 16,
                 msec: 16,
                 feet: [0.0; 3],
@@ -504,6 +692,7 @@ mod tests {
         for f in 0..120u32 {
             let s = Senses {
                 objective: None,
+                me: SelfState::default(),
                 now_ms: f * 16,
                 msec: 16,
                 feet: [0.0; 3],
@@ -533,6 +722,7 @@ mod tests {
             let e = [heard];
             let s = Senses {
                 objective: None,
+                me: SelfState::default(),
                 now_ms: f * 16,
                 msec: 16,
                 feet: p.ps.origin,
@@ -546,5 +736,90 @@ mod tests {
             best = best.min(dist2(p.ps.origin, goal).sqrt());
         }
         assert!(best < 80.0, "got within {best} of the enemy");
+    }
+
+    #[test]
+    fn memory_follows_iw4l_seen_lost_fresh_and_forgotten() {
+        let mut m = Memory::default();
+        m.ingest(0, &[enemy([100.0, 0.0, 0.0], true)]);
+        assert_eq!(m.contacts[0].source, Source::Seen);
+        assert!(m.lead(0).is_none(), "in sight: not a lead");
+        // Out of sight: last seen, a lead while fresh (2 s), its confidence fading, gone after 4 s.
+        m.ingest(1000, &[enemy([100.0, 0.0, 0.0], false)]);
+        assert_eq!(m.contacts[0].source, Source::LastSeen);
+        let c = m.lead(1000).copied().unwrap();
+        assert!((Memory::confidence(&c, 1000) - 0.75).abs() < 1e-3);
+        assert!(m.lead(2000).is_some() && m.lead(2100).is_none());
+        m.ingest(4100, &[]);
+        assert!(m.contacts.is_empty());
+        // Heard: half as sure, and never over a sighting.
+        let heard = Contact {
+            heard: true,
+            ..enemy([0.0, 50.0, 0.0], false)
+        };
+        m.ingest(5000, &[heard]);
+        assert_eq!(m.contacts[0].source, Source::Heard);
+        assert_eq!(m.contacts[0].confidence, 0.5);
+    }
+
+    #[test]
+    fn reload_or_switch_follows_iw4l_choose() {
+        // Loaded: nothing to decide.
+        assert_eq!(choose_weapon(5, Some(2000), Some(900), true), None);
+        // In a fight the quicker wins; out of one the bot keeps its gun.
+        assert_eq!(
+            choose_weapon(0, Some(2000), Some(900), true),
+            Some(WeaponAct::Switch)
+        );
+        assert_eq!(
+            choose_weapon(0, Some(2000), Some(900), false),
+            Some(WeaponAct::Reload)
+        );
+        assert_eq!(
+            choose_weapon(0, Some(800), Some(900), true),
+            Some(WeaponAct::Reload)
+        );
+        // Nothing left to load: switch; nothing at all: nothing.
+        assert_eq!(
+            choose_weapon(0, None, Some(900), false),
+            Some(WeaponAct::Switch)
+        );
+        assert_eq!(choose_weapon(0, None, None, true), None);
+    }
+
+    #[test]
+    fn a_wounded_bot_backs_off_crouched_from_where_it_lost_the_enemy() {
+        let clip = floor_with_wall();
+        let mc = MapClip::new(&clip);
+        let p = Player::spawn(&mc, [-200.0, 0.0, 0.0], 0.0);
+        // Self-preservation 0 (seed byte 1 = 0): wounded at 20 health or less.
+        let mut b = Brain::new(Skill::REGULAR, 0x0000_0001);
+        assert_eq!(b.self_preserve, 0.0);
+        let seen = [enemy([-200.0, 300.0, 0.0], true)];
+        let hidden = [enemy([-200.0, 300.0, 0.0], false)];
+        fn senses<'a>(p: &Player, enemies: &'a [Contact], health: i32, now: u32) -> Senses<'a> {
+            Senses {
+                objective: None,
+                me: SelfState {
+                    health,
+                    ..SelfState::default()
+                },
+                now_ms: now,
+                msec: 16,
+                feet: p.ps.origin,
+                eye: p.eye(),
+                view: p.view(),
+                enemies,
+                clip: 30,
+            }
+        }
+        b.think(None, &senses(&p, &seen, 100, 0));
+        // Healthy and out of sight: no backing off.
+        assert!(!b.think(None, &senses(&p, &hidden, 100, 100)).steer.crouch);
+        // Wounded, out of sight: crouched (backing away from where it was).
+        assert!(b.think(None, &senses(&p, &hidden, 15, 200)).steer.crouch);
+        // Wounded but in sight: it fights (IW4L scores the fight over the back-off).
+        let a = b.think(None, &senses(&p, &seen, 15, 300));
+        assert!(!a.steer.crouch || a.fire);
     }
 }
