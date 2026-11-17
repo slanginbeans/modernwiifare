@@ -243,6 +243,10 @@ pub fn list(
         menu_sound::OVER
     };
     loop {
+        // A test script's next `match` is waiting: hand back to the main loop, which starts it.
+        if crate::autoplay::match_ready() {
+            return Step::Stay;
+        }
         let before = *selected;
         let step = menu::step(selected, lines.len(), input.poll());
         if *selected != before {
@@ -362,6 +366,8 @@ pub enum Main {
     Options,
     Debug,
     Quit,
+    /// A test script's next `match` is waiting (`autoplay::quick_match`).
+    Script,
 }
 
 pub fn main_menu(
@@ -398,6 +404,7 @@ pub fn main_menu(
             Step::Accept(_) => return Main::Quit,
             // B on the main menu does nothing (QUIT is a line); RESET still quits.
             _ if ffi::should_exit() => return Main::Quit,
+            _ if crate::autoplay::match_ready() => return Main::Script,
             _ => {}
         }
     }

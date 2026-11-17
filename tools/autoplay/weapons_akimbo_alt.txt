@@ -4,29 +4,9 @@
 # says how. Bots don't attack and stand still, god mode; infinite ammo off so the magazines count down and reload.
 # The match log records "view_companion" (the companion file each weapon file loaded), "alt_request" and
 # "akimbo_fire".
-wait 90
-# DEBUG: reset, then bots don't attack, frozen, god mode.
-times 3 press DOWN
-press A
-wait 10
-times 18 press DOWN
-press A
-times 18 press UP
-press A
-press DOWN
-press A
-press DOWN
-press A
-press B
-wait 10
-times 3 press UP
-press A
-wait 10
-press A
-wait 700
-# The class menu: the first custom class.
-shot 01_class
-press A
+# runner: classes (out/dolphin/classes.dat goes on the card: the custom classes above)
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa bots=0 passive frozen god
 wait 150
 shot 02_m4
 log underbarrel shotgun

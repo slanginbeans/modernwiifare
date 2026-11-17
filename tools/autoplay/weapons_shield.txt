@@ -3,24 +3,8 @@
 # right gun (R), the left (L), both ("akimbo_fire right=.. left=.. stock=.." in the match log). Then Y back to the
 # shield, a bot brought in front: its bullets stop on the shield ("shield_block"). Then Y to the akimbo pair again
 # (the shield goes on your back) and turn away from the bot: its bullets stop on the shield on your back.
-wait 90
-# DEBUG: reset (bots attack, no god mode).
-times 3 press DOWN
-press A
-wait 10
-times 18 press DOWN
-press A
-press B
-wait 10
-times 3 press UP
-press A
-wait 10
-press A
-wait 700
-times 9 press DOWN
-wait 5
-shot 01_class_riot
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa class=9
 wait 150
 shot 02_shield_out
 log akimbo

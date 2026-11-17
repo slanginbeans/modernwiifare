@@ -2,12 +2,8 @@
 # wii/game_core/tests/world_bench.rs). Run with tools/dolphin-test.ps1 -Maps mp_terminal -Script tools/autoplay/world_perf_terminal.txt after deleting
 # out/dolphin/sd/apps/mwf_game/debug.dat. Bots are frozen and harmless; each view holds ~4 s: compare the match
 # log's S rows (wld, wvis / wcul / wsrt / wsub, fifo, full) between builds on the same machine, and the shots.
-wait 90
-press A
-wait 10
-press A
-wait 700
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_terminal ffa
 wait 60
 # DEBUG (START, the 4th line): bots don't attack, bots frozen, god mode.
 press START

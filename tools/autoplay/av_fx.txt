@@ -3,13 +3,8 @@
 # class's tactical (smoke: the lingering cloud from the effect's looping elements), then waits while the bots fight
 # (their gunfire, tracers; hit alerts when you hit them). The match log's `avfx` / `avfx_counts` lines count what
 # played (Dolphin runs without audio). Screenshots land in <app folder>/shots/.
-wait 90
-press A
-wait 10
-shot av_00_lobby
-press A
-wait 700
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa
 wait 60
 shot av_01_spawn
 # Look down a little and fire a burst at the floor.

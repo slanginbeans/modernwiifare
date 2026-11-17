@@ -1,11 +1,7 @@
 # Bots with killstreaks (game_core::autoplay syntax): a free-for-all left to the bots for four minutes, you in god
 # mode in a corner. Look in the match log for `killstreak bot=N used=...` and `crate bot=N reward=...`.
-wait 90
-press A
-wait 10
-press A
-wait 700
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa
 wait 60
 # Debug: god mode (line 2).
 press START

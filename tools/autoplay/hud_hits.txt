@@ -1,10 +1,6 @@
 # Free-for-all, standing still until the bots find you: the hit arrows and blood (game_core::autoplay syntax).
-wait 90
-press A
-wait 10
-press A
-wait 700
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa
 wait 90
 wait 150
 shot f01

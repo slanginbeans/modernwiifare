@@ -1,12 +1,8 @@
 # Close-range check of bullet marks and the knife's wall cue (game_core::autoplay syntax): spawn, turn left to the
 # nearest wall, walk up to it, fire a burst into it, knife it. The match log's `avfx_counts` and `melee` lines say
 # what played.
-wait 90
-press A
-wait 10
-press A
-wait 700
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa
 wait 60
 cstick -100 0
 wait 14

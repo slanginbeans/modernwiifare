@@ -931,7 +931,7 @@ fn run_map(
     devlog::start(
         load_start,
         format_args!(
-            "build={} map={name} bots={bots} class={} mem1_free={}k mem2_free={}k widescreen={} pace={}",
+            "build={} map={name} bots={bots} class={} mem1_free={}k mem2_free={}k widescreen={} pace={} script={}",
             option_env!("MWF_BUILD_ID").unwrap_or("dev"),
             loadouts
                 .class
@@ -942,6 +942,7 @@ fn run_map(
             unsafe { ffi::mwf_mem2_free_bytes() } / 1024,
             unsafe { ffi::mwf_widescreen() } != 0,
             PACE.load(core::sync::atomic::Ordering::Relaxed),
+            autoplay::script_name().as_deref().unwrap_or("-"),
         ),
     );
     let cpath = path.as_ptr();
@@ -1649,6 +1650,12 @@ fn run_map(
         }
         if ffi::should_exit() {
             return Exit::Quit;
+        }
+        // A test script's `endmatch`: as the pause menu's End Game.
+        if autoplay::take_end_match() {
+            devlog::event(ffi::ms(), "end_game", format_args!("script"));
+            devlog::end(ffi::ms());
+            return Exit::Menu;
         }
         if ctl.pressed(act::PAUSE) {
             unsafe { ffi::mwf_snd_stop_all() };
@@ -4369,8 +4376,95 @@ pub extern "C" fn mwf_game_main() -> i32 {
     let mut options = front::load_options();
     apply_pace(&options);
     loop {
+        // A test script's `match` (its first command, or after `endmatch`): straight into a private match, no menus,
+        // with the debug settings at their defaults and those it names, on its class without asking; then the menus.
+        if let Some(q) = autoplay::quick_match() {
+            let mut names = [0u8; 2048];
+            let maps = list_maps(&mut names);
+            if let Some(i) = maps.iter().position(|m| *m == q.map) {
+                map_sel = i;
+                mode = q.mode;
+                limits = arena::Limits::of(&rules, mode);
+                if let Some(k) = q.kills {
+                    limits.score_limit = k * limits.kill_score.max(1);
+                }
+                debug = game_core::debug::DebugSettings {
+                    bots: q.bots,
+                    bots_passive: q.passive,
+                    bots_frozen: q.frozen,
+                    god_mode: q.god,
+                    infinite_ammo: q.ammo,
+                    all_killstreaks: q.streaks,
+                    ..Default::default()
+                };
+                if let Some(w) = q.primary.as_deref() {
+                    match catalog.as_ref().and_then(|c| {
+                        w.parse::<usize>()
+                            .ok()
+                            .filter(|&i| i < c.weapons.len())
+                            .or_else(|| c.weapons.iter().position(|x| x.name == w))
+                    }) {
+                        Some(i) => debug.primary = i.min(254) as u8,
+                        None => devlog::event(
+                            ffi::ms(),
+                            "autoplay",
+                            format_args!("match: no weapon {w}"),
+                        ),
+                    }
+                }
+                sound::MUTED.store(!debug.sound, core::sync::atomic::Ordering::Relaxed);
+                let classes: Vec<wpk::classes::Loadout> = catalog
+                    .as_ref()
+                    .map(|c| {
+                        custom
+                            .iter()
+                            .chain(&c.defaults)
+                            .map(|l| wpk::classes::Loadout {
+                                killstreaks: streaks,
+                                ..l.clone()
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                class_sel = usize::from(q.class);
+                let class = (!classes.is_empty()).then(|| class_sel.min(classes.len() - 1));
+                let mark = unsafe { ffi::mwf_mem2_mark() };
+                let exit = run_map(
+                    &mut gfx,
+                    maps[i],
+                    scratch,
+                    common,
+                    Loadouts {
+                        catalog: catalog.as_ref(),
+                        classes: &classes,
+                        class,
+                        cursor: &mut class_sel,
+                        ask: false,
+                    },
+                    (mode, limits),
+                    &mut input,
+                    &mut debug,
+                    &mut options,
+                );
+                unsafe { ffi::mwf_snd_stop_all() };
+                unsafe { ffi::mwf_mem2_release(mark) };
+                if let Exit::Quit = exit {
+                    return 0;
+                }
+                input.settle();
+            } else {
+                devlog::event(
+                    ffi::ms(),
+                    "autoplay",
+                    format_args!("match: no map {}", q.map),
+                );
+            }
+            continue;
+        }
         match front::main_menu(&mut gfx, &mut input, &mut main_sel, catalog.is_some()) {
             front::Main::Quit => return 0,
+            // Started at the top of the loop.
+            front::Main::Script => {}
             front::Main::Options => {
                 front::options_menu(&mut gfx, &mut input, &mut options, false);
                 front::save_options(&options);

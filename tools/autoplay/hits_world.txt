@@ -1,13 +1,8 @@
 # Hit volumes, collateral, glass, drops (docs/testing.md). Free-for-all on the first map: turn, walk, fire in
 # bursts, and hold Y now and then (a swap when over a weapon). Read the match log: hit, hitvol, glass*, item_drop,
 # ammo_pickup, scavenged, weapon_swap.
-wait 90
-press A
-wait 10
-press A
-wait 700
-shot hw_00_class
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_terminal ffa
 wait 60
 shot hw_01_hud
 cstick 70 0

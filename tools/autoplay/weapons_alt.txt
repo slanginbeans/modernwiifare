@@ -2,33 +2,8 @@
 # launcher), Z + D-pad left to the launcher (the 360 pad's D-pad left, MW2's action slot 3), a round into a bot 150
 # units ahead (inside its arming distance: a dud, the impact's damage only), one far down the map (armed: it
 # explodes), then back to the rifle. The match log records "alt_request", "switch to=2", each launch, explosions.
-wait 90
-# DEBUG: reset, then bots don't attack, frozen, god mode, infinite ammo.
-times 3 press DOWN
-press A
-wait 10
-times 18 press DOWN
-press A
-times 18 press UP
-press A
-press DOWN
-press A
-press DOWN
-press A
-press DOWN
-press A
-press B
-wait 10
-times 3 press UP
-press A
-wait 10
-press A
-wait 700
-# The class menu: custom classes first, then MW2's defaults (Grenadier is the first default).
-times 5 press DOWN
-wait 5
-shot 01_class_grenadier
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa passive frozen god ammo class=5
 wait 120
 shot 02_famas
 log alternate

@@ -1,12 +1,7 @@
 # The killstreaks that stay in the air (game_core::autoplay syntax): stealth bomber, attack helicopter, Chopper Gunner,
 # AC-130, called from the debug menu's GIVE lines; bots passive, god mode (delete debug.dat first).
-wait 90
-press A
-wait 10
-# START GAME (free-for-all on the first map).
-press A
-wait 700
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa
 wait 60
 shot ka01_spawn
 # Debug: bots don't attack, god mode, the rest from GIVE lines.

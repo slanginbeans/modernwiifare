@@ -1,18 +1,8 @@
 # Movement and camera feel (game_core::autoplay syntax): a mantle on mp_rust, a jump's landing dip, the view bob
 # while running, and holding breath on a scoped rifle. Run with tools/dolphin-test.ps1 -Maps mp_rust -Script
 # tools/autoplay/feel.txt; the match log has mantle_start / mantle_end, land_dip and breath_hold / breath_release.
-wait 90
-shot 01_main
-# Private match lobby, START GAME.
-press A
-wait 10
-press A
-wait 700
-# MW2's class menu: five custom classes, then the defaults (Grenadier, First Recon, Overwatch, Scout Sniper, ...).
-times 8 press DOWN
-wait 5
-shot 02_class_menu
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa bots=0 class=8
 wait 60
 shot 03_spawned
 # DEBUG (START, the 4th line): bots don't attack, bots frozen, god mode, so nothing interrupts the checks. These are

@@ -3,38 +3,8 @@
 # (a bot brought in front three times), the EMP's flash. Team Deathmatch, so teammates' names show. Your three kills
 # leave your team a kill short of the 500 score limit, so the hit arrows and blood are left to hud_hits.txt and
 # hud_match_rifle.txt. Needs common.wpk and mp_rust.
-wait 90
-# DEBUG: PRIMARY WEAPON to the Barrett (the 31st weapon in the list).
-times 3 press DOWN
-press A
-wait 10
-times 5 press DOWN
-times 31 press A
-wait 5
-shot m00_debug
-press B
-wait 10
-# Private match, Team Deathmatch.
-times 3 press UP
-press A
-wait 10
-press DOWN
-press A
-wait 10
-press DOWN
-press A
-wait 10
-press DOWN
-press A
-wait 10
-press B
-wait 10
-shot m01_lobby
-press UP
-press A
-wait 700
-shot c00_class
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust tdm primary=30
 wait 90
 # Steady opponents: START > DEBUG > BOTS DON'T ATTACK and BOTS FROZEN on (until the kills are done: the bot brought
 # in front stays there), then BOTS: RIFLES ONLY (the last line; bots take a random class each life).

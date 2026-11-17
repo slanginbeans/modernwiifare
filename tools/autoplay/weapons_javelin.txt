@@ -2,36 +2,8 @@
 # aimed down sights at the far end of the alley ahead of the spawn until it locks on a point there (MW2's
 # _javelin.gsc), then fired. The match log records "javelin Acquiring / Locked" and "launch ... locked=1", then the
 # explosion where it comes down.
-wait 90
-# DEBUG: reset, then bots don't attack, frozen, god mode, infinite ammo; primary = Javelin (catalog weapon 29).
-times 3 press DOWN
-press A
-wait 10
-times 18 press DOWN
-press A
-times 18 press UP
-press A
-press DOWN
-press A
-press DOWN
-press A
-press DOWN
-press A
-press DOWN
-press DOWN
-times 30 press A
-wait 5
-shot j01_debug_javelin
-press B
-wait 10
-# Private match, start, the first class (its primary replaced by the RPG).
-times 3 press UP
-press A
-wait 10
-press A
-wait 700
-shot j02_class
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa bots=0 passive frozen god ammo primary=29
 wait 120
 shot j03_javelin_hud
 log javelin aim

@@ -1,12 +1,8 @@
 # The killcam: a free-for-all, walk into the bots until they kill you, a screenshot every 20 frames through
 # the death, the killcam and the respawn (game_core::autoplay syntax).
 # Run: tools/dolphin-test.ps1 -Script tools/autoplay/killcam.txt -Maps mp_rust
-wait 90
-press A
-wait 10
-press A
-wait 700
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa
 wait 60
 stick 0 90
 wait 20

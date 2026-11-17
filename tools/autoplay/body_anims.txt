@@ -5,17 +5,8 @@
 # after deleting out\dolphin\sd\apps\mwf_game\debug.dat (the debug toggles below assume the defaults). The match log
 # gets body_anims (at load: mantle clips, the corpse pool, the shield tags), mantle_start / mantle_end (timer and the
 # third-person movement type), land_dip, grenade, kill, corpses.
-wait 90
-shot ba_00_main
-press A
-wait 10
-press A
-wait 700
-# The class menu: five custom classes, then MW2's defaults; First Recon (the 7th line) carries flashbangs.
-times 6 press DOWN
-wait 5
-shot ba_01_class
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa class=6
 wait 60
 # DEBUG: bots don't attack, bots frozen, god mode.
 press START

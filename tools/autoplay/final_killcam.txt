@@ -1,27 +1,7 @@
 # The final killcam: a free-for-all to 10 kills (the lowest score limit), then MW2's final killcam of the last kill
 # and the scoreboard. Run: tools/dolphin-test.ps1 -Script tools/autoplay/final_killcam.txt -Maps mp_rust
-wait 90
-press A
-wait 10
-press DOWN
-press A
-wait 10
-press DOWN
-press DOWN
-press A
-wait 10
-press DOWN
-press LEFT
-wait 5
-shot F00_rules
-press B
-wait 5
-press B
-wait 10
-press UP
-press A
-wait 700
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa kills=10
 wait 60
 wait 25
 shot F100

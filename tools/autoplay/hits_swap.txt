@@ -1,12 +1,8 @@
 # A bot in front, shot with the drawn bones, its weapon taken with a Y hold (docs/testing.md). Debug page (in-game
 # START menu > DEBUG): bots passive and frozen, god mode, hit box overlay, then BRING A BOT IN FRONT, three times.
 # Read the match log: hit (by=0), hitvol bones=, item_drop, weapon_swap.
-wait 90
-press A
-wait 10
-press A
-wait 700
-press A
+# Setup (no menus): the match below; see game_core::autoplay `match`.
+match mp_rust ffa
 wait 60
 shot hs_00_hud
 press START

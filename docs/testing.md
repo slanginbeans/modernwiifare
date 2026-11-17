@@ -56,7 +56,12 @@ Also say per round: did it crash (the log then has no summary line), did sound p
 `press A+UP [N]`, `hold` / `release`, `stick X Y`, `cstick X Y`, `triggers L R`, `times N <command>`,
 `shot NAME` (the next frame as `<app folder>/shots/NAME.bmp`), `log TEXT` (a line in the match log), `warp X Y Z YAW`
 (in a match: the player to that map spot, dropped onto the floor, facing YAW degrees), `pace N` (a frame every N
-retraces from now on), `quit` (switches the console off). Frames are pad reads: one a frame in the menus and the
+retraces from now on), `match MAP MODE [bots=N] [class=N] [primary=WEAPON] [kills=N] [passive] [frozen] [god]
+[ammo] [streaks]` (straight into a private match with no menus: the debug settings at their defaults and those
+named, the class without asking; as the first command or after `endmatch`), `endmatch` (leave the match for the
+main menu, as End Game), `script NAME` (a section of a suite: shots as `shots/NAME__SHOT.bmp`, `script=NAME` in the
+match log's header), `quit` (switches the console off). Every script but `menu_tour` and `last_stand` (which test
+the menus and edit a class) starts with a `match` line; scripts that don't need bots say `bots=0`. Frames are pad reads: one a frame in the menus and the
 match, none while a map loads, so a script runs the same on every machine. Scripts run a frame every retrace
 whatever Options > FRAME RATE says (they count frames), until they say `pace`. `tools/autoplay/pace30.txt` plays
 a match uncapped, at `pace 2` and uncapped again: its S rows read `fps=29 fr=33.36/33.36` with `idle=` around 22 ms
@@ -131,7 +136,17 @@ they also turn on BOTS DON'T ATTACK and BOTS FROZEN, so it stays where it was pu
 On the PC, `tools/dolphin-test.ps1 -Dolphin <Dolphin.exe>` (or `MWF_DOLPHIN`) runs a script in Dolphin on the
 built game (`dist\apps\mwf_game`, `out\packs`): it sets up its own Dolphin profile and an SD card folder under
 `out\dolphin` (your Dolphin settings are untouched), boots the game, waits for `quit` and converts the screenshots
-to `out\dolphin\shots\*.png`. Options: `-Script <file>`, `-Maps mp_rust,mp_terminal`. Dolphin shows the whole
+to `out\dolphin\shots\*.png`. Options: `-Script <file>[,<file>...]` (several: one boot for all, results per
+script in `out\dolphin\suite\<script>\`), `-Maps mp_rust,mp_terminal` (besides the maps the `match` lines name),
+`-Instance N` (its own profile and card in `out\dolphin-N`, so several Dolphins run at once), `-Classes`
+(`out\dolphin\classes.dat` on the card: the custom classes the scripts marked `# runner: classes` need; make them
+in Create-a-Class and copy the card's `classes.dat` there).
+
+`tools/dolphin-suite.ps1 -Dolphin <Dolphin.exe>` runs every script (or `-Only a,b`): three Dolphins at once
+(`-Parallel N`), each playing its share of the `match` scripts in one boot, the menu scripts and the custom-class
+scripts in runs of their own; each script's shots, `match.log` and `run.txt` land in `out\dolphin\suite\<script>\`
+with a summary (shots, log, panics) at the end. A Dolphin boot costs 25-40 s and the menus ~13 s of play a script,
+so one boot per Dolphin and the `match` lines save most of the old one-boot-a-script run's 28 minutes. Dolphin shows the whole
 frame; a TV crops its edges (overscan), which is what the safe area is for.
 
 ## Debug menu
