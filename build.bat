@@ -30,7 +30,8 @@ rem    build.bat noupdate  the same without updating
 rem    build.bat nodata    build and package only (no game data step)
 rem    build.bat clean     delete build output
 rem  Switches combine (build.bat noupdate nodata). nopause: don't wait for a key at the end.
-rem  MWF_SLIM_VIEWS=1: smaller weapon files. MWF_CONVERT_FLAGS: extra converter switches.
+rem  MWF_SLIM_VIEWS=0 / MWF_SMALL_DL=0 / MWF_TILED_UV=0 / MWF_SMALL_PROPS=0 / MWF_TRIM_SOUNDS=0: turn off one of
+rem  the smaller-pack switches (all on by default). MWF_CONVERT_FLAGS: extra converter switches.
 rem  builder.bat: the same switches in a window.
 rem ---------------------------------------------------------------------------
 setlocal

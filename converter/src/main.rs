@@ -13,7 +13,7 @@
 //!       Converts every texture (GfxImage) of one map zone to Wii `.gxt` files, taking pixels from the zone or
 //!       from main/*.iwd, and writes a content-free report.json beside them. Default folder: out/textures/<zone>.
 //!       --verbose prints one line per texture (with its name) to the console only.
-//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--small-props] [--adpcm] [--trim-sounds] [--slim-anims]
+//!   mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--no-slim-views] [--no-tiled-uv] [--no-small-dl] [--no-small-props] [--no-trim-sounds] [--adpcm] [--slim-anims]
 //!       Builds the Wii pack of one map: its textures (as `textures` does), lightmaps, materials, world geometry as
 //!       display lists, skybox and spawns. Default output: out/packs/<zone>.wpk (+ a content-free .json report).
 //!   mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw <deg> --pitch <deg>] [--out <file.png>]
@@ -66,7 +66,7 @@ const SHARED_TABLES_ZONE: &str = "code_post_gfx_mp";
 const USAGE: &str = "usage:\n  mwf-convert inventory <game folder> [--out <report.json>]\n  \
      mwf-convert map <game folder> [--map <zone>] [--zone <file.ff>] [--out <report.json>]\n  \
      mwf-convert textures <game folder> [--map <zone>] [--zone <file.ff>] [--out <folder>] [--verbose]\n  \
-     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--slim-views] [--tiled-uv] [--small-dl] [--small-props] [--adpcm] [--trim-sounds] [--slim-anims]\n  \
+     mwf-convert pack <game folder> [--map <zone> | all] [--zone <file.ff>] [--out <file.wpk>] [--force] [--no-slim-views] [--no-tiled-uv] [--no-small-dl] [--no-small-props] [--no-trim-sounds] [--adpcm] [--slim-anims]\n  \
      mwf-convert report <log file>...\n  \
      mwf-convert preview <file.wpk> [--spawn <n>] [--pos x,y,z --yaw d --pitch d] [--out <file.png>]\n      [--viewmodel <view.wpk> --anim <slot> --time <s>] [--character <common.wpk> --team 0|1
       [--pmove idle|run|walk|sprint|idlecr|...] [--ptype autorifle|pistol|...] [--pclass rifle|...]
@@ -244,23 +244,23 @@ struct MapArgs {
     force: bool,
     /// World mesh simplification (`--simplify <ratio>`, `--simplify-error <units>`).
     quality: simplify::WorldQuality,
-    /// Smaller weapon files (`--slim-views`, or `MWF_SLIM_VIEWS=1`): keyframed clips with i16 translations, no
-    /// texture mips, sounds at 32 kHz. Off by default while it's tested on hardware.
+    /// Smaller weapon files: keyframed clips with i16 translations, no texture mips, sounds at 32 kHz. On by default
+    /// (`--no-slim-views` or `MWF_SLIM_VIEWS=0` for the full files).
     slim_views: bool,
     /// Map packs: batches whose UVs span too far are split into UV tiles so they fit fixed-point vertices
-    /// (`--tiled-uv`, or `MWF_TILED_UV=1`). Off by default while it's tested on hardware.
+    /// (on by default; `--no-tiled-uv` or `MWF_TILED_UV=0` off).
     tiled_uv: bool,
     /// Map packs: u8 display-list indices for batches of at most 256 vertices, and no colour index where every
-    /// vertex is white (`--small-dl`, or `MWF_SMALL_DL=1`). Off by default while it's tested on hardware.
+    /// vertex is white (on by default; `--no-small-dl` or `MWF_SMALL_DL=0` off).
     small_dl: bool,
-    /// Map packs: small props start at their second level of detail (`--small-props`, or `MWF_SMALL_PROPS=1`;
-    /// `pack::first_lod`). Off by default while it's tested on hardware.
+    /// Map packs: small props start at their second level of detail (`pack::first_lod`; on by default,
+    /// `--no-small-props` or `MWF_SMALL_PROPS=0` off).
     small_props: bool,
     /// Player animations in `common.wpk` cut to the frames interpolation can't rebuild within
     /// `wpk::player_anim::SLIM` (`--slim-anims`, or `MWF_SLIM_ANIMS=1`). Off by default while it's tested on hardware.
     slim_anims: bool,
-    /// Sounds (`common.wpk` and the weapon files) without their quiet tails (`--trim-sounds`, or `MWF_TRIM_SOUNDS=1`;
-    /// `sounds::trim_tail`). Off by default while it's tested on hardware.
+    /// Sounds (`common.wpk` and the weapon files) without their quiet tails (`sounds::trim_tail`; on by default,
+    /// `--no-trim-sounds` or `MWF_TRIM_SOUNDS=0` off).
     trim_sounds: bool,
     /// Sounds (`common.wpk` and the weapon files) as 4-bit DSP ADPCM, 3.5x smaller than 16-bit PCM, decoded on the
     /// Wii as they play (`--adpcm`, or `MWF_ADPCM=1`). Off by default while it's tested on hardware.
@@ -277,9 +277,19 @@ fn env_on(name: &str) -> bool {
     })
 }
 
-/// `MWF_SLIM_VIEWS` set to 1 / true / yes / on.
+/// Environment variable `name` as a switch: 1 / true / yes / on, or 0 / false / no / off; `default` when unset or
+/// anything else.
+fn env_switch(name: &str, default: bool) -> bool {
+    match std::env::var(name).map(|v| v.trim().to_ascii_lowercase()) {
+        Ok(v) if matches!(v.as_str(), "1" | "true" | "yes" | "on") => true,
+        Ok(v) if matches!(v.as_str(), "0" | "false" | "no" | "off") => false,
+        _ => default,
+    }
+}
+
+/// Smaller weapon files (`MWF_SLIM_VIEWS`, on unless set off).
 fn slim_views_env() -> bool {
-    env_on("MWF_SLIM_VIEWS")
+    env_switch("MWF_SLIM_VIEWS", true)
 }
 
 fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
@@ -289,11 +299,11 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
     let mut out: Option<PathBuf> = None;
     let mut force = false;
     let mut slim_views = slim_views_env();
-    let mut tiled_uv = env_on("MWF_TILED_UV");
-    let mut small_dl = env_on("MWF_SMALL_DL");
-    let mut small_props = env_on("MWF_SMALL_PROPS");
+    let mut tiled_uv = env_switch("MWF_TILED_UV", true);
+    let mut small_dl = env_switch("MWF_SMALL_DL", true);
+    let mut small_props = env_switch("MWF_SMALL_PROPS", true);
     let mut adpcm = env_on("MWF_ADPCM");
-    let mut trim_sounds = env_on("MWF_TRIM_SOUNDS");
+    let mut trim_sounds = env_switch("MWF_TRIM_SOUNDS", true);
     let mut slim_anims = env_on("MWF_SLIM_ANIMS");
     let mut quality = simplify::WorldQuality::default();
     let mut it = args.iter();
@@ -302,28 +312,29 @@ fn parse_map_args(args: &[String]) -> Result<MapArgs, ExitCode> {
             force = true;
             continue;
         }
-        if a == "--slim-views" {
-            slim_views = true;
-            continue;
+        // On by default; `--no-...` turns one off (the plain switch is still accepted).
+        let off = a.strip_prefix("--no-");
+        match (a.as_str(), off) {
+            ("--slim-views", _) => slim_views = true,
+            (_, Some("slim-views")) => slim_views = false,
+            ("--tiled-uv", _) => tiled_uv = true,
+            (_, Some("tiled-uv")) => tiled_uv = false,
+            ("--small-dl", _) => small_dl = true,
+            (_, Some("small-dl")) => small_dl = false,
+            ("--small-props", _) => small_props = true,
+            (_, Some("small-props")) => small_props = false,
+            ("--trim-sounds", _) => trim_sounds = true,
+            (_, Some("trim-sounds")) => trim_sounds = false,
+            _ => {}
         }
-        if a == "--tiled-uv" {
-            tiled_uv = true;
-            continue;
-        }
-        if a == "--small-dl" {
-            small_dl = true;
-            continue;
-        }
-        if a == "--small-props" {
-            small_props = true;
+        if matches!(
+            off.unwrap_or(a.trim_start_matches("--")),
+            "slim-views" | "tiled-uv" | "small-dl" | "small-props" | "trim-sounds"
+        ) {
             continue;
         }
         if a == "--adpcm" {
             adpcm = true;
-            continue;
-        }
-        if a == "--trim-sounds" {
-            trim_sounds = true;
             continue;
         }
         if a == "--slim-anims" {
@@ -592,14 +603,14 @@ fn run_pack(args: &[String]) -> ExitCode {
         if a.force {
             common_args.push("--force".to_owned());
         }
-        if a.slim_views {
-            common_args.push("--slim-views".to_owned());
+        if !a.slim_views {
+            common_args.push("--no-slim-views".to_owned());
         }
         if a.adpcm {
             common_args.push("--adpcm".to_owned());
         }
-        if a.trim_sounds {
-            common_args.push("--trim-sounds".to_owned());
+        if !a.trim_sounds {
+            common_args.push("--no-trim-sounds".to_owned());
         }
         if a.slim_anims {
             common_args.push("--slim-anims".to_owned());

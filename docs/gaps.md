@@ -183,7 +183,10 @@ whether a map is GPU-, fill- or CPU-bound. Next from it, in order: per-instance 
 (GX-indexed matrix loads, fewer array rebinds and vertex-cache flushes), paired-singles maths for the rest of what
 stays on the CPU (and `opt-level=3`), the
 built-but-off pack toggles (`--small-dl`, `--tiled-uv`, `--small-props`, `--slim-views`, `--adpcm`) for MEM2 on the
-big maps, then TMEM preloading, CI palettes for UI, a particle coverage cap.
+big maps (done 2026-11-17: `--small-dl`, `--tiled-uv`, `--small-props`, `--slim-views` and `--trim-sounds` on by
+default, REVISION 41; `mp_terminal` 3.8 MiB of MEM2 free after loading, its first-person gun back; `--adpcm` and
+`--slim-anims` stay off: the first wants a hardware check of its CPU decoding, the second moves hit boxes), then TMEM
+preloading, CI palettes for UI, a particle coverage cap.
 Merged 2026-11-16 (`world-submit`, `char-skin`; Dolphin numbers from each branch alone, the merge not rerun, nothing on
 hardware yet): world submission split into stages in the log (`wvis` / `wcul` / `wsrt` / `wsub`, FIFO bytes and
 watermark stops), a 1 MiB GX FIFO, state sent only on change, one vertex-cache flush a frame, cheaper culling and

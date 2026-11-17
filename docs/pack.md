@@ -112,9 +112,13 @@ that weapon (`wii/game/src/arsenal.rs`):
 | `VCLP` | one blob (`wpk::view::encode_clip_set`: a format word, then clips as in `VIEW`) | the clips of its sets, on the weapon file's model (bones by index). Slots naming the same animation as the weapon's own are left out (set 0's plays); tracks key-framed within `Tolerance::SLIM` (`Track::keyed`), kept keyed in memory |
 | `WSND` / `SNDA` / `SNDV` / `SNDD` | as above | an alternate's own sounds (its fire, reload ... and its clips' notetracks), at most 32 kHz; empty for an akimbo pair |
 
-### Smaller map packs (toggles, off by default)
+### Smaller map packs (on by default since REVISION 41)
 Three switches on `pack` (or in `builder.bat`), each folded into the map pack's stamp so turning it on or off rebuilds
-the maps:
+the maps. All three are on unless turned off (`--no-tiled-uv`, `--no-small-dl`, `--no-small-props`, or the
+variable set to 0). Measured on `mp_terminal` (2026-11-17): MEM2 35.8 -> 33.2 MiB (1,421 batches with u8 indices,
+1,641 without colour, 82 small props from LOD 1 with 30k triangles left out, no batch needed UV tiles), free MEM2 after
+loading 0.7 -> 3.8 MiB, so its first-person gun draws again; `mp_rust` 18.4 -> 17.6 MiB; every map 0.8-3.2 MiB smaller (`mp_checkpoint`, the largest, 38.1 -> 35.3 MiB). Dolphin screenshots from
+fixed views match the old packs apart from the gun:
 - **`--tiled-uv`** (`MWF_TILED_UV=1`): a batch that doesn't fit fixed-point vertices because one connected piece
   spans 128 or more texture repeats (wide tiled floors, roads, walls) is split into UV tiles
   (`wpk::quant::quantize_tiled`, 96 repeats, else 32, else 8). Each tile gets its own whole-number UV shift. Vertices
@@ -136,9 +140,9 @@ the maps:
 
 Older packs have `flags` 0 and draw exactly as before.
 
-### Slim weapon files (toggle, off by default)
-`mwf-convert pack ... --slim-views` / `common ... --slim-views`, or `MWF_SLIM_VIEWS=1` in the environment (so
-`build.bat` picks it up: `set MWF_SLIM_VIEWS=1` before running it). The option is part of the pack stamp, so turning it
+### Slim weapon files (on by default since REVISION 41)
+On unless `--no-slim-views` / `MWF_SLIM_VIEWS=0` (`set MWF_SLIM_VIEWS=0` before `build.bat`). The weapon files
+on the card went from 114 to 86 MB (with `--trim-sounds`). The option is part of the pack stamp, so turning it
 on or off rebuilds `common.wpk` and the weapon files on the next run. With it on, each `views/<weapon>.wpk` gets:
 - **Compact clip tracks** (`VIEW` header flag `wpk::view::flags::COMPACT_TRACKS`): only the frames linear interpolation
   can't reproduce within `Tolerance::SLIM` (0.02° rotation, 0.005 units translation, checked against the decoder's own
@@ -171,8 +175,9 @@ with `--slim-views`' 32 kHz.
 - **To check on hardware:** clicks or gaps at buffer joins, very short sounds (footsteps), many sounds at once, and how
   it sounds next to PCM.
 
-### Quiet sound tails cut (toggle, off by default)
-`--trim-sounds` on `pack` / `common`, or `MWF_TRIM_SOUNDS=1` (`builder.bat`: "Sounds: cut quiet tails"). Part of the
+### Quiet sound tails cut (on by default since REVISION 41)
+On unless `--no-trim-sounds` / `MWF_TRIM_SOUNDS=0` (`builder.bat`: "Sounds: cut quiet tails"). Cuts 6 s of
+`common.wpk`'s 97 s and 47 s of the weapon files' 543 s. Part of the
 stamp. Each clip in `common.wpk` and the weapon files ends 10 ms after its last sample louder than -54 dBFS
 (`sounds::trim_tail`, `TRIM_THRESHOLD` 65 of 32767), so anything below that level at the end is dropped. Only the
 end is cut: every clip still starts on its first sample, so nothing plays earlier or later and notetrack and event
@@ -189,7 +194,8 @@ fewer samples:
   0.25° and 0.1 units. That is about half a pixel on a leg at 3 m at 480p, and only on frames between keys.
 - A part that stays within tolerance of its first frame becomes one sample. A track keeps every frame when listing
   keys would cost more than it saves.
-- Gameplay doesn't change: hit detection (`game_core::damage`) doesn't read the animated bones.
+- Kept off by default: your shots test the drawn characters' bone boxes (`CHHB`), so keyframed poses would move hit
+  boxes slightly (within the tolerance below).
 - Host test: on a 30 fps run cycle, still bones shrink to one sample, but a ±30° swinging leg keeps most frames.
   Linear keys can't follow a fast swing within a quarter degree. The real saving depends on how much of MW2's
   player animations is still or slow; the converter prints `PANM` before and after, and `common.json` has both sizes

@@ -19,14 +19,15 @@ $appDir = Join-Path $repo 'dist\apps\mwf_game'
 
 function New-Settings {
     [ordered]@{
+        Version     = 2        # 2: the smaller-pack switches default on (older saved values for them are ignored)
         Update      = $true    # git pull first
         Data        = $true    # convert game data (maps, weapons) and copy it into dist
-        SlimViews   = $false   # smaller weapon files (MWF_SLIM_VIEWS)
-        TiledUv     = $false   # more fixed-point world vertices (MWF_TILED_UV)
-        SmallDl     = $false   # smaller display lists (MWF_SMALL_DL)
-        SmallProps  = $false   # small props from their second level of detail (MWF_SMALL_PROPS)
+        SlimViews   = $true    # smaller weapon files (MWF_SLIM_VIEWS)
+        TiledUv     = $true    # more fixed-point world vertices (MWF_TILED_UV)
+        SmallDl     = $true    # smaller display lists (MWF_SMALL_DL)
+        SmallProps  = $true    # small props from their second level of detail (MWF_SMALL_PROPS)
         Adpcm       = $false   # sounds as 4-bit DSP ADPCM (MWF_ADPCM)
-        TrimSounds  = $false   # sounds without their quiet tails (MWF_TRIM_SOUNDS)
+        TrimSounds  = $true    # sounds without their quiet tails (MWF_TRIM_SOUNDS)
         SlimAnims   = $false   # player animations as keyframes (MWF_SLIM_ANIMS)
         Force       = $false   # reconvert everything (--force)
         Simplify    = '1.0'    # world detail (--simplify <ratio>; 1.0 = full)
@@ -43,7 +44,12 @@ function Read-Settings {
     if (Test-Path $settingsPath) {
         try {
             $saved = Get-Content $settingsPath -Raw | ConvertFrom-Json
+            # Settings saved before version 2 had these off by default: keep the new defaults for them.
+            $flipped = @('SlimViews', 'TiledUv', 'SmallDl', 'SmallProps', 'TrimSounds')
+            $old = -not ($saved.Version -ge 2)
             foreach ($k in @($s.Keys)) {
+                if ($k -eq 'Version') { continue }
+                if ($old -and $flipped -contains $k) { continue }
                 if ($null -ne $saved.$k) { $s[$k] = $saved.$k }
             }
         } catch { }
@@ -76,12 +82,12 @@ function Get-BuildCommand($s, [switch]$Clean) {
         $flags.Add($ratio.ToString([Globalization.CultureInfo]::InvariantCulture))
     }
     $envs = [ordered]@{
-        MWF_SLIM_VIEWS    = if ($s.SlimViews) { '1' } else { $null }
-        MWF_TILED_UV      = if ($s.TiledUv) { '1' } else { $null }
-        MWF_SMALL_DL      = if ($s.SmallDl) { '1' } else { $null }
-        MWF_SMALL_PROPS   = if ($s.SmallProps) { '1' } else { $null }
+        MWF_SLIM_VIEWS    = if ($s.SlimViews) { '1' } else { '0' }
+        MWF_TILED_UV      = if ($s.TiledUv) { '1' } else { '0' }
+        MWF_SMALL_DL      = if ($s.SmallDl) { '1' } else { '0' }
+        MWF_SMALL_PROPS   = if ($s.SmallProps) { '1' } else { '0' }
         MWF_ADPCM         = if ($s.Adpcm) { '1' } else { $null }
-        MWF_TRIM_SOUNDS   = if ($s.TrimSounds) { '1' } else { $null }
+        MWF_TRIM_SOUNDS   = if ($s.TrimSounds) { '1' } else { '0' }
         MWF_SLIM_ANIMS    = if ($s.SlimAnims) { '1' } else { $null }
         MWF_CONVERT_FLAGS = if ($flags.Count) { $flags -join ' ' } else { $null }
         MWF_ASSUME_YES    = if ($s.AllowDownloads) { '1' } else { $null }
@@ -126,12 +132,12 @@ $y += 28
 
 $cbUpdate = Add-Check 'Update from GitHub first' 'git pull before building (build.bat without "noupdate").' $settings.Update
 $cbData = Add-Check 'Convert game data (maps, weapons) and copy it in' 'Converts what changed from your MW2 / IW4x folder (build.bat without "nodata").' $settings.Data
-$cbSlim = Add-Check 'Slim weapon files (testing: keyframed clips, no gun mips, 32 kHz sounds)' 'MWF_SLIM_VIEWS=1. Rebuilds the weapon files when switched.' $settings.SlimViews
-$cbTiled = Add-Check 'Maps: more compact world vertices (testing: UV tiles for wide surfaces)' 'MWF_TILED_UV=1. Rebuilds the map packs when switched.' $settings.TiledUv
-$cbSmallDl = Add-Check 'Maps: smaller display lists (testing: 8-bit indices, no colour where white)' 'MWF_SMALL_DL=1. Rebuilds the map packs when switched.' $settings.SmallDl
-$cbSmallProps = Add-Check 'Maps: small props start at their second level of detail (testing)' 'MWF_SMALL_PROPS=1. Rebuilds the map packs when switched.' $settings.SmallProps
+$cbSlim = Add-Check 'Slim weapon files (keyframed clips, no gun mips, 32 kHz sounds)' 'MWF_SLIM_VIEWS (on by default). Rebuilds the weapon files when switched.' $settings.SlimViews
+$cbTiled = Add-Check 'Maps: more compact world vertices (UV tiles for wide surfaces)' 'MWF_TILED_UV (on by default). Rebuilds the map packs when switched.' $settings.TiledUv
+$cbSmallDl = Add-Check 'Maps: smaller display lists (8-bit indices, no colour where white)' 'MWF_SMALL_DL (on by default). Rebuilds the map packs when switched.' $settings.SmallDl
+$cbSmallProps = Add-Check 'Maps: small props start at their second level of detail' 'MWF_SMALL_PROPS (on by default). Rebuilds the map packs when switched.' $settings.SmallProps
 $cbAdpcm = Add-Check 'Sounds: ADPCM (testing: about 3.5x smaller, decoded as they play)' 'MWF_ADPCM=1. Rebuilds common.wpk and the weapon files when switched.' $settings.Adpcm
-$cbTrimSounds = Add-Check 'Sounds: cut quiet tails (testing: below -54 dB, starts unchanged)' 'MWF_TRIM_SOUNDS=1. Rebuilds common.wpk and the weapon files when switched.' $settings.TrimSounds
+$cbTrimSounds = Add-Check 'Sounds: cut quiet tails (below -54 dB, starts unchanged)' 'MWF_TRIM_SOUNDS (on by default). Rebuilds common.wpk and the weapon files when switched.' $settings.TrimSounds
 $cbSlimAnims = Add-Check 'Player animations: keyframes only (testing: within 0.25 degrees)' 'MWF_SLIM_ANIMS=1. Rebuilds common.wpk when switched.' $settings.SlimAnims
 $cbForce = Add-Check 'Reconvert everything (ignore up-to-date packs)' 'Passes --force to the converter.' $settings.Force
 $cbDownloads = Add-Check 'Allow downloading missing tools (Rust, llvm-mingw)' 'Answers yes to build.bat''s download prompts (MWF_ASSUME_YES=1). There is no console here to ask in.' $settings.AllowDownloads
@@ -381,12 +387,12 @@ if ($SelfTest) {
     $d = New-Settings
     $c = Get-BuildCommand $d
     Check 'defaults: args' ($c.Args -join ' ') 'nopause'
-    Check 'defaults: no slim' $c.Env.MWF_SLIM_VIEWS $null
-    Check 'defaults: no tiled uv' $c.Env.MWF_TILED_UV $null
-    Check 'defaults: no small dl' $c.Env.MWF_SMALL_DL $null
-    Check 'defaults: no small props' $c.Env.MWF_SMALL_PROPS $null
+    Check 'defaults: slim' $c.Env.MWF_SLIM_VIEWS '1'
+    Check 'defaults: tiled uv' $c.Env.MWF_TILED_UV '1'
+    Check 'defaults: small dl' $c.Env.MWF_SMALL_DL '1'
+    Check 'defaults: small props' $c.Env.MWF_SMALL_PROPS '1'
     Check 'defaults: no adpcm' $c.Env.MWF_ADPCM $null
-    Check 'defaults: no trim sounds' $c.Env.MWF_TRIM_SOUNDS $null
+    Check 'defaults: trim sounds' $c.Env.MWF_TRIM_SOUNDS '1'
     Check 'defaults: no slim anims' $c.Env.MWF_SLIM_ANIMS $null
     Check 'defaults: no flags' $c.Env.MWF_CONVERT_FLAGS $null
     $s = New-Settings
@@ -406,17 +412,22 @@ if ($SelfTest) {
     Check 'switches: slim anims' $c.Env.MWF_SLIM_ANIMS '1'
     Check 'switches: game' $c.Env.MWF_GAME 'D:\mwf\Call of Duty Modern Warfare 2'
     Check 'switches: devkitpro unset' $c.Env.MWF_DEVKITPRO $null
+    $o = New-Settings
+    $o.SlimViews = $false; $o.TrimSounds = $false
+    $c = Get-BuildCommand $o
+    Check 'switched off: slim' $c.Env.MWF_SLIM_VIEWS '0'
+    Check 'switched off: trim sounds' $c.Env.MWF_TRIM_SOUNDS '0'
     Check 'clean: args' ((Get-BuildCommand $s -Clean).Args -join ' ') 'clean nopause'
     # The window builds and reads its own settings back.
     $cbSlim.Checked = $true; $cmbDetail.SelectedIndex = 2; $cbSmallDl.Checked = $true
     $u = Get-UiSettings
     Check 'ui: slim' $u.SlimViews $true
     Check 'ui: small dl' $u.SmallDl $true
-    Check 'ui: tiled uv off' $u.TiledUv $false
+    Check 'ui: tiled uv on' $u.TiledUv $true
     Check 'ui: adpcm off' $u.Adpcm $false
-    Check 'ui: trim sounds off' $u.TrimSounds $false
+    Check 'ui: trim sounds on' $u.TrimSounds $true
     Check 'ui: slim anims off' $u.SlimAnims $false
-    Check 'ui: small props off' $u.SmallProps $false
+    Check 'ui: small props on' $u.SmallProps $true
     Check 'ui: detail' $u.Simplify '0.5'
     $form.Dispose()
     if ($fail) { exit 1 } else { Write-Host 'builder self-test passed'; exit 0 }

@@ -47,7 +47,9 @@ use std::path::{Path, PathBuf};
 /// 40: guns, attachments and animations: attachment parts per variant (`VHID`, `GUNH`) and sight reticles; akimbo
 ///     and alternate clip sets (`VSET`, companion files `views/<base>@<set>.wpk`); mantle clips (`MNTL`) and the
 ///     player animations' move speeds (`PANS`).
-pub const REVISION: u32 = 40;
+/// 41: the smaller-pack switches on by default (`--small-dl`, `--tiled-uv`, `--small-props`, `--slim-views`,
+///     `--trim-sounds`; each has a `--no-` form).
+pub const REVISION: u32 = 41;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {
